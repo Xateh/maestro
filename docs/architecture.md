@@ -43,7 +43,7 @@ symphony task "..."
 | `engine.mjs` | `runLangGraphTask()` | Top-level entry point for the LangGraph pipeline. Selects runner (herdr or terminal), builds the graph, runs it, persists to SQLite. |
 | `graph.mjs` | `buildGraph()` | Constructs a LangGraph `StateGraph` from `workflow.json`: roles become nodes, transitions become conditional edges. |
 | `nodes.mjs` | `makeRoleNode()` | Node factory. Builds a role's step prompt, invokes the agent runner, parses markers, records handoff. |
-| `prompt.mjs` | `buildStepPromptFromHandoffs()` | Token-efficient prompt builder. Uses only typed `{ role, provider, payload }` handoffs — never re-sends raw stdout logs. |
+| `prompt.mjs` | `buildPromptFromHandoffs()` | Token-efficient prompt builder. Uses only typed `{ role, provider, payload }` handoffs — never re-sends raw stdout logs. |
 | `state.mjs` | `SymphonyState` | LangGraph Annotation channel definitions. `priorHandoffs` accumulates across steps; other fields track task/step metadata. |
 
 ### Adapters (`src/adapters/`)
@@ -109,7 +109,7 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
 | `src/task-store.mjs` | `LocalTaskStore`, `DEFAULT_WORKFLOW`, `DEFAULT_LOCAL_STATE_DIR` | Legacy JSON task files in `.symphony/tasks/*.json`. `DEFAULT_WORKFLOW` is the inline default `workflow.json` object. |
 | `src/workflow.mjs` | `WorkflowStore`, `parseCliArgs()`, `renderPrompt()` | Loads and validates `workflow.json`; Liquid renders prompt templates. |
 | `src/workspace.mjs` | `WorkspaceManager` | Git worktree creation, checkout, merge, cleanup. |
-| `src/markers.mjs` | `parseHandoff()`, `parseQuestion()`, `parseReview()`, `parseActionRequest()` | Pure parsers for agent output markers. No I/O. Used by nodes.mjs and tests. |
+| `src/markers.mjs` | `parseAgentHandoff()`, `parseAgentQuestion()`, `parseReviewerOutput()`, `parseAgentActionRequests()` | Pure parsers for agent output markers. No I/O. Used by nodes.mjs and tests. |
 
 ### Support
 
@@ -137,9 +137,9 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
    d. Select runner: HerdrAgentRunner (default) or TerminalAgentRunner
 
 3. LangGraph graph execution (planner node):
-   a. buildStepPromptFromHandoffs() → compact context (prior handoffs only)
-   b. runner.runStep(agentSpec, prompt, stateDir) → stdout log written to disk
-   c. parseHandoff(stdout) → { role, payload, ... }
+   a. buildPromptFromHandoffs() → compact context (prior handoffs only)
+   b. runner.runStep({ provider, role, prompt, cwd, logDir, options, env, providerDef }) → stdout log written to disk
+   c. parseAgentHandoff(stdout) → { role, payload, ... }
    d. Record handoff in SQLite
    e. Return { event: "done" | "$ask_user" | "$halt" }
 
@@ -168,13 +168,10 @@ Agents signal intent to Symphony via structured markers embedded in stdout:
 
 | Marker | Parser | Meaning |
 |---|---|---|
-| `SYMPHONY_HANDOFF: {...}` | `parseHandoff()` | Role is done; typed payload for next role |
-| `SYMPHONY_QUESTION: {...}` | `parseQuestion()` | Agent needs user input; task suspends |
-| `SYMPHONY_REVIEW: {...}` | `parseReview()` | Reviewer's structured assessment |
-| `SYMPHONY_ACTION_REQUEST: {...}` | `parseActionRequest()` | Agent requests a host command |
-| `SYMPHONY_DONE` | (sentinel) | Legacy completion sentinel |
-| `SYMPHONY_HALT` | (sentinel) | Unrecoverable error; task fails |
-| `SYMPHONY_PAUSE` | (sentinel) | Voluntary pause |
+| `SYMPHONY_HANDOFF: {...}` | `parseAgentHandoff()` | Role is done; typed payload for next role |
+| `SYMPHONY_QUESTION: {...}` | `parseAgentQuestion()` | Agent needs user input; task suspends |
+| `SYMPHONY_REVIEW: {...}` | `parseReviewerOutput()` | Reviewer's structured assessment |
+| `SYMPHONY_ACTION_REQUEST: {...}` | `parseAgentActionRequests()` | Agent requests a host command |
 
 ---
 
@@ -190,8 +187,7 @@ Agents signal intent to Symphony via structured markers embedded in stdout:
 
 Implement a class with:
 ```js
-async runStep(agentSpec, stepPrompt, stateDir) {
-  // agentSpec: { command, args, cwd, stdin }
+async runStep({ provider, role, prompt, cwd, logDir, options, env, providerDef }) {
   // returns: { status, stdout, stderr, stdoutPath, stderrPath, command, args }
 }
 ```

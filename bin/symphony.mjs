@@ -209,6 +209,11 @@ function parseTaskArgs(args, cwd) {
 
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--") {
+      // End of options — everything after is literal prompt text.
+      for (let j = index + 1; j < args.length; j++) promptParts.push(args[j]);
+      break;
+    }
     if (arg === "--plan-only") {
       mode = "plan-only";
       continue;
@@ -1229,7 +1234,11 @@ function sanitizeActionResult(value) {
 //   NODE_OPTIONS — Node.js code injection via --require / --loader
 //   GIT_SSH*     — git transport hijack (GIT_SSH_COMMAND, GIT_SSH)
 //   GIT_EXTERNAL_DIFF / GIT_PROXY* — git sub-process injection
-const ENV_KEY_DENYLIST = /^(LD_|DYLD_|PATH$|BASH_ENV$|ENV$|NODE_OPTIONS$|GIT_SSH|GIT_EXTERNAL_DIFF|GIT_PROXY)/i;
+// IFS — bash word-splitting manipulation
+// NODE_PATH — Node.js module-path injection
+// PYTHON* / PERL* / RUBY* / JAVA* — interpreter startup injection
+// GIT_CONFIG — git config injection
+const ENV_KEY_DENYLIST = /^(LD_|DYLD_|PATH$|IFS$|BASH_ENV$|ENV$|NODE_OPTIONS$|NODE_PATH$|PYTHON(STARTUP|PATH|HOME|BREAKPOINT)$|PERL(5OPT|5LIB|5DB|_UNICODE)$|RUBYOPT$|RUBYLIB$|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|CLASSPATH$|GCONV_PATH$|LOCPATH$|HOSTALIASES$|GIT_SSH|GIT_EXTERNAL_DIFF|GIT_PROXY|GIT_CONFIG)/i;
 
 function sanitizeEnvObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -1789,9 +1798,13 @@ function unsafeHostActionReason(request, { hostCommandAllow = [] } = {}) {
   if (request.env && (typeof request.env !== "object" || Array.isArray(request.env))) return "invalid_host_env";
   // host_command requires an explicit allowlist in config (default = feature off).
   if (!Array.isArray(hostCommandAllow) || hostCommandAllow.length === 0) return "host_command_not_allowed";
-  const cmdBasename = path.basename(String(request.command));
-  if (HOST_COMMAND_BUILTIN_DENYLIST.has(cmdBasename)) return "host_command_builtin_denied";
-  if (!hostCommandAllow.includes(cmdBasename)) return "host_command_not_allowlisted";
+  const cmd = String(request.command);
+  // Reject any path-qualified command. Allowlist entries are bare basenames;
+  // a command containing a separator could point at an arbitrary binary whose
+  // basename happens to match an allowlisted name.
+  if (cmd.includes("/") || cmd.includes("\\")) return "host_command_path_not_allowed";
+  if (HOST_COMMAND_BUILTIN_DENYLIST.has(cmd)) return "host_command_builtin_denied";
+  if (!hostCommandAllow.includes(cmd)) return "host_command_not_allowlisted";
   return null;
 }
 

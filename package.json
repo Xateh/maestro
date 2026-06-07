@@ -20,7 +20,7 @@
   "scripts": {
     "symphony": "node bin/symphony.mjs",
     "symphony:mcp": "node src/mcp/server.mjs",
-    "test": "node --test test/",
+    "test": "node --test test/symphony-package.test.mjs test/symphony-mcp.test.mjs test/symphony.test.mjs test/symphony-engine.test.mjs",
     "test:package": "node --test test/symphony-package.test.mjs",
     "test:symphony": "node --test test/symphony.test.mjs",
     "test:mcp": "node --test test/symphony-mcp.test.mjs",

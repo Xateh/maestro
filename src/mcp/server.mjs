@@ -196,7 +196,15 @@ async function createTask({ prompt, mode = "task" } = {}) {
     // Invoke the bundled bin directly so this package is self-contained
     // (no npm run symphony shim required in the caller's directory).
     const binPath = fileURLToPath(new URL("../../bin/symphony.mjs", import.meta.url));
-    const proc = spawn(process.execPath, [binPath, mode, prompt], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+    // "--" ends option parsing so a prompt like "--timeout-ms 1 do X" is never
+    // interpreted as CLI flags by the spawned process.
+    // SYMPHONY_CALLER_CWD aligns the child's state-dir with ROOT so MCP readers
+    // see the same tasks the server does (critical when installed as a dependency).
+    const proc = spawn(
+      process.execPath,
+      [binPath, mode, "--", prompt],
+      { cwd: ROOT, env: { ...process.env, SYMPHONY_CALLER_CWD: ROOT }, stdio: ["ignore", "pipe", "pipe"] },
+    );
     let stdout = "";
     proc.stdout.on("data", (d) => { stdout += d; });
     proc.stderr.on("data", () => {}); // discard

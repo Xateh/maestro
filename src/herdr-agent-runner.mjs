@@ -10,9 +10,9 @@ function shellQuote(v) {
 }
 
 function buildScript(commandSpec, promptPath, stdoutPath, exitPath) {
-  const hasStin = typeof commandSpec.stdin === "string" && commandSpec.stdin.length > 0;
+  const hasStdin = typeof commandSpec.stdin === "string" && commandSpec.stdin.length > 0;
   const cmd = [commandSpec.command, ...commandSpec.args.map(shellQuote)].join(" ");
-  const input = hasStin ? `< ${shellQuote(promptPath)} ` : "";
+  const input = hasStdin ? `< ${shellQuote(promptPath)} ` : "";
   return `${cmd} ${input}2>&1 | tee ${shellQuote(stdoutPath)}; printf '%s' "$\{PIPESTATUS[0]}" > ${shellQuote(exitPath)}`;
 }
 
