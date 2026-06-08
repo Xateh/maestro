@@ -69,9 +69,10 @@ test("makeRoleNode: returns done immediately when role already in priorHandoffs"
 
 test("makeRoleNode: emits question event when agent stdout contains SYMPHONY_QUESTION", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "symphony-engine-"));
+  let db;
   try {
-    const db     = new SqliteTaskStore(path.join(dir, "symphony.db"));
-    const taskId = "20260608-000001-test-question";
+    db            = new SqliteTaskStore(path.join(dir, "symphony.db"));
+    const taskId  = "20260608-000001-test-question";
     db.createTask({ id: taskId, status: "running", prompt: "do the thing", cwd: dir, mode: "task", run_dir: null });
 
     const stubRunner = {
@@ -98,8 +99,8 @@ test("makeRoleNode: emits question event when agent stdout contains SYMPHONY_QUE
     assert.ok(saved.active_question?.question, "active_question should be set in DB");
     assert.match(String(saved.active_question.question), /framework/);
 
-    db.close();
   } finally {
+    db?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -108,9 +109,10 @@ test("makeRoleNode: emits question event when agent stdout contains SYMPHONY_QUE
 
 test("makeRoleNode: emits waiting event when agent stdout contains SYMPHONY_ACTION_REQUEST", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "symphony-engine-"));
+  let db;
   try {
-    const db     = new SqliteTaskStore(path.join(dir, "symphony.db"));
-    const taskId = "20260608-000002-test-action";
+    db            = new SqliteTaskStore(path.join(dir, "symphony.db"));
+    const taskId  = "20260608-000002-test-action";
     db.createTask({ id: taskId, status: "running", prompt: "build it", cwd: dir, mode: "task", run_dir: null });
 
     const actionReq = { provider: "host", command: "make", args: ["build"], cwd: dir };
@@ -139,8 +141,8 @@ test("makeRoleNode: emits waiting event when agent stdout contains SYMPHONY_ACTI
       "action_requests should be recorded in DB");
     assert.equal(saved.action_requests[0].command, "make");
 
-    db.close();
   } finally {
+    db?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -149,9 +151,10 @@ test("makeRoleNode: emits waiting event when agent stdout contains SYMPHONY_ACTI
 
 test("makeRoleNode: returns done and records handoff when agent emits SYMPHONY_HANDOFF", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "symphony-engine-"));
+  let db;
   try {
-    const db     = new SqliteTaskStore(path.join(dir, "symphony.db"));
-    const taskId = "20260608-000003-test-handoff";
+    db            = new SqliteTaskStore(path.join(dir, "symphony.db"));
+    const taskId  = "20260608-000003-test-handoff";
     // planner_policy: "on" forces the planner to run (auto-mode would skip for a simple prompt)
     db.createTask({ id: taskId, status: "running", prompt: "add logging", cwd: dir, mode: "task", run_dir: null, planner_policy: "on" });
 
@@ -183,8 +186,8 @@ test("makeRoleNode: returns done and records handoff when agent emits SYMPHONY_H
     assert.equal(handoffs[0].role, "planner");
     assert.deepEqual(handoffs[0].payload, handoffPayload);
 
-    db.close();
   } finally {
+    db?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
