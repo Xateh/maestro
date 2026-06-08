@@ -313,7 +313,7 @@ test("Linear tracker uses project slug, paginates, normalizes labels and blocker
               title: "Patch safety panel",
               description: "Do it",
               priority: 1,
-              branchName: "xateh/ops-7",
+              branchName: "alice/ops-7",
               url: "https://linear.app/acme/issue/OPS-7",
               state: { name: "Todo" },
               labels: { nodes: [{ name: "Safety" }] },
