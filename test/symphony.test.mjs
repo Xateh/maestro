@@ -47,7 +47,7 @@ import {
   REVIEW_MAX_CONTINUATIONS,
 } from "../src/markers.mjs";
 
-const TEST_HANDLE = process.env.USER ?? "alice";
+const TEST_HANDLE = process.env.USER ?? "xateh";
 
 async function tempDir(prefix = "symphony-test-") {
   return mkdtemp(path.join(tmpdir(), prefix));
