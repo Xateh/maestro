@@ -47,6 +47,8 @@ import {
   REVIEW_MAX_CONTINUATIONS,
 } from "../src/markers.mjs";
 
+const TEST_HANDLE = process.env.USER ?? "alice";
+
 async function tempDir(prefix = "symphony-test-") {
   return mkdtemp(path.join(tmpdir(), prefix));
 }
@@ -313,7 +315,7 @@ test("Linear tracker uses project slug, paginates, normalizes labels and blocker
               title: "Patch safety panel",
               description: "Do it",
               priority: 1,
-              branchName: "alice/ops-7",
+              branchName: `${TEST_HANDLE}/ops-7`,
               url: "https://linear.app/acme/issue/OPS-7",
               state: { name: "Todo" },
               labels: { nodes: [{ name: "Safety" }] },
