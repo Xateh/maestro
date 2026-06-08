@@ -72,35 +72,6 @@ export async function defaultCommandExists(commandName, { cwd = process.cwd(), e
   return shellCommandExists(command, { cwd, env });
 }
 
-const CLAUDE_MODEL_OPTIONS = [
-  "opus",
-  "sonnet",
-  "haiku",
-];
-
-const CODEX_MODEL_OPTIONS = [
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.3-codex",
-];
-
-const CLAUDE_EFFORT_OPTIONS = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
-
-const CODEX_EFFORT_OPTIONS = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-];
-
 function formatSettingValue(key, value) {
   if (key.endsWith("_model") || key.endsWith("_effort")) return value ? String(value) : "<cli default>";
   return String(value ?? "");
@@ -425,7 +396,7 @@ export function formatSettingsList(config, { color = false } = {}) {
   ].join("\n");
 }
 
-export async function collectSettingChange({ ask, defaults, choice, output = null, extraItems = [], totalLegacy = SETTINGS_FIELDS.length }) {
+async function collectSettingChange({ ask, defaults, choice, output = null, extraItems = [], totalLegacy = SETTINGS_FIELDS.length }) {
   const normalized = String(choice ?? "").trim().toLowerCase();
   if (!normalized || ["b", "q"].includes(normalized)) return { action: "back" };
   const index = Number(normalized);

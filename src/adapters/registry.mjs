@@ -22,7 +22,6 @@ function buildCustomCommand(providerDef, { prompt, cwd, alias, model, effort, pe
   // Split template into tokens
   const tokens = template.split(/\s+/);
   const resolvedArgs = [];
-  let skip = false;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     const placeholderMatch = token.match(/^\{(\w+)\}$/);
@@ -33,10 +32,8 @@ function buildCustomCommand(providerDef, { prompt, cwd, alias, model, effort, pe
         if (resolvedArgs.length > 0 && resolvedArgs.at(-1).startsWith("-")) {
           resolvedArgs.pop();
         }
-        skip = true;
         continue;
       }
-      skip = false;
       resolvedArgs.push(val);
     } else {
       resolvedArgs.push(token);

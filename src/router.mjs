@@ -123,7 +123,7 @@ function trimUtf8(value, maxBytes, fromEnd = false) {
   const slice = fromEnd
     ? buffer.subarray(Math.max(0, buffer.length - maxBytes))
     : buffer.subarray(0, maxBytes);
-  return slice.toString("utf8").replace(/^\uFFFD|\uFFFD$/g, "");
+  return slice.toString("utf8").replace(/^�|�$/g, "");
 }
 
 function compactPriorOutput(entry = {}, { handoffMode = "normal" } = {}) {

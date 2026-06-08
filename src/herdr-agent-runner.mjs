@@ -17,7 +17,7 @@ function buildScript(commandSpec, promptPath, stdoutPath, exitPath) {
 }
 
 async function waitForFile(filePath, intervalMs, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Number.MAX_SAFE_INTEGER;
   while (Date.now() < deadline) {
     try {
       const content = await fs.readFile(filePath, "utf8");
@@ -44,11 +44,11 @@ export class HerdrAgentRunner {
     const workspaces = list?.workspaces ?? [];
     const existing = workspaces.find((w) => (w.custom_name ?? w.label ?? "") === "symphony");
     if (existing) {
-      this._symphonyWsId = existing.id;
+      this._symphonyWsId = existing.workspace_id;
       return this._symphonyWsId;
     }
     const created = await herdrCli(["workspace", "create", "--label", "symphony", "--cwd", cwd, "--no-focus"]);
-    this._symphonyWsId = created?.workspace?.id ?? created?.id;
+    this._symphonyWsId = created?.workspace?.workspace_id;
     return this._symphonyWsId;
   }
 
@@ -62,7 +62,7 @@ export class HerdrAgentRunner {
       "--cwd", cwd,
       "--no-focus",
     ]);
-    const tabId = result?.tab?.id ?? result?.id;
+    const tabId = result?.tab?.tab_id;
     this._taskTabs.set(taskId, tabId);
     return tabId;
   }
@@ -109,7 +109,7 @@ export class HerdrAgentRunner {
       "--",
       "bash", "-lc", script,
     ]);
-    const paneId = paneResult?.pane?.id ?? paneResult?.terminal_id ?? paneResult?.id;
+    const paneId = paneResult?.agent?.pane_id;
     this.logger.info("herdr_agent_started", { task_id: taskId, role, provider, pane_id: paneId, tab_id: tabId });
 
     const exitCodeStr = await waitForFile(exitPath, this.pollIntervalMs, this.timeoutMs);

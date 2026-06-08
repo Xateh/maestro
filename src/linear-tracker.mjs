@@ -29,7 +29,7 @@ const ISSUE_FIELDS = `
   }
 `;
 
-export const CANDIDATE_ISSUES_QUERY = `
+const CANDIDATE_ISSUES_QUERY = `
 query SymphonyCandidateIssues($projectSlug: String!, $stateNames: [String!], $first: Int!, $after: String) {
   issues(
     first: $first
@@ -45,7 +45,7 @@ query SymphonyCandidateIssues($projectSlug: String!, $stateNames: [String!], $fi
 }
 `;
 
-export const ISSUE_STATES_QUERY = `
+const ISSUE_STATES_QUERY = `
 query SymphonyIssueStates($ids: [ID!]) {
   issues(filter: { id: { in: $ids } }) {
     nodes {

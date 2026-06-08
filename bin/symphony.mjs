@@ -21,6 +21,7 @@ import {
   validateDispatchConfig,
 } from "../src/workflow.mjs";
 import { WorkspaceManager } from "../src/workspace.mjs";
+export { parseReviewerOutput } from "../src/markers.mjs";
 
 const LOCAL_COMMANDS = new Set([
   "project",
@@ -1060,70 +1061,15 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-const QUESTION_PREFIX = "SYMPHONY_QUESTION:";
-const REVIEW_PREFIX = "SYMPHONY_REVIEW:";
-const ACTION_REQUEST_PREFIX = "SYMPHONY_ACTION_REQUEST:";
-
-const REVIEW_COMPLETION_STATES = new Set([
-  "complete",
-  "incomplete_continueable",
-  "incomplete_needs_user",
-  "incomplete_needs_approval",
-  "blocked_external",
-  "blocked_repo_state",
-  "blocked_safety",
-  "failed_agent",
-  "uncertain",
-]);
-
-const REVIEW_REQUIRED_ACTIONS = new Set([
-  "none",
-  "continue",
-  "ask_user",
-  "request_approval",
-  "manual_fix",
-  "retry_after_environment_change",
-  "mark_failed",
-]);
-
-const REVIEW_ACTIONS_BY_COMPLETION = new Map([
-  ["complete", new Set(["none"])],
-  ["incomplete_continueable", new Set(["continue"])],
-  ["incomplete_needs_user", new Set(["ask_user"])],
-  ["incomplete_needs_approval", new Set(["request_approval"])],
-  ["blocked_external", new Set(["retry_after_environment_change", "manual_fix"])],
-  ["blocked_repo_state", new Set(["manual_fix"])],
-  ["blocked_safety", new Set(["manual_fix"])],
-  ["failed_agent", new Set(["mark_failed"])],
-  ["uncertain", new Set(["manual_fix", "mark_failed"])],
-]);
-
-const REVIEW_RISK_LEVELS = new Set(["none", "low", "medium", "high"]);
-const REVIEW_CONFIDENCE_LEVELS = new Set(["low", "medium", "high"]);
 const REVIEW_MAX_STRING_BYTES = 2_000;
-const REVIEW_MAX_LIST_ITEMS = 10;
 const REVIEW_MAX_CONTINUATIONS = 1;
 const GIT_ACTION_TYPES = new Set(["git_commit", "git_merge", "git_push", "git_fetch", "git_pull"]);
 const ACTION_REQUEST_TYPES = new Set([...GIT_ACTION_TYPES, "external_cwd_git", "host_command"]);
-const ACTION_REQUEST_STATUSES = new Set(["pending", "approved", "running", "succeeded", "failed", "denied", "expired"]);
-const UNBLOCK_OPTION_TYPES = new Set([
-  "answer",
-  "approve_action",
-  "run_anyway",
-  "run_external",
-  "edit_action",
-  "manual_done",
-  "retry",
-  "instruct",
-  "extend_timeout",
-  "review",
-  "cancel",
-]);
 
 function trimUtf8Bytes(value, maxBytes = REVIEW_MAX_STRING_BYTES) {
   const buffer = Buffer.from(String(value ?? ""), "utf8");
   if (buffer.length <= maxBytes) return buffer.toString("utf8").trim();
-  return buffer.subarray(0, maxBytes).toString("utf8").replace(/\uFFFD$/g, "").trim();
+  return buffer.subarray(0, maxBytes).toString("utf8").replace(/�$/g, "").trim();
 }
 
 function sanitizeReviewString(value, fallback = "") {
@@ -1131,113 +1077,7 @@ function sanitizeReviewString(value, fallback = "") {
   return trimUtf8Bytes(value, REVIEW_MAX_STRING_BYTES) || fallback;
 }
 
-function sanitizeReviewStringList(values) {
-  if (!Array.isArray(values)) return [];
-  return values
-    .slice(0, REVIEW_MAX_LIST_ITEMS)
-    .map((value) => sanitizeReviewString(value))
-    .filter(Boolean);
-}
-
-function sanitizeReviewObject(value, allowedKeys = []) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const next = {};
-  for (const key of allowedKeys) {
-    if (value[key] === null || value[key] === undefined) continue;
-    next[key] = sanitizeReviewString(value[key]);
-  }
-  return Object.keys(next).length > 0 ? next : null;
-}
-
-function sanitizeReviewBlockers(values) {
-  if (!Array.isArray(values)) return [];
-  return values.slice(0, REVIEW_MAX_LIST_ITEMS).map((value) => {
-    if (typeof value === "string") {
-      return { summary: sanitizeReviewString(value) };
-    }
-    const blocker = sanitizeReviewObject(value, [
-      "code",
-      "type",
-      "status",
-      "summary",
-      "reason",
-      "required_action",
-      "evidence",
-    ]);
-    return blocker;
-  }).filter(Boolean);
-}
-
-function sanitizeActionRequest(value, index = 0) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const provider = sanitizeReviewString(value.provider || (value.type === "host_command" ? "host" : "git"));
-  const type = sanitizeReviewString(value.type);
-  if (!["git", "host"].includes(provider) || !ACTION_REQUEST_TYPES.has(type)) return null;
-  if (provider === "host" && type !== "host_command") return null;
-  if (provider === "git" && type === "host_command") return null;
-  const normalizedArgs = Array.isArray(value.normalized_args)
-    ? normalizeGitActionArgs(value.normalized_args.slice(0, 12).map((arg) => sanitizeReviewString(arg, "")).filter((arg) => arg !== ""))
-    : [];
-  const result = sanitizeActionResult(value.result);
-  const base = {
-    id: sanitizeReviewString(value.id, `act-${index + 1}`),
-    provider,
-    type,
-    status: ACTION_REQUEST_STATUSES.has(value.status) ? value.status : "pending",
-    cwd: sanitizeReviewString(value.cwd),
-    expected_branch: sanitizeReviewString(value.expected_branch),
-    expected_head: sanitizeReviewString(value.expected_head),
-    expected_status_hash: sanitizeReviewString(value.expected_status_hash),
-    expected_remote_url: sanitizeReviewString(value.expected_remote_url),
-    continuation_generation: Number.isInteger(value.continuation_generation) ? value.continuation_generation : 0,
-    result,
-  };
-  if (provider === "host") {
-    return {
-      ...base,
-      command: sanitizeReviewString(value.command),
-      args: Array.isArray(value.args)
-        ? value.args.slice(0, 32).map((arg) => sanitizeReviewString(arg, ""))
-        : [],
-      env: sanitizeEnvObject(value.env),
-      timeout_ms: Number.isInteger(value.timeout_ms) ? value.timeout_ms : null,
-    };
-  }
-  return {
-    ...base,
-    normalized_args: normalizedArgs,
-    git_type: type === "external_cwd_git" && GIT_ACTION_TYPES.has(value.git_type) ? value.git_type : null,
-    external_cwd: value.external_cwd === true || type === "external_cwd_git",
-  };
-}
-
-function sanitizeActionResult(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return {
-    code: Number.isInteger(value.code) ? value.code : null,
-    exit_code: Number.isInteger(value.exit_code) ? value.exit_code : (Number.isInteger(value.code) ? value.code : null),
-    stdout: sanitizeReviewString(value.stdout),
-    stderr: sanitizeReviewString(value.stderr),
-    stdout_path: sanitizeReviewString(value.stdout_path),
-    stderr_path: sanitizeReviewString(value.stderr_path),
-    duration_ms: Number.isInteger(value.duration_ms) ? value.duration_ms : null,
-    cwd: sanitizeReviewString(value.cwd),
-    command_hash: sanitizeReviewString(value.command_hash),
-    user_note: sanitizeReviewString(value.user_note),
-  };
-}
-
-// Keys that can subvert process execution regardless of intent:
-//   LD_*/DYLD_* — dynamic-linker injection (Linux / macOS)
-//   PATH        — binary resolution
-//   BASH_ENV/ENV — shell rc sourcing on every invocation
-//   NODE_OPTIONS — Node.js code injection via --require / --loader
-//   GIT_SSH*     — git transport hijack (GIT_SSH_COMMAND, GIT_SSH)
-//   GIT_EXTERNAL_DIFF / GIT_PROXY* — git sub-process injection
-// IFS — bash word-splitting manipulation
-// NODE_PATH — Node.js module-path injection
-// PYTHON* / PERL* / RUBY* / JAVA* — interpreter startup injection
-// GIT_CONFIG — git config injection
+// Keys that can subvert process execution regardless of intent — see ENV_KEY_DENYLIST for full list
 const ENV_KEY_DENYLIST = /^(LD_|DYLD_|PATH$|IFS$|BASH_ENV$|ENV$|NODE_OPTIONS$|NODE_PATH$|PYTHON(STARTUP|PATH|HOME|BREAKPOINT)$|PERL(5OPT|5LIB|5DB|_UNICODE)$|RUBYOPT$|RUBYLIB$|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|CLASSPATH$|GCONV_PATH$|LOCPATH$|HOSTALIASES$|GIT_SSH|GIT_EXTERNAL_DIFF|GIT_PROXY|GIT_CONFIG)/i;
 
 function sanitizeEnvObject(value) {
@@ -1248,165 +1088,6 @@ function sanitizeEnvObject(value) {
       .map(([key, entry]) => [sanitizeReviewString(key), sanitizeReviewString(entry, "")])
       .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !ENV_KEY_DENYLIST.test(key)),
   );
-}
-
-function sanitizeActionRequests(values) {
-  if (!Array.isArray(values)) return [];
-  return values
-    .slice(0, REVIEW_MAX_LIST_ITEMS)
-    .map((value, index) => sanitizeActionRequest(value, index))
-    .filter(Boolean);
-}
-
-function sanitizeUnblockOption(value, index = 0) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const type = sanitizeReviewString(value.type);
-  if (!UNBLOCK_OPTION_TYPES.has(type)) return null;
-  return {
-    id: sanitizeReviewString(value.id, `${type}-${index + 1}`),
-    type,
-    label: sanitizeReviewString(value.label, type),
-    status: ["open", "used", "expired"].includes(value.status) ? value.status : "open",
-  };
-}
-
-function sanitizeUnblockOptions(values) {
-  if (!Array.isArray(values)) return [];
-  return values
-    .slice(0, REVIEW_MAX_LIST_ITEMS)
-    .map((value, index) => sanitizeUnblockOption(value, index))
-    .filter(Boolean);
-}
-
-function extractReviewPayloadsFromText(value = "") {
-  const payloads = [];
-  let inFence = false;
-  for (const line of String(value).split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("```")) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence || !trimmed.startsWith(REVIEW_PREFIX)) continue;
-    const payload = trimmed.slice(REVIEW_PREFIX.length).trim();
-    if (!payload) continue;
-    try {
-      payloads.push(JSON.parse(payload));
-    } catch {
-      continue;
-    }
-  }
-  return payloads;
-}
-
-function reviewTextCandidatesFromValue(value) {
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => reviewTextCandidatesFromValue(item));
-  }
-  if (value && typeof value === "object") {
-    const candidates = [];
-    for (const key of ["text", "message", "output_text", "delta"]) {
-      if (typeof value[key] === "string") candidates.push(value[key]);
-    }
-    if (typeof value.content === "string") {
-      candidates.push(value.content);
-    } else if (Array.isArray(value.content)) {
-      candidates.push(...reviewTextCandidatesFromValue(value.content));
-    }
-    for (const key of ["item", "message", "response"]) {
-      if (value[key] && typeof value[key] === "object") {
-        candidates.push(...reviewTextCandidatesFromValue(value[key]));
-      }
-    }
-    return candidates;
-  }
-  return [];
-}
-
-function extractReviewPayloadsFromValue(value) {
-  return reviewTextCandidatesFromValue(value).flatMap((text) => extractReviewPayloadsFromText(text));
-}
-
-function extractReviewPayloads(output = "") {
-  const payloads = [];
-  payloads.push(...extractReviewPayloadsFromText(output));
-  for (const line of String(output).split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      payloads.push(...extractReviewPayloadsFromValue(JSON.parse(line)));
-    } catch (error) {
-      if (error instanceof SyntaxError) continue;
-      throw error;
-    }
-  }
-  return payloads;
-}
-
-function invalidReview(summary) {
-  return {
-    status: "invalid",
-    completion_state: "uncertain",
-    required_action: "manual_fix",
-    risk_level: "medium",
-    confidence: "low",
-    summary,
-    evidence: [],
-    blockers: [],
-    required_user_input: null,
-    approval_request: null,
-    action_requests: [],
-    unblock_options: [],
-    continuation: null,
-    continuation_attempts: 0,
-    max_continuations: REVIEW_MAX_CONTINUATIONS,
-    decided_at: nowIso(),
-  };
-}
-
-function normalizeReviewPayload(payload, previousReview = null) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return invalidReview("Reviewer marker was not a JSON object.");
-  }
-  const completionState = sanitizeReviewString(payload.completion_state);
-  const requiredAction = sanitizeReviewString(payload.required_action);
-  if (!REVIEW_COMPLETION_STATES.has(completionState)) {
-    return invalidReview(`Reviewer marker used invalid completion_state: ${completionState || "<missing>"}.`);
-  }
-  if (!REVIEW_REQUIRED_ACTIONS.has(requiredAction)) {
-    return invalidReview(`Reviewer marker used invalid required_action: ${requiredAction || "<missing>"}.`);
-  }
-  const allowedActions = REVIEW_ACTIONS_BY_COMPLETION.get(completionState);
-  if (allowedActions && !allowedActions.has(requiredAction)) {
-    return invalidReview(`Reviewer marker used required_action ${requiredAction} for ${completionState}.`);
-  }
-  const riskLevel = sanitizeReviewString(payload.risk_level, "medium");
-  const confidence = sanitizeReviewString(payload.confidence, "low");
-  return {
-    status: "reviewed",
-    completion_state: completionState,
-    required_action: requiredAction,
-    risk_level: REVIEW_RISK_LEVELS.has(riskLevel) ? riskLevel : "medium",
-    confidence: REVIEW_CONFIDENCE_LEVELS.has(confidence) ? confidence : "low",
-    summary: sanitizeReviewString(payload.summary),
-    evidence: sanitizeReviewStringList(payload.evidence),
-    blockers: sanitizeReviewBlockers(payload.blockers),
-    required_user_input: sanitizeReviewObject(payload.required_user_input, ["question", "reason"]),
-    approval_request: sanitizeReviewObject(payload.approval_request, ["action", "reason"]),
-    action_requests: sanitizeActionRequests(payload.action_requests),
-    unblock_options: sanitizeUnblockOptions(payload.unblock_options),
-    continuation: sanitizeReviewObject(payload.continuation, ["prompt", "reason"]),
-    continuation_attempts: previousReview?.continuation_attempts ?? 0,
-    max_continuations: previousReview?.max_continuations ?? REVIEW_MAX_CONTINUATIONS,
-    decided_at: nowIso(),
-  };
-}
-
-export function parseReviewerOutput(output = "", previousReview = null) {
-  const payloads = extractReviewPayloads(output);
-  if (payloads.length === 0) {
-    return invalidReview("Reviewer did not emit a valid SYMPHONY_REVIEW marker.");
-  }
-  return normalizeReviewPayload(payloads.at(-1), previousReview);
 }
 
 async function assertSymphonyRootIgnored({ gitRunner, cwd }) {
