@@ -382,7 +382,7 @@ Run a task inside a project task branch/worktree:
 
 ```bash
 npm run symphony -- task --project alpha --worktree-mode project-worktree \
-  --paths scripts/symphony.mjs "Patch Symphony worktree handling"
+  --paths symphony/bin/symphony.mjs "Patch Symphony worktree handling"
 ```
 
 Project task branches use:
