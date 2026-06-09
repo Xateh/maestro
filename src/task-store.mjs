@@ -110,6 +110,13 @@ export const DEFAULT_LOCAL_CONFIG_V2 = {
   max_steps: 20,
   default_role: "executor",
   providers: DEFAULT_PROVIDERS,
+  headroom: {
+    mode: "light",           // "light" | "heavy"
+    extras_light: "proxy,mcp,code",
+    extras_heavy: "all",
+    proxy_port: 8787,
+    swap_gb: 0,              // target TOTAL swap in GiB; 0 = never touch swap
+  },
   recent: {
     providers_by_role: {},
     aliases_by_provider: {},

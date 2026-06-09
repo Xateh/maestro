@@ -1,3 +1,7 @@
+import { headroomCompact } from "./compress.mjs";
+
+let _headroomWarnedThisRun = false;
+
 export const DEFAULT_AGENT_POLICY = {
   agents: {
     planner: "claude",
@@ -126,7 +130,7 @@ function trimUtf8(value, maxBytes, fromEnd = false) {
   return slice.toString("utf8").replace(/^�|�$/g, "");
 }
 
-function compactPriorOutput(entry = {}, { handoffMode = "normal" } = {}) {
+async function compactPriorOutput(entry = {}, { handoffMode = "normal", compression = "bytes" } = {}) {
   const limits = PRIOR_OUTPUT_LIMITS[handoffMode] ?? PRIOR_OUTPUT_LIMITS.normal;
   const output = String(entry.output ?? "");
   const originalBytes = entry.originalBytes ?? Buffer.byteLength(output, "utf8");
@@ -137,6 +141,34 @@ function compactPriorOutput(entry = {}, { handoffMode = "normal" } = {}) {
       compacted: false,
       originalBytes,
       text: output,
+      stdoutPath,
+      stderrPath,
+    };
+  }
+
+  if (compression === "headroom") {
+    const hr = await headroomCompact(output);
+    if (hr && !hr.error) {
+      return {
+        compacted: true,
+        compressedBy: "headroom",
+        originalBytes,
+        compressedBytes: hr.compressedBytes,
+        text: hr.text,
+        stdoutPath,
+        stderrPath,
+      };
+    }
+    const head = trimUtf8(output, limits.headBytes);
+    const tail = trimUtf8(output, limits.tailBytes, true);
+    const omittedBytes = Math.max(0, originalBytes - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tail, "utf8"));
+    return {
+      compacted: true,
+      headroomFailed: hr?.error === true, // proxy error, not "no improvement"
+      originalBytes,
+      text: omittedBytes > 0
+        ? `${head}\n\n[... ${omittedBytes} bytes omitted from prior agent stdout ...]\n\n${tail}`
+        : output,
       stdoutPath,
       stderrPath,
     };
@@ -154,10 +186,10 @@ function compactPriorOutput(entry = {}, { handoffMode = "normal" } = {}) {
   };
 }
 
-function priorOutputText(priorOutputs = [], { handoffMode = "normal" } = {}) {
+async function priorOutputText(priorOutputs = [], { handoffMode = "normal", compression = "bytes" } = {}) {
   if (priorOutputs.length === 0) return "None yet.";
-  return priorOutputs
-    .map((entry) => {
+  const parts = await Promise.all(
+    priorOutputs.map(async (entry) => {
       if (entry.handoff) {
         const metadata = [
           entry.stdoutPath ? `Log: ${entry.stdoutPath}` : null,
@@ -170,13 +202,24 @@ function priorOutputText(priorOutputs = [], { handoffMode = "normal" } = {}) {
           JSON.stringify(entry.handoff, null, 2),
         ].join("\n").trim();
       }
-      const compacted = compactPriorOutput(entry, { handoffMode });
+      const compacted = await compactPriorOutput(entry, { handoffMode, compression });
+      if (compacted.headroomFailed && !_headroomWarnedThisRun) {
+        _headroomWarnedThisRun = true;
+        process.stderr.write(
+          "[symphony:headroom] WARNING: headroom compression unavailable — proxy down or insufficient resources. " +
+          "Fell back to byte-trim. Run: npm run headroom:setup\n",
+        );
+      }
       const heading = compacted.compacted
         ? `## ${entry.role} output compacted`
         : `## ${entry.role} output`;
+      const compressNote = compacted.compressedBy === "headroom"
+        ? `Compression: headroom (${compacted.compressedBytes} bytes)`
+        : `Shown mode: ${handoffMode}`;
       const metadata = [
         `Original bytes: ${compacted.originalBytes}`,
-        compacted.compacted ? `Shown mode: ${handoffMode}` : null,
+        compacted.compacted ? compressNote : null,
+        compacted.headroomFailed ? "Compression: headroom unavailable — byte-trim fallback active. Run: npm run headroom:setup" : null,
         compacted.stdoutPath ? `Log: ${compacted.stdoutPath}` : null,
         compacted.stderrPath ? `Error log: ${compacted.stderrPath}` : null,
       ].filter(Boolean);
@@ -185,8 +228,9 @@ function priorOutputText(priorOutputs = [], { handoffMode = "normal" } = {}) {
         ...metadata,
         compacted.text || "(no stdout)",
       ].join("\n").trim();
-    })
-    .join("\n\n");
+    }),
+  );
+  return parts.join("\n\n");
 }
 
 function questionAnswerText(questionAnswers = []) {
@@ -262,9 +306,9 @@ function actionRequestText(actionRequests = []) {
     .join("\n\n");
 }
 
-export function buildStepPrompt({ role, task, priorOutputs = [], handoffMode = "normal" }) {
+export async function buildStepPrompt({ role, task, priorOutputs = [], handoffMode = "normal", compression = "bytes" }) {
   const taskText = task?.prompt ?? "";
-  const prior = priorOutputText(priorOutputs, { handoffMode });
+  const prior = await priorOutputText(priorOutputs, { handoffMode, compression });
   const answers = questionAnswerText(task?.question_answers ?? []);
   const approvals = approvalDecisionText(task?.approval_decisions ?? []);
   const interactions = interactionText(task?.interactions ?? []);

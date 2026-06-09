@@ -3679,7 +3679,7 @@ test("local task store reports unreadable task files without crashing task histo
   });
 });
 
-test("local router maps normal and plan-only tasks to provider roles", () => {
+test("local router maps normal and plan-only tasks to provider roles", async () => {
   assert.deepEqual(resolveAgentFlow({
     mode: "task",
     prompt: "Design a TUI workflow",
@@ -3692,7 +3692,7 @@ test("local router maps normal and plan-only tasks to provider roles", () => {
     { role: "planner", provider: "claude" },
   ]);
 
-  const prompt = buildStepPrompt({
+  const prompt = await buildStepPrompt({
     role: "executor",
     task: { prompt: "Fix API drift" },
     priorOutputs: [{ role: "planner", output: "Plan: patch api.py and test_api.py" }],
@@ -3703,9 +3703,9 @@ test("local router maps normal and plan-only tasks to provider roles", () => {
   assert.match(prompt, /Fix API drift/);
 });
 
-test("step prompts compact large prior outputs before review", () => {
+test("step prompts compact large prior outputs before review", async () => {
   const largeOutput = "review evidence line\n".repeat(50_000);
-  const prompt = buildStepPrompt({
+  const prompt = await buildStepPrompt({
     role: "reviewer",
     task: { prompt: "Review the repository" },
     priorOutputs: [{
@@ -3722,8 +3722,8 @@ test("step prompts compact large prior outputs before review", () => {
   assert.doesNotMatch(prompt, new RegExp("review evidence line\\n".repeat(500)));
 });
 
-test("reviewer prompt requires structured review verdict", () => {
-  const prompt = buildStepPrompt({
+test("reviewer prompt requires structured review verdict", async () => {
+  const prompt = await buildStepPrompt({
     role: "reviewer",
     task: { prompt: "Review task" },
     priorOutputs: [],
