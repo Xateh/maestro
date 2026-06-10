@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# headroom-setup.sh — provision headroom for Symphony
+# headroom-setup.sh — provision headroom for Maestro
 #
 # Usage:
 #   bash scripts/headroom-setup.sh [--mode light|heavy] [--swap-gb N] [--port P] [--user USERNAME]
@@ -9,11 +9,11 @@
 # --user USERNAME  the account whose uv/headroom env to use (required when running
 #                  as root without sudo, since $SUDO_USER is not set in that case)
 #
-# Without flags, reads .symphony/config.json headroom block for defaults.
+# Without flags, reads .maestro/config.json headroom block for defaults.
 # Safe to re-run (idempotent). Prints a summary at the end.
 #
 # IMPORTANT: --swap-gb requires root (modifies /swapfile-headroom + /etc/fstab).
-#            Never run from inside a Symphony agent task.
+#            Never run from inside a Maestro agent task.
 #
 # Upgrade / downgrade paths:
 #   light → heavy: bash scripts/headroom-setup.sh --mode heavy --swap-gb 8 --user dump
@@ -27,8 +27,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SYMPHONY_ROOT="$(dirname "$SCRIPT_DIR")"
-STATE_DIR="$SYMPHONY_ROOT/.symphony"
+MAESTRO_ROOT="$(dirname "$SCRIPT_DIR")"
+STATE_DIR="$MAESTRO_ROOT/.maestro"
 CONFIG_FILE="$STATE_DIR/config.json"
 
 # ── defaults (overridden by config.json then CLI flags) ────────────────────────
@@ -40,7 +40,7 @@ SWAP_GB=0
 SWAP_SKIPPED=0
 TARGET_USER="${SUDO_USER:-$USER}"  # overridden by --user; falls back to $SUDO_USER then current user
 
-# ── read .symphony/config.json if present ─────────────────────────────────────
+# ── read .maestro/config.json if present ─────────────────────────────────────
 if [[ -f "$CONFIG_FILE" ]]; then
   _read_cfg() {
     node -e "
@@ -267,11 +267,11 @@ if [[ "$SWAP_SKIPPED" -eq 1 ]]; then
   echo "  *** To grow swap: sudo bash scripts/headroom-setup.sh --mode heavy --swap-gb ${SWAP_GB} ***"
 fi
 echo ""
-echo "To use headroom proxy with Symphony agents:"
+echo "To use headroom proxy with Maestro agents:"
 echo "  export ANTHROPIC_BASE_URL=http://localhost:${PROXY_PORT}"
 echo "  export OPENAI_BASE_URL=http://localhost:${PROXY_PORT}/v1"
 echo "  export HEADROOM_PROXY_URL=http://localhost:${PROXY_PORT}"
 echo ""
-echo "To enable prior-output compression in Symphony:"
-echo "  set \"headroom\": { \"mode\": \"$MODE\", \"proxy_port\": $PROXY_PORT } in .symphony/config.json"
+echo "To enable prior-output compression in Maestro:"
+echo "  set \"headroom\": { \"mode\": \"$MODE\", \"proxy_port\": $PROXY_PORT } in .maestro/config.json"
 echo "  and set prior_output_compression: \"headroom\" in your task config"

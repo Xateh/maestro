@@ -30,7 +30,7 @@ const ISSUE_FIELDS = `
 `;
 
 const CANDIDATE_ISSUES_QUERY = `
-query SymphonyCandidateIssues($projectSlug: String!, $stateNames: [String!], $first: Int!, $after: String) {
+query MaestroCandidateIssues($projectSlug: String!, $stateNames: [String!], $first: Int!, $after: String) {
   issues(
     first: $first
     after: $after
@@ -46,7 +46,7 @@ query SymphonyCandidateIssues($projectSlug: String!, $stateNames: [String!], $fi
 `;
 
 const ISSUE_STATES_QUERY = `
-query SymphonyIssueStates($ids: [ID!]) {
+query MaestroIssueStates($ids: [ID!]) {
   issues(filter: { id: { in: $ids } }) {
     nodes {
       id

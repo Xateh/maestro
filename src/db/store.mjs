@@ -1,8 +1,8 @@
 /**
  * SQLite-backed task store for the LangGraph engine.
  *
- * Replaces scattered .symphony/tasks/*.json files with a single DB at
- * .symphony/symphony.db. Large log blobs stay on disk; DB stores paths.
+ * Replaces scattered .maestro/tasks/*.json files with a single DB at
+ * .maestro/maestro.db. Large log blobs stay on disk; DB stores paths.
  *
  * Uses node:sqlite (DatabaseSync, synchronous) — operations are tiny
  * metadata reads/writes so blocking is acceptable.

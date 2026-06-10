@@ -35,30 +35,30 @@ export class HerdrAgentRunner {
     this.logger = logger;
     this._taskTabs = new Map();
     this._taskPanes = new Map();
-    this._symphonyWsId = null;
+    this._maestroWsId = null;
   }
 
-  async _ensureSymphonyWorkspace(cwd) {
-    if (this._symphonyWsId) return this._symphonyWsId;
+  async _ensureMaestroWorkspace(cwd) {
+    if (this._maestroWsId) return this._maestroWsId;
     const list = await herdrCli(["workspace", "list"]);
     const workspaces = list?.workspaces ?? [];
-    const existing = workspaces.find((w) => (w.custom_name ?? w.label ?? "") === "symphony");
+    const existing = workspaces.find((w) => (w.custom_name ?? w.label ?? "") === "maestro");
     if (existing) {
-      this._symphonyWsId = existing.workspace_id;
-      return this._symphonyWsId;
+      this._maestroWsId = existing.workspace_id;
+      return this._maestroWsId;
     }
-    const created = await herdrCli(["workspace", "create", "--label", "symphony", "--cwd", cwd, "--no-focus"]);
-    this._symphonyWsId = created?.workspace?.workspace_id;
-    return this._symphonyWsId;
+    const created = await herdrCli(["workspace", "create", "--label", "maestro", "--cwd", cwd, "--no-focus"]);
+    this._maestroWsId = created?.workspace?.workspace_id;
+    return this._maestroWsId;
   }
 
   async _ensureTab(taskId, cwd) {
     if (this._taskTabs.has(taskId)) return this._taskTabs.get(taskId);
-    const wsId = await this._ensureSymphonyWorkspace(cwd);
+    const wsId = await this._ensureMaestroWorkspace(cwd);
     const result = await herdrCli([
       "tab", "create",
       "--workspace", wsId,
-      "--label", `sym:${taskId}`,
+      "--label", `mae:${taskId}`,
       "--cwd", cwd,
       "--no-focus",
     ]);
@@ -68,7 +68,7 @@ export class HerdrAgentRunner {
   }
 
   async runStep({ provider, role, prompt, cwd, logDir, options = {}, env = {}, providerDef = null }) {
-    const taskId = env.SYMPHONY_TASK_ID ?? path.basename(path.dirname(logDir));
+    const taskId = env.MAESTRO_TASK_ID ?? path.basename(path.dirname(logDir));
     const attempt = (this._taskPanes.get(`${taskId}:${role}`) ?? 0) + 1;
     const paneKey = `${taskId}:${role}`;
     this._taskPanes.set(paneKey, attempt);
@@ -161,7 +161,7 @@ export class HerdrAgentRunner {
       const tabId = this._taskTabs.get(taskId);
       if (!tabId) continue;
       try {
-        const list = await herdrCli(["pane", "list", "--workspace", this._symphonyWsId ?? ""]);
+        const list = await herdrCli(["pane", "list", "--workspace", this._maestroWsId ?? ""]);
         const panes = list?.panes ?? [];
         for (const pane of panes) {
           if (pane.tab_id === tabId) {

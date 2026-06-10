@@ -1,17 +1,17 @@
-# Symphony Architecture
+# Maestro Architecture
 
 ## Overview
 
-Symphony is a multi-agent orchestrator that maps a prompt to a
+Maestro is a multi-agent orchestrator that maps a prompt to a
 **planner → executor → reviewer** pipeline. It uses **LangGraph** as the sole flow engine —
 LangGraph handles graph traversal and state but never makes model calls. All model calls happen
-inside the agent CLI binaries (claude, codex, etc.) that Symphony launches as subprocesses.
+inside the agent CLI binaries (claude, codex, etc.) that Maestro launches as subprocesses.
 
 ```
-symphony task "..."
+maestro task "..."
        │
        ▼
-  [bin/symphony.mjs] ─── parse args, resolve state dir
+  [bin/maestro.mjs] ─── parse args, resolve state dir
        │
        ▼
   [langgraph/engine.mjs] ─── runLangGraphTask()
@@ -34,7 +34,7 @@ symphony task "..."
 
 | File | Export | Purpose |
 |---|---|---|
-| `bin/symphony.mjs` | — | CLI entry (`#!/usr/bin/env node`). Parses commands, resolves `PACKAGE_ROOT` + `--state-dir`, dispatches to local commands or the LangGraph engine. |
+| `bin/maestro.mjs` | — | CLI entry (`#!/usr/bin/env node`). Parses commands, resolves `PACKAGE_ROOT` + `--state-dir`, dispatches to local commands or the LangGraph engine. |
 
 ### LangGraph Engine (`src/langgraph/`)
 
@@ -44,7 +44,7 @@ symphony task "..."
 | `graph.mjs` | `buildGraph()` | Constructs a LangGraph `StateGraph` from `workflow.json`: roles become nodes, transitions become conditional edges. |
 | `nodes.mjs` | `makeRoleNode()` | Node factory. Builds a role's step prompt, invokes the agent runner, parses markers, records handoff. |
 | `prompt.mjs` | `buildPromptFromHandoffs()` | Token-efficient prompt builder. Uses only typed `{ role, provider, payload }` handoffs — never re-sends raw stdout logs. |
-| `state.mjs` | `SymphonyState` | LangGraph Annotation channel definitions. `priorHandoffs` accumulates across steps; other fields track task/step metadata. |
+| `state.mjs` | `MaestroState` | LangGraph Annotation channel definitions. `priorHandoffs` accumulates across steps; other fields track task/step metadata. |
 
 ### Adapters (`src/adapters/`)
 
@@ -65,13 +65,13 @@ Pure functions returning `{ command, args, cwd, stdin }` — no I/O.
 |---|---|---|
 | `src/herdr-agent-runner.mjs` | `HerdrAgentRunner` | **Default backend.** Runs each step in a herdr workspace → tab → pane. Polls `<role>.exit.txt` for completion. Cancels via `pane send-keys ctrl+c`. |
 | `src/herdr-client.mjs` | `herdrCli()`, `ensureServer()` | JSON-RPC wrapper around the `herdr` CLI. Auto-starts `herdr server` if the socket is absent. |
-| `src/agent-runner.mjs` | `TerminalAgentRunner`, `buildAgentCommand()` | Fallback backend (`SYMPHONY_BACKEND=terminal`). Direct `child_process.spawn`. Validates command name against `^[A-Za-z0-9_@%+=:,./-]+$`. Strips all env except `SYMPHONY_*` keys. |
+| `src/agent-runner.mjs` | `TerminalAgentRunner`, `buildAgentCommand()` | Fallback backend (`MAESTRO_BACKEND=terminal`). Direct `child_process.spawn`. Validates command name against `^[A-Za-z0-9_@%+=:,./-]+$`. Strips all env except `MAESTRO_*` keys. |
 
 ### Persistence (`src/db/`)
 
 | File | Export | Purpose |
 |---|---|---|
-| `store.mjs` | `SqliteTaskStore`, `openStore()` | SQLite-backed store using `node:sqlite` (`DatabaseSync`). DB at `.symphony/symphony.db`. Large logs stay on disk; DB stores paths. |
+| `store.mjs` | `SqliteTaskStore`, `openStore()` | SQLite-backed store using `node:sqlite` (`DatabaseSync`). DB at `.maestro/maestro.db`. Large logs stay on disk; DB stores paths. |
 
 **SQLite schema:**
 
@@ -103,10 +103,10 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
 
 | File | Export | Purpose |
 |---|---|---|
-| `src/orchestrator.mjs` | `SymphonyOrchestrator` | Top-level class for server mode: tick loop, Linear polling, task lifecycle coordination. |
+| `src/orchestrator.mjs` | `MaestroOrchestrator` | Top-level class for server mode: tick loop, Linear polling, task lifecycle coordination. |
 | `src/router.mjs` | `buildStepPrompt()`, `evaluatePlannerDecision()`, `resolveAgentFlow()` | Builds per-role prompts from handoffs; evaluates planner output to decide next step. |
 | `src/state-machine.mjs` | `transition(state, event)` | Pure next-state resolver. No I/O. Sink strings: `$halt`, `$ask_user`, `$complete`. |
-| `src/task-store.mjs` | `LocalTaskStore`, `DEFAULT_WORKFLOW`, `DEFAULT_LOCAL_STATE_DIR` | Legacy JSON task files in `.symphony/tasks/*.json`. `DEFAULT_WORKFLOW` is the inline default `workflow.json` object. |
+| `src/task-store.mjs` | `LocalTaskStore`, `DEFAULT_WORKFLOW`, `DEFAULT_LOCAL_STATE_DIR` | Legacy JSON task files in `.maestro/tasks/*.json`. `DEFAULT_WORKFLOW` is the inline default `workflow.json` object. |
 | `src/workflow.mjs` | `WorkflowStore`, `parseCliArgs()`, `renderPrompt()` | Loads and validates `workflow.json`; Liquid renders prompt templates. |
 | `src/workspace.mjs` | `WorkspaceManager` | Git worktree creation, checkout, merge, cleanup. |
 | `src/markers.mjs` | `parseAgentHandoff()`, `parseAgentQuestion()`, `parseReviewerOutput()`, `parseAgentActionRequests()` | Pure parsers for agent output markers. No I/O. Used by nodes.mjs and tests. |
@@ -115,10 +115,10 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
 
 | File | Export | Purpose |
 |---|---|---|
-| `src/http-server.mjs` | `startSymphonyHttpServer()` | Optional HTTP API at `/api/v1/state`, `/api/v1/state/:id`, `/api/v1/refresh`. Uses `node:http`. |
+| `src/http-server.mjs` | `startMaestroHttpServer()` | Optional HTTP API at `/api/v1/state`, `/api/v1/state/:id`, `/api/v1/refresh`. Uses `node:http`. |
 | `src/linear-tracker.mjs` | `LinearTrackerClient`, `normalizeLinearIssue()` | GraphQL Linear issue fetcher for server mode. |
 | `src/logger.mjs` | `StructuredLogger`, `nullLogger` | Structured JSON logger. |
-| `src/tui.mjs` + `src/tui-*.mjs` | `runSymphonyTui()` | Full interactive terminal UI. Provider/model/effort pickers, workflow editor, task browser. |
+| `src/tui.mjs` + `src/tui-*.mjs` | `runMaestroTui()` | Full interactive terminal UI. Provider/model/effort pickers, workflow editor, task browser. |
 | `src/mcp/server.mjs` | — | MCP stdio server (7 tools). See [mcp.md](mcp.md). |
 
 ---
@@ -126,12 +126,12 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
 ## Run Flow
 
 ```
-1. npm run symphony task "..."
-   → bin/symphony.mjs: parse CLI, inject --state-dir if local command
-   → resolveWorkspaceLocalInvocation(): cwd = INIT_CWD / SYMPHONY_CALLER_CWD / processCwd
+1. npm run maestro task "..."
+   → bin/maestro.mjs: parse CLI, inject --state-dir if local command
+   → resolveWorkspaceLocalInvocation(): cwd = INIT_CWD / MAESTRO_CALLER_CWD / processCwd
 
 2. runLangGraphTask(taskId, prompt, opts):
-   a. Open SqliteTaskStore at .symphony/symphony.db
+   a. Open SqliteTaskStore at .maestro/maestro.db
    b. Create task record (status: queued)
    c. Load workflow.json → buildGraph()
    d. Select runner: HerdrAgentRunner (default) or TerminalAgentRunner
@@ -150,7 +150,7 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
 5. Terminal state ($complete / $halt / $ask_user):
    - $complete → task status: succeeded
    - $halt     → task status: failed
-   - $ask_user → task status: waiting_user → resume via symphony message / approve / deny
+   - $ask_user → task status: waiting_user → resume via maestro message / approve / deny
 ```
 
 ### Continuation (approve / answer / continue)
@@ -164,14 +164,14 @@ When a task is resumed after an approval decision or question answer:
 
 ## Marker Protocol
 
-Agents signal intent to Symphony via structured markers embedded in stdout:
+Agents signal intent to Maestro via structured markers embedded in stdout:
 
 | Marker | Parser | Meaning |
 |---|---|---|
-| `SYMPHONY_HANDOFF: {...}` | `parseAgentHandoff()` | Role is done; typed payload for next role |
-| `SYMPHONY_QUESTION: {...}` | `parseAgentQuestion()` | Agent needs user input; task suspends |
-| `SYMPHONY_REVIEW: {...}` | `parseReviewerOutput()` | Reviewer's structured assessment |
-| `SYMPHONY_ACTION_REQUEST: {...}` | `parseAgentActionRequests()` | Agent requests a host command |
+| `MAESTRO_HANDOFF: {...}` | `parseAgentHandoff()` | Role is done; typed payload for next role |
+| `MAESTRO_QUESTION: {...}` | `parseAgentQuestion()` | Agent needs user input; task suspends |
+| `MAESTRO_REVIEW: {...}` | `parseReviewerOutput()` | Reviewer's structured assessment |
+| `MAESTRO_ACTION_REQUEST: {...}` | `parseAgentActionRequests()` | Agent requests a host command |
 
 ---
 
@@ -201,6 +201,6 @@ Select it in `src/langgraph/engine.mjs` `_getRunner()`.
 
 ### Add a new workflow role / state
 
-1. Edit `.symphony/workflow.json`: add a role entry and wire transitions.
+1. Edit `.maestro/workflow.json`: add a role entry and wire transitions.
 2. Add a prompt template in `WORKFLOW.md` (or inline in `workflow.json`).
 3. Update `src/router.mjs` `buildStepPrompt()` if the new role needs custom context injection.

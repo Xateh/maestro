@@ -1,29 +1,29 @@
-# Symphony Configuration
+# Maestro Configuration
 
 ## State Directory
 
-Symphony reads and writes all persistent state to a `.symphony/` directory. The location is
+Maestro reads and writes all persistent state to a `.maestro/` directory. The location is
 resolved as follows (first match wins):
 
 1. `--state-dir <path>` CLI flag
-2. `PACKAGE_ROOT/.symphony` (default for local commands — `PACKAGE_ROOT` = directory above `bin/symphony.mjs`)
-3. `SYMPHONY_ROOT` env var (used by the MCP server to find the runtime project root)
-4. Walk up from `process.cwd()` until a `.symphony/` directory is found (MCP server discovery)
+2. `PACKAGE_ROOT/.maestro` (default for local commands — `PACKAGE_ROOT` = directory above `bin/maestro.mjs`)
+3. `MAESTRO_ROOT` env var (used by the MCP server to find the runtime project root)
+4. Walk up from `process.cwd()` until a `.maestro/` directory is found (MCP server discovery)
 
-> **Nested package note:** if you install Symphony as a subpackage (e.g. `workspace/symphony/`),
-> the default state dir for CLI invocations is `workspace/symphony/.symphony`. The workspace's
-> existing `.symphony/` state is unaffected. To target the workspace state, pass
-> `--state-dir /path/to/workspace/.symphony` or set `SYMPHONY_ROOT`.
+> **Nested package note:** if you install Maestro as a subpackage (e.g. `workspace/maestro/`),
+> the default state dir for CLI invocations is `workspace/maestro/.maestro`. The workspace's
+> existing `.maestro/` state is unaffected. To target the workspace state, pass
+> `--state-dir /path/to/workspace/.maestro` or set `MAESTRO_ROOT`.
 
 ---
 
-## `.symphony/` Layout
+## `.maestro/` Layout
 
 ```
-.symphony/
+.maestro/
   config.json       # v2 — runtime provider and behaviour config
   workflow.json     # v1 — roles, transitions, prompt templates
-  symphony.db       # SQLite — tasks, handoffs (LangGraph engine)
+  maestro.db       # SQLite — tasks, handoffs (LangGraph engine)
   tasks/            # legacy per-task JSON files (pre-LangGraph)
   runs/             # per-run artifact directories
     <task-id>/
@@ -59,7 +59,7 @@ Key fields:
   "context_retry_limit": 3,
 
   // Worktree settings
-  "worktree_root": ".symphony/worktrees",
+  "worktree_root": ".maestro/worktrees",
   "worktree_mode_default": "none",  // "none" | "isolated" | "shared"
   "max_parallel_worktrees": 4,
   "project_close_merge_mode": "squash",

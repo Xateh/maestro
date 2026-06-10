@@ -8,13 +8,13 @@ import path from "node:path";
 
 import { runLangGraphTask } from "../src/langgraph/engine.mjs";
 import { CodexAgentRunner } from "../src/codex-client.mjs";
-import { startSymphonyHttpServer } from "../src/http-server.mjs";
+import { startMaestroHttpServer } from "../src/http-server.mjs";
 import { LinearTrackerClient } from "../src/linear-tracker.mjs";
 import { StructuredLogger } from "../src/logger.mjs";
-import { SymphonyOrchestrator } from "../src/orchestrator.mjs";
+import { MaestroOrchestrator } from "../src/orchestrator.mjs";
 import { evaluatePlannerDecision } from "../src/router.mjs";
 import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore, slugifyTaskTitle } from "../src/task-store.mjs";
-import { formatFeedbackReceipt, formatTaskDetails, runSymphonyTui } from "../src/tui.mjs";
+import { formatFeedbackReceipt, formatTaskDetails, runMaestroTui } from "../src/tui.mjs";
 import {
   WorkflowStore,
   parseCliArgs,
@@ -53,7 +53,7 @@ export function resolveWorkspaceLocalInvocation({
   env = process.env,
   processCwd = process.cwd(),
 } = {}) {
-  const callerCwd = env.SYMPHONY_CALLER_CWD || env.INIT_CWD || processCwd;
+  const callerCwd = env.MAESTRO_CALLER_CWD || env.INIT_CWD || processCwd;
   const nextArgs = [...args];
   if (LOCAL_COMMANDS.has(nextArgs[0]) && !hasStateDir(nextArgs)) {
     nextArgs.push("--state-dir", path.join(PACKAGE_ROOT, DEFAULT_LOCAL_STATE_DIR));
@@ -90,7 +90,7 @@ function buildRuntime({ workflowStore, logger }) {
     tracker,
     logger,
   });
-  const orchestrator = new SymphonyOrchestrator({
+  const orchestrator = new MaestroOrchestrator({
     config,
     tracker,
     runner,
@@ -121,7 +121,7 @@ async function applyReload({ workflowStore, runtime, logger, previous }) {
   return true;
 }
 
-export async function startSymphony({ workflowPath, port = null, env = process.env, logger = new StructuredLogger() }) {
+export async function startMaestro({ workflowPath, port = null, env = process.env, logger = new StructuredLogger() }) {
   const workflowStore = new WorkflowStore({ workflowPath, env, logger });
   await workflowStore.loadInitial();
   validateDispatchConfig(workflowStore.current.config);
@@ -136,13 +136,13 @@ export async function startSymphony({ workflowPath, port = null, env = process.e
   const effectivePort = port ?? workflowStore.current.config.server.port;
   const httpServer = effectivePort === null
     ? null
-    : await startSymphonyHttpServer({
+    : await startMaestroHttpServer({
       orchestrator: runtime.orchestrator,
       port: effectivePort,
       host: "127.0.0.1",
     });
   if (httpServer) {
-    logger.info("symphony_http_started", { host: httpServer.host, port: httpServer.port });
+    logger.info("maestro_http_started", { host: httpServer.host, port: httpServer.port });
   }
 
   const poll = async () => {
@@ -155,7 +155,7 @@ export async function startSymphony({ workflowPath, port = null, env = process.e
       validateDispatchConfig(workflowStore.current.config);
       await runtime.orchestrator.tick();
     } catch (error) {
-      logger.error("symphony_tick_failed", { error: error.message });
+      logger.error("maestro_tick_failed", { error: error.message });
     }
   };
   const interval = setInterval(() => {
@@ -180,13 +180,13 @@ async function main() {
   const rawArgs = process.argv.slice(2);
   if (LOCAL_COMMANDS.has(rawArgs[0])) {
     const invocation = resolveWorkspaceLocalInvocation({ args: rawArgs });
-    await runLocalSymphonyCommand(invocation);
+    await runLocalMaestroCommand(invocation);
     return;
   }
 
   const args = parseCliArgs(process.argv);
   const logger = new StructuredLogger();
-  const service = await startSymphony({ ...args, logger });
+  const service = await startMaestro({ ...args, logger });
   const shutdown = async () => {
     await service.stop();
     process.exit(0);
@@ -991,7 +991,7 @@ function buildGitActionRequest({ task, operation, taskCwd, snapshot, index }) {
   if (operation === "commit") {
     return {
       ...base,
-      normalized_args: ["commit", "-m", `symphony: ${task.id}`],
+      normalized_args: ["commit", "-m", `maestro: ${task.id}`],
       file_set_summary: snapshot.status_text,
     };
   }
@@ -1054,7 +1054,7 @@ async function buildNextGitActionRequestForTask({ task, taskCwd, gitRunner }) {
 }
 
 function projectWorktreeRoot(cwd, config) {
-  return path.resolve(cwd, config.worktree_root ?? ".symphony/worktrees");
+  return path.resolve(cwd, config.worktree_root ?? ".maestro/worktrees");
 }
 
 function nowIso() {
@@ -1090,11 +1090,11 @@ function sanitizeEnvObject(value) {
   );
 }
 
-async function assertSymphonyRootIgnored({ gitRunner, cwd }) {
+async function assertMaestroRootIgnored({ gitRunner, cwd }) {
   try {
-    await runGit(gitRunner, cwd, ["check-ignore", "-q", ".symphony/"]);
+    await runGit(gitRunner, cwd, ["check-ignore", "-q", ".maestro/"]);
   } catch {
-    throw new Error("symphony_root_not_ignored: add .symphony/ to .gitignore before using project worktrees");
+    throw new Error("maestro_root_not_ignored: add .maestro/ to .gitignore before using project worktrees");
   }
 }
 
@@ -1129,7 +1129,7 @@ async function countWorktrees(worktreeRoot) {
 async function createProject({ taskStore, id, target, cwd, stdout, gitRunner }) {
   const config = await taskStore.readConfig();
   const projectId = normalizeProjectId(id);
-  await assertSymphonyRootIgnored({ gitRunner, cwd });
+  await assertMaestroRootIgnored({ gitRunner, cwd });
   const currentBranch = await gitStdout(gitRunner, cwd, ["branch", "--show-current"]);
   const targetBranch = target || currentBranch || "main";
   await assertCleanTarget({ gitRunner, cwd, targetBranch });
@@ -1139,7 +1139,7 @@ async function createProject({ taskStore, id, target, cwd, stdout, gitRunner }) 
     throw new Error(`max_parallel_worktrees_exceeded: ${ownedCount}`);
   }
 
-  const integrationBranch = `symphony/${projectId}/integration`;
+  const integrationBranch = `maestro/${projectId}/integration`;
   await assertBranchUnused({ gitRunner, cwd, branch: integrationBranch });
   const integrationWorktree = path.join(worktreeRoot, projectId, "integration");
   const targetHead = await gitStdout(gitRunner, cwd, ["rev-parse", "HEAD"]);
@@ -1255,7 +1255,7 @@ async function ensureProjectTaskSetup({ taskStore, task, cwd, gitRunner }) {
 
   if (task.worktree_mode === "project-worktree" && (!branch || !worktreePath)) {
     alias = alias || taskAliasForProject(project, task.prompt);
-    branch = `symphony/${project.id}/task/${alias}`;
+    branch = `maestro/${project.id}/task/${alias}`;
     await assertBranchUnused({ gitRunner, cwd, branch });
     worktreePath = path.join(project.worktree_root, project.id, alias);
     await fs.mkdir(path.dirname(worktreePath), { recursive: true });
@@ -1312,7 +1312,7 @@ async function createLocalTaskFromParsed({ parsed, taskStore, defaults, cwd, git
     }
     if (!pathConflict && worktreeMode === "project-worktree") {
       const alias = taskAliasForProject(project, parsed.prompt);
-      branch = `symphony/${project.id}/task/${alias}`;
+      branch = `maestro/${project.id}/task/${alias}`;
       await assertBranchUnused({ gitRunner, cwd, branch });
       worktreePath = path.join(project.worktree_root, project.id, alias);
       await fs.mkdir(path.dirname(worktreePath), { recursive: true });
@@ -1639,7 +1639,7 @@ async function settleActionGate({ taskStore, taskId, cwd, stdout, stderr, gitRun
           code: "git_publish_unsupported_in_agent_sandbox",
           operations: intent.operations,
           detected_operations: intent.operations,
-          reason: "Git host action requires explicit Symphony approval but no supported next action could be built.",
+          reason: "Git host action requires explicit Maestro approval but no supported next action could be built.",
         },
         stderr,
       });
@@ -1660,7 +1660,7 @@ async function settleActionGate({ taskStore, taskId, cwd, stdout, stderr, gitRun
         required_action: "request_approval",
         risk_level: "high",
         confidence: "high",
-        summary: "Git host action requires explicit Symphony approval.",
+        summary: "Git host action requires explicit Maestro approval.",
         evidence: [],
         blockers: blocker ? [blocker] : [],
         continuation_attempts: 0,
@@ -2114,11 +2114,11 @@ async function finalizeProjectTask({ taskStore, task, gitRunner, stdout }) {
   const dirty = await gitStdout(gitRunner, task.worktree_path, ["status", "--porcelain"]);
   if (dirty) {
     await runGit(gitRunner, task.worktree_path, ["add", "-A"]);
-    await runGit(gitRunner, task.worktree_path, ["commit", "-m", `symphony: ${task.id}`]);
+    await runGit(gitRunner, task.worktree_path, ["commit", "-m", `maestro: ${task.id}`]);
   }
   const project = await taskStore.readProject(task.project_id);
   try {
-    await runGit(gitRunner, project.integration_worktree, ["merge", "--no-ff", task.branch, "-m", `symphony: merge ${task.id}`]);
+    await runGit(gitRunner, project.integration_worktree, ["merge", "--no-ff", task.branch, "-m", `maestro: merge ${task.id}`]);
     writeLine(stdout, `task ${task.id} merged into ${project.integration_branch}`);
     return taskStore.updateTask(task.id, {
       blockers: (task.blockers ?? []).filter((blocker) => blocker.code !== "task_merge_conflict"),
@@ -2215,7 +2215,7 @@ async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, run
         required_action: "request_approval",
         risk_level: "high",
         confidence: "high",
-        summary: "Git host action requires explicit Symphony approval.",
+        summary: "Git host action requires explicit Maestro approval.",
         evidence: [],
         blockers: [gitPublishBlocker],
         continuation_attempts: 0,
@@ -2231,7 +2231,7 @@ async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, run
   currentTask = await taskStore.updateTask(taskId, { status: "running" });
   return runLangGraphTask(taskId, {
     taskStore,
-    symphonyRoot: taskStore.root,
+    maestroRoot: taskStore.root,
     runner,
     stdout,
     stderr,
@@ -2887,7 +2887,7 @@ async function closeProject({ taskStore, id, cwd, stdout, gitRunner, mergeMode =
   try {
     await runGit(gitRunner, cwd, ["switch", project.target_branch]);
     await runGit(gitRunner, cwd, ["merge", "--squash", project.integration_branch]);
-    await runGit(gitRunner, cwd, ["commit", "-m", `symphony: close ${project.id}`]);
+    await runGit(gitRunner, cwd, ["commit", "-m", `maestro: close ${project.id}`]);
     const targetMergeCommit = await gitStdout(gitRunner, cwd, ["rev-parse", "HEAD"]);
     const closed = await taskStore.updateProject(project.id, {
       status: "closed",
@@ -2906,7 +2906,7 @@ async function closeProject({ taskStore, id, cwd, stdout, gitRunner, mergeMode =
     return { project: closed };
   } catch (error) {
     const mergeFix = await taskStore.createTask({
-      prompt: `Resolve Symphony merge conflict for project ${project.id}`,
+      prompt: `Resolve Maestro merge conflict for project ${project.id}`,
       mode: "merge-fix",
       cwd: project.integration_worktree,
       plannerPolicy: "off",
@@ -3028,7 +3028,7 @@ async function runProjectCommand({ args, cwd, stdout, store, gitRunner }) {
   if (parsed.action === "status") {
     const projects = await taskStore.listProjects();
     if (projects.length === 0) {
-      writeLine(stdout, "No Symphony projects");
+      writeLine(stdout, "No Maestro projects");
     }
     for (const project of projects) {
       writeLine(stdout, `${project.id} ${project.status} ${project.target_branch ?? "-"}`);
@@ -3075,7 +3075,7 @@ function makeStore(parsed, store) {
   return store ?? new LocalTaskStore({ root: parsed.stateDir });
 }
 
-export async function runLocalSymphonyCommand({
+export async function runLocalMaestroCommand({
   args,
   cwd = process.cwd(),
   stdin = process.stdin,
@@ -3097,7 +3097,7 @@ export async function runLocalSymphonyCommand({
   if (command === "tui") {
     const parsed = parseSharedStateArgs(args, cwd);
     const taskStore = makeStore(parsed, store);
-    return runSymphonyTui({
+    return runMaestroTui({
       cwd,
       stdout,
       stdin,
@@ -3503,7 +3503,7 @@ export async function runLocalSymphonyCommand({
     const taskStore = makeStore(parsed, store);
     const tasks = await recoverStaleRunningTasks(taskStore);
     if (tasks.length === 0) {
-      writeLine(stdout, "No Symphony tasks");
+      writeLine(stdout, "No Maestro tasks");
     }
     for (const task of tasks) {
       writeLine(stdout, `${task.id} ${task.status} ${task.mode}`);
@@ -3528,7 +3528,7 @@ export async function runLocalSymphonyCommand({
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    process.stderr.write(`symphony_failed ${error.stack ?? error.message}\n`);
+    process.stderr.write(`maestro_failed ${error.stack ?? error.message}\n`);
     process.exitCode = 1;
   });
 }

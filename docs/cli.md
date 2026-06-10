@@ -1,13 +1,13 @@
-# Symphony CLI Reference
+# Maestro CLI Reference
 
 ## Invocation
 
 ```bash
-node bin/symphony.mjs <command> [args...]
+node bin/maestro.mjs <command> [args...]
 # or, after npm link:
-symphony <command> [args...]
+maestro <command> [args...]
 # or via npm script:
-npm run symphony <command> [args...]
+npm run maestro <command> [args...]
 ```
 
 ---
@@ -16,7 +16,7 @@ npm run symphony <command> [args...]
 
 | Flag | Description |
 |---|---|
-| `--state-dir <path>` | Override the `.symphony/` directory (default: `PACKAGE_ROOT/.symphony`) |
+| `--state-dir <path>` | Override the `.maestro/` directory (default: `PACKAGE_ROOT/.maestro`) |
 | `--workflow-path <path>` | Override `WORKFLOW.md` / `workflow.json` path |
 | `--port <n>` | HTTP API port (0 = disable) |
 
@@ -29,8 +29,8 @@ npm run symphony <command> [args...]
 Create and run a full pipeline: **planner → executor → reviewer**.
 
 ```bash
-symphony task "Add a /healthcheck endpoint"
-symphony task "Refactor auth module" --state-dir /path/to/project/.symphony
+maestro task "Add a /healthcheck endpoint"
+maestro task "Refactor auth module" --state-dir /path/to/project/.maestro
 ```
 
 ### `plan-only "<prompt>"`
@@ -38,7 +38,7 @@ symphony task "Refactor auth module" --state-dir /path/to/project/.symphony
 Planner only. Produces a plan handoff and stops. Review it before running the full pipeline.
 
 ```bash
-symphony plan-only "Migrate database schema to v2"
+maestro plan-only "Migrate database schema to v2"
 ```
 
 ### `run-task <id>`
@@ -46,7 +46,7 @@ symphony plan-only "Migrate database schema to v2"
 Re-run or continue an existing task by ID.
 
 ```bash
-symphony run-task 20260608-120000-add-healthcheck
+maestro run-task 20260608-120000-add-healthcheck
 ```
 
 ---
@@ -58,7 +58,7 @@ symphony run-task 20260608-120000-add-healthcheck
 Print orchestrator runtime state (active tasks, provider config, last run).
 
 ```bash
-symphony status
+maestro status
 ```
 
 ### `inspect <id>`
@@ -66,20 +66,20 @@ symphony status
 Dump full JSON state for a task.
 
 ```bash
-symphony inspect 20260608-120000-add-healthcheck
+maestro inspect 20260608-120000-add-healthcheck
 ```
 
 ### `list` (alias for `status` in list mode)
 
 ```bash
-symphony list
+maestro list
 ```
 
 ---
 
 ## Interaction Commands
 
-These are used after a task emits `SYMPHONY_QUESTION` or `SYMPHONY_ACTION_REQUEST` and enters
+These are used after a task emits `MAESTRO_QUESTION` or `MAESTRO_ACTION_REQUEST` and enters
 `waiting_user` state.
 
 ### `message <id> "<text>"`
@@ -87,7 +87,7 @@ These are used after a task emits `SYMPHONY_QUESTION` or `SYMPHONY_ACTION_REQUES
 Send a text answer to a waiting task.
 
 ```bash
-symphony message 20260608-120000-add-healthcheck "Use the existing Express router, not Fastify"
+maestro message 20260608-120000-add-healthcheck "Use the existing Express router, not Fastify"
 ```
 
 ### `approve <id>`
@@ -95,7 +95,7 @@ symphony message 20260608-120000-add-healthcheck "Use the existing Express route
 Approve a task waiting for a go/no-go decision.
 
 ```bash
-symphony approve 20260608-120000-add-healthcheck
+maestro approve 20260608-120000-add-healthcheck
 ```
 
 ### `deny <id> "<reason>"`
@@ -103,7 +103,7 @@ symphony approve 20260608-120000-add-healthcheck
 Deny a task; provide a reason that feeds back into the executor prompt.
 
 ```bash
-symphony deny 20260608-120000-add-healthcheck "Do not touch the auth module"
+maestro deny 20260608-120000-add-healthcheck "Do not touch the auth module"
 ```
 
 ### `approve-action <id> <action-id>`
@@ -111,7 +111,7 @@ symphony deny 20260608-120000-add-healthcheck "Do not touch the auth module"
 Approve a specific `host_command` action request.
 
 ```bash
-symphony approve-action 20260608-120000-add-healthcheck act_abc123
+maestro approve-action 20260608-120000-add-healthcheck act_abc123
 ```
 
 ### `deny-action <id> <action-id> "<reason>"`
@@ -119,7 +119,7 @@ symphony approve-action 20260608-120000-add-healthcheck act_abc123
 Deny a specific action request.
 
 ```bash
-symphony deny-action 20260608-120000-add-healthcheck act_abc123 "unsafe command"
+maestro deny-action 20260608-120000-add-healthcheck act_abc123 "unsafe command"
 ```
 
 ### `run-action <id> <action-id>`
@@ -127,7 +127,7 @@ symphony deny-action 20260608-120000-add-healthcheck act_abc123 "unsafe command"
 Execute an approved action request immediately.
 
 ```bash
-symphony run-action 20260608-120000-add-healthcheck act_abc123
+maestro run-action 20260608-120000-add-healthcheck act_abc123
 ```
 
 ### `edit-action <id> <action-id>`
@@ -139,7 +139,7 @@ Open the action request in an editor before approving.
 Retry a failed task from the last checkpoint.
 
 ```bash
-symphony retry 20260608-120000-add-healthcheck
+maestro retry 20260608-120000-add-healthcheck
 ```
 
 ### `extend-timeout <id> <ms>`
@@ -147,7 +147,7 @@ symphony retry 20260608-120000-add-healthcheck
 Extend the timeout for a running task.
 
 ```bash
-symphony extend-timeout 20260608-120000-add-healthcheck 60000
+maestro extend-timeout 20260608-120000-add-healthcheck 60000
 ```
 
 ### `cancel <id>`
@@ -155,7 +155,7 @@ symphony extend-timeout 20260608-120000-add-healthcheck 60000
 Cancel a running or waiting task.
 
 ```bash
-symphony cancel 20260608-120000-add-healthcheck
+maestro cancel 20260608-120000-add-healthcheck
 ```
 
 ### `mark-done <id>`
@@ -163,7 +163,7 @@ symphony cancel 20260608-120000-add-healthcheck
 Manually mark a task as done (e.g. after out-of-band resolution).
 
 ```bash
-symphony mark-done 20260608-120000-add-healthcheck
+maestro mark-done 20260608-120000-add-healthcheck
 ```
 
 ---
@@ -196,7 +196,7 @@ Launch the full interactive terminal UI. Browse tasks, pick providers, edit work
 waiting tasks, approve/deny action requests.
 
 ```bash
-symphony tui
+maestro tui
 ```
 
 ---
@@ -205,9 +205,9 @@ symphony tui
 
 | Variable | Default | Description |
 |---|---|---|
-| `SYMPHONY_BACKEND` | `"herdr"` | Set to `"terminal"` to bypass herdr and use direct spawn |
-| `SYMPHONY_ROOT` | cwd walk | Override runtime root (parent of `.symphony/`) — used by MCP server |
-| `SYMPHONY_CALLER_CWD` | — | Caller working directory (set by herdr integration) |
+| `MAESTRO_BACKEND` | `"herdr"` | Set to `"terminal"` to bypass herdr and use direct spawn |
+| `MAESTRO_ROOT` | cwd walk | Override runtime root (parent of `.maestro/`) — used by MCP server |
+| `MAESTRO_CALLER_CWD` | — | Caller working directory (set by herdr integration) |
 | `INIT_CWD` | — | npm-style caller cwd (set by npm when running scripts) |
 | `HERDR_BIN` | `"herdr"` | Path to the herdr binary |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr daemon unix socket |

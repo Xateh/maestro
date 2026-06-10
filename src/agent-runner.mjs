@@ -42,7 +42,7 @@ function shellQuote(value) {
 export function safeRunnerEnv(env = {}) {
   return Object.fromEntries(
     Object.entries(env)
-      .filter(([key, value]) => key.startsWith("SYMPHONY_") && value !== undefined && value !== null)
+      .filter(([key, value]) => key.startsWith("MAESTRO_") && value !== undefined && value !== null)
       .map(([key, value]) => [key, String(value)]),
   );
 }

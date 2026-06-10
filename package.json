@@ -1,5 +1,5 @@
 {
-  "name": "symphony-orchestrator",
+  "name": "maestro-orchestrator",
   "version": "0.1.0",
   "description": "Multi-agent plan→execute→review orchestrator built on LangGraph",
   "type": "module",
@@ -7,10 +7,10 @@
     "node": ">=22.5"
   },
   "bin": {
-    "symphony": "bin/symphony.mjs"
+    "maestro": "bin/maestro.mjs"
   },
   "exports": {
-    ".": "./bin/symphony.mjs",
+    ".": "./bin/maestro.mjs",
     "./mcp": "./src/mcp/server.mjs"
   },
   "files": [
@@ -18,13 +18,13 @@
     "src/"
   ],
   "scripts": {
-    "symphony": "node bin/symphony.mjs",
-    "symphony:mcp": "node src/mcp/server.mjs",
-    "test": "node --test test/symphony-package.test.mjs test/symphony-mcp.test.mjs test/symphony.test.mjs test/symphony-engine.test.mjs",
-    "test:package": "node --test test/symphony-package.test.mjs",
-    "test:symphony": "node --test test/symphony.test.mjs",
-    "test:mcp": "node --test test/symphony-mcp.test.mjs",
-    "test:enterprise": "npm run test:package && npm run test:symphony && npm run test:mcp",
+    "maestro": "node bin/maestro.mjs",
+    "maestro:mcp": "node src/mcp/server.mjs",
+    "test": "node --test test/maestro-package.test.mjs test/maestro-mcp.test.mjs test/maestro.test.mjs test/maestro-engine.test.mjs",
+    "test:package": "node --test test/maestro-package.test.mjs",
+    "test:maestro": "node --test test/maestro.test.mjs",
+    "test:mcp": "node --test test/maestro-mcp.test.mjs",
+    "test:enterprise": "npm run test:package && npm run test:maestro && npm run test:mcp",
     "headroom:setup": "bash scripts/headroom-setup.sh"
   },
   "dependencies": {

@@ -1,5 +1,5 @@
 /**
- * Headroom compression wrapper for Symphony prior-output compaction.
+ * Headroom compression wrapper for Maestro prior-output compaction.
  *
  * Sends agent stdout to the headroom proxy's /v1/compress endpoint (OSS,
  * no license required). Start the proxy before use:
@@ -13,10 +13,10 @@
  * for the same content hit the cache at ~0.1s. Falls back to null when the
  * proxy is not running, so byte-trim remains active.
  *
- * To enable: set prior_output_compression:"headroom" in .symphony/config.json.
+ * To enable: set prior_output_compression:"headroom" in .maestro/config.json.
  * Port is read from HEADROOM_PROXY_URL env var (default http://localhost:8787).
  * For transparent LLM-call compression (zero-code): set
- *   ANTHROPIC_BASE_URL=http://127.0.0.1:8787 in Symphony's env — all spawned
+ *   ANTHROPIC_BASE_URL=http://127.0.0.1:8787 in Maestro's env — all spawned
  *   agents inherit it via agent-runner.mjs:203.
  *
  * Returns:

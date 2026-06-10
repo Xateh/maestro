@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-export const DEFAULT_LOCAL_STATE_DIR = ".symphony";
+export const DEFAULT_LOCAL_STATE_DIR = ".maestro";
 
 export const DEFAULT_PROVIDERS = {
   claude: {
@@ -98,7 +98,7 @@ export const DEFAULT_LOCAL_CONFIG_V2 = {
   planner_policy: "auto",
   review_enabled: true,
   timeout_ms: 3_600_000,
-  worktree_root: ".symphony/worktrees",
+  worktree_root: ".maestro/worktrees",
   worktree_mode_default: "auto",
   max_parallel_worktrees: 4,
   stream_tail_bytes: 65_536,

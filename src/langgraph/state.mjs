@@ -1,5 +1,5 @@
 /**
- * LangGraph state definition for the Symphony orchestration graph.
+ * LangGraph state definition for the Maestro orchestration graph.
  *
  * priorHandoffs is the core token-efficiency mechanism: it accumulates ONLY
  * typed compact payloads ({role, provider, payload, log_path}) — never raw
@@ -8,7 +8,7 @@
 
 import { Annotation } from "@langchain/langgraph";
 
-export const SymphonyState = Annotation.Root({
+export const MaestroState = Annotation.Root({
   /** Current task object (from DB). Last-write wins. */
   task: Annotation({
     reducer: (_, y) => y,

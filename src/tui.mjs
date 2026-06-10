@@ -456,7 +456,7 @@ async function runSettingsMenu({ ask, output, store, color = false }) {
   }
 }
 
-export function formatTaskList(tasks = [], { emptyMessage = "No Symphony tasks yet.", color = false } = {}) {
+export function formatTaskList(tasks = [], { emptyMessage = "No Maestro tasks yet.", color = false } = {}) {
   if (tasks.length === 0) return emptyMessage;
   const theme = createTheme({ color });
   const widths = {
@@ -487,7 +487,7 @@ export function formatTaskList(tasks = [], { emptyMessage = "No Symphony tasks y
   return [theme.heading(header), ...rows].join("\n");
 }
 
-export function formatProjectList(projects = [], { emptyMessage = "No Symphony projects yet.", color = false } = {}) {
+export function formatProjectList(projects = [], { emptyMessage = "No Maestro projects yet.", color = false } = {}) {
   if (projects.length === 0) return emptyMessage;
   const theme = createTheme({ color });
   const widths = {
@@ -875,7 +875,7 @@ function requestById(task = {}, actionId = "") {
   return (task.action_requests ?? []).find((request) => request.id === actionId) ?? null;
 }
 
-export async function runSymphonyTui({
+export async function runMaestroTui({
   cwd,
   stdout = process.stdout,
   stdin = process.stdin,
@@ -923,7 +923,7 @@ export async function runSymphonyTui({
   try {
     let done = false;
     while (!done) {
-      stdout.write(`\n${formatPageHeader("Symphony", { color, accent: ANSI.cyan })}\n1. New task\n2. Tasks\n3. Settings\n4. Projects\nq. Quit\n`);
+      stdout.write(`\n${formatPageHeader("Maestro", { color, accent: ANSI.cyan })}\n1. New task\n2. Tasks\n3. Settings\n4. Projects\nq. Quit\n`);
       if (activeRuns.size > 0) {
         stdout.write(`Active tasks: ${activeRuns.size}\n`);
       }
@@ -1011,13 +1011,13 @@ export async function runSymphonyTui({
         while (!leaveTasks) {
           const allTasks = await store.listTasks();
           if (allTasks.length === 0) {
-            stdout.write(`\n${formatPageHeader("Tasks (active)", { color, accent: ANSI.blue })}\nNo Symphony tasks yet.\n`);
+            stdout.write(`\n${formatPageHeader("Tasks (active)", { color, accent: ANSI.blue })}\nNo Maestro tasks yet.\n`);
             break;
           }
           const tasks = filterTasksForView(allTasks, view);
           const emptyMessage = view === "active"
-            ? "No active Symphony tasks. Type all to see completed and failed tasks."
-            : "No Symphony tasks yet.";
+            ? "No active Maestro tasks. Type all to see completed and failed tasks."
+            : "No Maestro tasks yet.";
           stdout.write(`\n${formatPageHeader(`Tasks (${view}, newest first)`, { color, accent: ANSI.blue })}\n${formatTaskList(tasks, { emptyMessage, color })}\n`);
           const selection = String(await ask("Inspect alias/id, json <alias/id>, filter active|needs-human|blocked|incomplete|failed|done|all, or blank: ")).trim();
           const normalized = selection.toLowerCase();

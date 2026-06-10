@@ -1,8 +1,8 @@
 /**
- * LangGraph execution engine for Symphony.
+ * LangGraph execution engine for Maestro.
  *
- * Activated via SYMPHONY_ENGINE=langgraph. Replaces the state-machine loop in
- * symphony.mjs with a LangGraph StateGraph while keeping every other concern
+ * Activated via MAESTRO_ENGINE=langgraph. Replaces the state-machine loop in
+ * maestro.mjs with a LangGraph StateGraph while keeping every other concern
  * (herdr CLI execution, run-dir files, MCP tools) unchanged.
  *
  * Token-efficiency contract: only compact typed Handoff objects flow between
@@ -19,13 +19,13 @@ import { resolveInitialState, isTerminalAfterState } from "../state-machine.mjs"
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
 import { REVIEW_MAX_CONTINUATIONS, skippedReview } from "../markers.mjs";
 
-// symphonyRoot = taskStore.root = resolved .symphony/ directory
-function _dbPath(symphonyRoot) {
-  return path.join(symphonyRoot, "symphony.db");
+// maestroRoot = taskStore.root = resolved .maestro/ directory
+function _dbPath(maestroRoot) {
+  return path.join(maestroRoot, "maestro.db");
 }
 
 function _getRunner(timeoutMs) {
-  return process.env.SYMPHONY_BACKEND === "terminal"
+  return process.env.MAESTRO_BACKEND === "terminal"
     ? new TerminalAgentRunner({ timeoutMs })
     : new HerdrAgentRunner({ timeoutMs });
 }
@@ -43,7 +43,7 @@ function _reviewStatusForCompletionState(review) {
 }
 
 /**
- * Apply reviewer outcome — full parity with symphony.mjs applyReviewOutcome.
+ * Apply reviewer outcome — full parity with maestro.mjs applyReviewOutcome.
  * Operates on the SQLite DB; caller mirrors to legacy taskStore after.
  */
 async function _applyReviewerOutcome(db, taskId, review, ops) {
@@ -145,7 +145,7 @@ async function _applyReviewerOutcome(db, taskId, review, ops) {
       id: `a${(task.approval_decisions ?? []).length + 1}`,
       role: "reviewer",
       provider: (task.steps ?? []).findLast?.((s) => s.role === "reviewer")?.provider ?? null,
-      action: review.approval_request?.action || "Approval required before Symphony can continue.",
+      action: review.approval_request?.action || "Approval required before Maestro can continue.",
       reason: review.approval_request?.reason || review.summary || "",
       requested_at: new Date().toISOString(),
     } : null;
@@ -219,16 +219,16 @@ function _mirrorPatch(dbTask) {
  * @param {string} taskId
  * @param {object} opts
  * @param {object} opts.taskStore       - LocalTaskStore (legacy JSON store; used for workflow + config reads, status mirror)
- * @param {string} opts.symphonyRoot    - repo root (parent of .symphony/)
+ * @param {string} opts.maestroRoot    - repo root (parent of .maestro/)
  * @param {object} [opts.runner]        - override agent runner (for tests)
  * @param {object} [opts.stdout]        - writable for progress lines
  * @param {object} [opts.stderr]        - writable for error lines
- * @param {object} [opts.ops]           - project-mode helpers bound by symphony.mjs
+ * @param {object} [opts.ops]           - project-mode helpers bound by maestro.mjs
  * @returns {Promise<{task: object}>}
  */
 export async function runLangGraphTask(taskId, {
   taskStore,
-  symphonyRoot = DEFAULT_LOCAL_STATE_DIR,
+  maestroRoot = DEFAULT_LOCAL_STATE_DIR,
   runner = null,
   stdout = process.stdout,
   stderr = process.stderr,
@@ -237,7 +237,7 @@ export async function runLangGraphTask(taskId, {
   const write = (stream, msg) => { try { stream.write(`${msg}\n`); } catch {} };
 
   // ── open SQLite store ─────────────────────────────────────────────────────
-  const db = openStore(_dbPath(symphonyRoot));
+  const db = openStore(_dbPath(maestroRoot));
 
   // ── load or migrate task into DB ──────────────────────────────────────────
   // Re-read from legacy store so CLI-command updates (extend-timeout, message,

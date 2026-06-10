@@ -100,7 +100,7 @@ function coerceConfig(config) {
   };
 }
 
-export class SymphonyOrchestrator {
+export class MaestroOrchestrator {
   constructor({
     config,
     tracker,

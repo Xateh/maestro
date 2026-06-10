@@ -67,17 +67,17 @@ test("makeRoleNode: returns done immediately when role already in priorHandoffs"
 
 // ── makeRoleNode: question event ─────────────────────────────────────────────────
 
-test("makeRoleNode: emits question event when agent stdout contains SYMPHONY_QUESTION", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "symphony-engine-"));
+test("makeRoleNode: emits question event when agent stdout contains MAESTRO_QUESTION", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-engine-"));
   let db;
   try {
-    db            = new SqliteTaskStore(path.join(dir, "symphony.db"));
+    db            = new SqliteTaskStore(path.join(dir, "maestro.db"));
     const taskId  = "20260608-000001-test-question";
     db.createTask({ id: taskId, status: "running", prompt: "do the thing", cwd: dir, mode: "task", run_dir: null });
 
     const stubRunner = {
       runStep: async () => ({
-        stdout:     "thinking...\nSYMPHONY_QUESTION: which framework should I use?",
+        stdout:     "thinking...\nMAESTRO_QUESTION: which framework should I use?",
         stderr:     "",
         stdoutPath: null,
         stderrPath: null,
@@ -107,18 +107,18 @@ test("makeRoleNode: emits question event when agent stdout contains SYMPHONY_QUE
 
 // ── makeRoleNode: waiting event (action request) ──────────────────────────────────
 
-test("makeRoleNode: emits waiting event when agent stdout contains SYMPHONY_ACTION_REQUEST", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "symphony-engine-"));
+test("makeRoleNode: emits waiting event when agent stdout contains MAESTRO_ACTION_REQUEST", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-engine-"));
   let db;
   try {
-    db            = new SqliteTaskStore(path.join(dir, "symphony.db"));
+    db            = new SqliteTaskStore(path.join(dir, "maestro.db"));
     const taskId  = "20260608-000002-test-action";
     db.createTask({ id: taskId, status: "running", prompt: "build it", cwd: dir, mode: "task", run_dir: null });
 
     const actionReq = { provider: "host", command: "make", args: ["build"], cwd: dir };
     const stubRunner = {
       runStep: async () => ({
-        stdout:     `running build\nSYMPHONY_ACTION_REQUEST: ${JSON.stringify(actionReq)}`,
+        stdout:     `running build\nMAESTRO_ACTION_REQUEST: ${JSON.stringify(actionReq)}`,
         stderr:     "",
         stdoutPath: null,
         stderrPath: null,
@@ -149,11 +149,11 @@ test("makeRoleNode: emits waiting event when agent stdout contains SYMPHONY_ACTI
 
 // ── makeRoleNode: happy path (handoff emitted) ───────────────────────────────────
 
-test("makeRoleNode: returns done and records handoff when agent emits SYMPHONY_HANDOFF", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "symphony-engine-"));
+test("makeRoleNode: returns done and records handoff when agent emits MAESTRO_HANDOFF", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-engine-"));
   let db;
   try {
-    db            = new SqliteTaskStore(path.join(dir, "symphony.db"));
+    db            = new SqliteTaskStore(path.join(dir, "maestro.db"));
     const taskId  = "20260608-000003-test-handoff";
     // planner_policy: "on" forces the planner to run (auto-mode would skip for a simple prompt)
     db.createTask({ id: taskId, status: "running", prompt: "add logging", cwd: dir, mode: "task", run_dir: null, planner_policy: "on" });
@@ -161,7 +161,7 @@ test("makeRoleNode: returns done and records handoff when agent emits SYMPHONY_H
     const handoffPayload = { plan_summary: "add logging to the server", steps: ["edit server.js"], files_to_touch: ["server.js"] };
     const stubRunner = {
       runStep: async () => ({
-        stdout:     `SYMPHONY_HANDOFF: ${JSON.stringify(handoffPayload)}`,
+        stdout:     `MAESTRO_HANDOFF: ${JSON.stringify(handoffPayload)}`,
         stderr:     "",
         stdoutPath: null,
         stderrPath: null,

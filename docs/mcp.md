@@ -1,7 +1,7 @@
-# Symphony MCP Server
+# Maestro MCP Server
 
-Symphony exposes seven tools via the [Model Context Protocol](https://modelcontextprotocol.io)
-stdio transport. Any MCP-compatible agent (Claude, Cursor, etc.) can use these to read Symphony
+Maestro exposes seven tools via the [Model Context Protocol](https://modelcontextprotocol.io)
+stdio transport. Any MCP-compatible agent (Claude, Cursor, etc.) can use these to read Maestro
 state and create tasks without shell access.
 
 ## Registration
@@ -11,24 +11,24 @@ Add to your project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "symphony": {
+    "maestro": {
       "command": "node",
-      "args": ["/absolute/path/to/symphony/src/mcp/server.mjs"]
+      "args": ["/absolute/path/to/maestro/src/mcp/server.mjs"]
     }
   }
 }
 ```
 
-The server auto-discovers the `.symphony/` state directory by walking up from its `cwd`, or from
-the `SYMPHONY_ROOT` env var.
+The server auto-discovers the `.maestro/` state directory by walking up from its `cwd`, or from
+the `MAESTRO_ROOT` env var.
 
 ---
 
 ## Tools
 
-### `symphony_list_tasks`
+### `maestro_list_tasks`
 
-List tasks, sorted newest-first. DB-aware: reads SQLite (`symphony.db`) for LangGraph tasks,
+List tasks, sorted newest-first. DB-aware: reads SQLite (`maestro.db`) for LangGraph tasks,
 falls back to `tasks/*.json` for legacy tasks.
 
 **Input**
@@ -44,7 +44,7 @@ falls back to `tasks/*.json` for legacy tasks.
 
 ---
 
-### `symphony_show_task`
+### `maestro_show_task`
 
 Full details for one task: task JSON + per-role handoffs + stdout log tails (8 KB each).
 
@@ -56,9 +56,9 @@ Full details for one task: task JSON + per-role handoffs + stdout log tails (8 K
 
 ---
 
-### `symphony_list_runs`
+### `maestro_list_runs`
 
-List `.symphony/runs/` directories sorted by mtime, newest first.
+List `.maestro/runs/` directories sorted by mtime, newest first.
 
 **Input** `{ limit?: number }` — default 20
 
@@ -66,19 +66,19 @@ List `.symphony/runs/` directories sorted by mtime, newest first.
 
 ---
 
-### `symphony_show_run`
+### `maestro_show_run`
 
 All files in one run directory. JSON files returned in full; log files tailed to 8 KB.
 
-**Input** `{ id: string }` — required. Same ID validation as `symphony_show_task`.
+**Input** `{ id: string }` — required. Same ID validation as `maestro_show_task`.
 
 **Output** `{ id, files: { [filename]: object|string } }`
 
 ---
 
-### `symphony_create_task`
+### `maestro_create_task`
 
-Spawn a new task. Launches `bin/symphony.mjs <mode> "<prompt>"` as a background process (non-blocking).
+Spawn a new task. Launches `bin/maestro.mjs <mode> "<prompt>"` as a background process (non-blocking).
 
 **Input**
 
@@ -91,7 +91,7 @@ Spawn a new task. Launches `bin/symphony.mjs <mode> "<prompt>"` as a background 
 
 ---
 
-### `symphony_get_state`
+### `maestro_get_state`
 
 Runtime state snapshot. Tries `GET http://localhost:{port}/api/v1/state` first, falls back to
 reading `config.json` + `workflow.json` + SQLite.
@@ -105,7 +105,7 @@ Sensitive keys are **redacted** before returning: anything matching
 
 ---
 
-### `symphony_read_workflow`
+### `maestro_read_workflow`
 
 Returns the current `workflow.json` and the optional `WORKFLOW.md` content.
 
@@ -117,8 +117,8 @@ Returns the current `workflow.json` and the optional `WORKFLOW.md` content.
 
 ## Security
 
-- Task and run IDs are validated against `^[0-9A-Za-z][0-9A-Za-z._-]*$` and path-verified to stay inside `.symphony/`. Invalid IDs throw `invalid_id`.
-- Config output is redacted (see `symphony_get_state`).
-- `symphony_create_task` spawns `bin/symphony.mjs` directly — no npm script dependency.
+- Task and run IDs are validated against `^[0-9A-Za-z][0-9A-Za-z._-]*$` and path-verified to stay inside `.maestro/`. Invalid IDs throw `invalid_id`.
+- Config output is redacted (see `maestro_get_state`).
+- `maestro_create_task` spawns `bin/maestro.mjs` directly — no npm script dependency.
 
 Full schema: [src/mcp/SCHEMA.md](../src/mcp/SCHEMA.md)

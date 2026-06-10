@@ -1,15 +1,15 @@
-# Symphony MCP Tool Schema
+# Maestro MCP Tool Schema
 
 **SYNC RULE**: Keep this file up-to-date whenever `server.mjs` tool definitions change.
 
 Server: `src/mcp/server.mjs`
 Transport: stdio
-Registration: `.mcp.json` → key `symphony`
+Registration: `.mcp.json` → key `maestro`
 
 ---
 
-## `symphony_list_tasks`
-List tasks, sorted newest-first. **DB-aware**: reads from `.symphony/symphony.db` if it exists (LangGraph engine tasks), falls back to `.symphony/tasks/*.json` for legacy tasks.
+## `maestro_list_tasks`
+List tasks, sorted newest-first. **DB-aware**: reads from `.maestro/maestro.db` if it exists (LangGraph engine tasks), falls back to `.maestro/tasks/*.json` for legacy tasks.
 
 **Input**
 | Field | Type | Default | Description |
@@ -22,7 +22,7 @@ List tasks, sorted newest-first. **DB-aware**: reads from `.symphony/symphony.db
 
 ---
 
-## `symphony_show_task`
+## `maestro_show_task`
 Full details for one task: task JSON + per-role handoffs + stdout log tails (last 8 KB each).
 **DB-aware**: reads from SQLite DB first (LangGraph tasks), falls back to JSON file.
 
@@ -36,8 +36,8 @@ Note: LangGraph `handoffs` is a flat array (compact typed); legacy `handoffs` is
 
 ---
 
-## `symphony_list_runs`
-List `.symphony/runs/` dirs sorted by mtime newest-first.
+## `maestro_list_runs`
+List `.maestro/runs/` dirs sorted by mtime newest-first.
 
 **Input** `{ limit?: number }` — default 20
 
@@ -45,7 +45,7 @@ List `.symphony/runs/` dirs sorted by mtime newest-first.
 
 ---
 
-## `symphony_show_run`
+## `maestro_show_run`
 All files in one run dir. JSON files returned fully; log files tailed to last 8 KB.
 
 **Input** `{ id: string }` — required (directory name, same as task ID). ID must match `^[0-9A-Za-z][0-9A-Za-z._-]*$`; throws `invalid_id` otherwise.
@@ -54,8 +54,8 @@ All files in one run dir. JSON files returned fully; log files tailed to last 8 
 
 ---
 
-## `symphony_create_task`
-Spawns `bin/symphony.mjs <mode> "<prompt>"` via the bundled bin (self-contained, no npm script required). Non-blocking.
+## `maestro_create_task`
+Spawns `bin/maestro.mjs <mode> "<prompt>"` via the bundled bin (self-contained, no npm script required). Non-blocking.
 
 **Input**
 | Field | Type | Default | Description |
@@ -67,7 +67,7 @@ Spawns `bin/symphony.mjs <mode> "<prompt>"` via the bundled bin (self-contained,
 
 ---
 
-## `symphony_get_state`
+## `maestro_get_state`
 Runtime state snapshot. Tries `GET http://localhost:{port}/api/v1/state` first (2 s timeout). Falls back to reading config.json + workflow.json + live task state from SQLite (task mode).
 
 **Input** none
@@ -76,13 +76,13 @@ Runtime state snapshot. Tries `GET http://localhost:{port}/api/v1/state` first (
 - HTTP mode: `{ source: "http", state: object }`
 - Files mode: `{ source: "files", config, workflow, live_tasks?: { running: Array<{id,status,current_state,active_step,prompt,updated_at}>, recent: Array<{id,status,prompt,updated_at}> } }`
 
-`live_tasks` is populated only when `.symphony/symphony.db` exists. `running` shows up to 10 currently-running tasks with active step details.
+`live_tasks` is populated only when `.maestro/maestro.db` exists. `running` shows up to 10 currently-running tasks with active step details.
 
 **Security:** `config` is redacted before return — any key matching `*_key`, `*_token`, `*_secret`, `api_key`, `apikey`, `password`, or `passwd` has its value replaced with `"[redacted]"`.
 
 ---
 
-## `symphony_read_workflow`
+## `maestro_read_workflow`
 Current workflow definition.
 
 **Input** none

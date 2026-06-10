@@ -1,5 +1,5 @@
 /**
- * Builds a LangGraph StateGraph from a Symphony workflow.json definition.
+ * Builds a LangGraph StateGraph from a Maestro workflow.json definition.
  *
  * The workflow.json roles map 1:1 to graph nodes; transitions map to
  * conditional edges keyed on state.event. SINK_STATES ($complete, $halt,
@@ -16,7 +16,7 @@
  */
 
 import { StateGraph, START, END, MemorySaver } from "@langchain/langgraph";
-import { SymphonyState } from "./state.mjs";
+import { MaestroState } from "./state.mjs";
 import { makeRoleNode } from "./nodes.mjs";
 import { isSink } from "../state-machine.mjs";
 
@@ -32,7 +32,7 @@ import { isSink } from "../state-machine.mjs";
  * @returns {CompiledStateGraph}
  */
 export function buildGraph(workflow, config, { db, runner, ops = {} }) {
-  const graph = new StateGraph(SymphonyState);
+  const graph = new StateGraph(MaestroState);
 
   // ── add one node per workflow role ────────────────────────────────────────
   for (const [stateName, roleDef] of Object.entries(workflow.roles ?? {})) {

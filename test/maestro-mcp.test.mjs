@@ -47,15 +47,15 @@ test("isValidId: rejects non-strings", () => {
 // ── assertInsideDir ───────────────────────────────────────────────────────────
 
 test("assertInsideDir: allows paths strictly inside parent", () => {
-  const parent = "/tmp/symphony/tasks";
-  assert.doesNotThrow(() => assertInsideDir(parent, "/tmp/symphony/tasks/task-1.json"));
-  assert.doesNotThrow(() => assertInsideDir(parent, "/tmp/symphony/tasks/sub/file"));
+  const parent = "/tmp/maestro/tasks";
+  assert.doesNotThrow(() => assertInsideDir(parent, "/tmp/maestro/tasks/task-1.json"));
+  assert.doesNotThrow(() => assertInsideDir(parent, "/tmp/maestro/tasks/sub/file"));
 });
 
 test("assertInsideDir: throws path_traversal on escape", () => {
-  const parent = "/tmp/symphony/tasks";
+  const parent = "/tmp/maestro/tasks";
   assert.throws(
-    () => assertInsideDir(parent, "/tmp/symphony/tasks/../runs/secret"),
+    () => assertInsideDir(parent, "/tmp/maestro/tasks/../runs/secret"),
     /path_traversal/,
   );
   assert.throws(
@@ -63,7 +63,7 @@ test("assertInsideDir: throws path_traversal on escape", () => {
     /path_traversal/,
   );
   assert.throws(
-    () => assertInsideDir(parent, "/tmp/symphony/tasks-evil/x"),
+    () => assertInsideDir(parent, "/tmp/maestro/tasks-evil/x"),
     /path_traversal/,
   );
 });
@@ -155,37 +155,37 @@ test("showRun: rejects invalid ids", async () => {
 
 // ── safeRunnerEnv (F8) ───────────────────────────────────────────────────────
 
-test("safeRunnerEnv: passes through only SYMPHONY_-prefixed vars", () => {
+test("safeRunnerEnv: passes through only MAESTRO_-prefixed vars", () => {
   const env = {
     LINEAR_API_KEY: "lin-secret",
     AWS_SECRET_ACCESS_KEY: "aws-secret",
     HOME: "/root",
     PATH: "/usr/bin",
-    SYMPHONY_TASK_ID: "task-123",
-    SYMPHONY_ROLE: "executor",
+    MAESTRO_TASK_ID: "task-123",
+    MAESTRO_ROLE: "executor",
   };
   const out = safeRunnerEnv(env);
-  assert.deepEqual(Object.keys(out).sort(), ["SYMPHONY_ROLE", "SYMPHONY_TASK_ID"]);
-  assert.equal(out.SYMPHONY_TASK_ID, "task-123");
-  assert.equal(out.SYMPHONY_ROLE, "executor");
+  assert.deepEqual(Object.keys(out).sort(), ["MAESTRO_ROLE", "MAESTRO_TASK_ID"]);
+  assert.equal(out.MAESTRO_TASK_ID, "task-123");
+  assert.equal(out.MAESTRO_ROLE, "executor");
 });
 
 test("safeRunnerEnv: excludes null and undefined values", () => {
-  const env = { SYMPHONY_TASK_ID: "abc", SYMPHONY_NULL: null, SYMPHONY_UNDEF: undefined };
+  const env = { MAESTRO_TASK_ID: "abc", MAESTRO_NULL: null, MAESTRO_UNDEF: undefined };
   const out = safeRunnerEnv(env);
-  assert.ok("SYMPHONY_TASK_ID" in out);
-  assert.ok(!("SYMPHONY_NULL" in out));
-  assert.ok(!("SYMPHONY_UNDEF" in out));
+  assert.ok("MAESTRO_TASK_ID" in out);
+  assert.ok(!("MAESTRO_NULL" in out));
+  assert.ok(!("MAESTRO_UNDEF" in out));
 });
 
-test("safeRunnerEnv: returns empty object when no SYMPHONY_ vars", () => {
+test("safeRunnerEnv: returns empty object when no MAESTRO_ vars", () => {
   const env = { HOME: "/home/user", PATH: "/usr/bin", LINEAR_API_KEY: "secret" };
   assert.deepEqual(safeRunnerEnv(env), {});
 });
 
 test("safeRunnerEnv: coerces values to string", () => {
-  const env = { SYMPHONY_COUNT: 42 };
+  const env = { MAESTRO_COUNT: 42 };
   const out = safeRunnerEnv(env);
-  assert.equal(out.SYMPHONY_COUNT, "42");
-  assert.equal(typeof out.SYMPHONY_COUNT, "string");
+  assert.equal(out.MAESTRO_COUNT, "42");
+  assert.equal(typeof out.MAESTRO_COUNT, "string");
 });

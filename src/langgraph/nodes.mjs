@@ -1,12 +1,12 @@
 /**
- * LangGraph role-node factory for Symphony.
+ * LangGraph role-node factory for Maestro.
  *
  * makeRoleNode(roleDef, opts) returns a LangGraph node function that:
  *  1. No-ops if this role already has a handoff in priorHandoffs (resume skip)
  *  2. Checks effectiveSkipForState("always") for workflow-configured skips
  *  3. Builds a compact prompt from typed handoffs (never raw stdout)
  *  4. Runs the agent via runner.runStep (CLI, no API key)
- *  5. Parses SYMPHONY_* markers from stdout
+ *  5. Parses MAESTRO_* markers from stdout
  *  6. Persists step + handoff to SQLite DB
  *  7. Returns the state slice {priorHandoffs, event, currentState}
  */
@@ -43,14 +43,14 @@ function _stepOptions(roleDef, task) {
   };
 }
 
-function _symphonyEnv(task, role) {
+function _maestroEnv(task, role) {
   return {
-    ...(task.project_id ? { SYMPHONY_PROJECT_ID: task.project_id } : {}),
-    SYMPHONY_TASK_ID: task.id,
-    SYMPHONY_ROLE: role,
-    ...(task.worktree_path ? { SYMPHONY_WORKTREE: task.worktree_path } : {}),
-    ...(task.branch ? { SYMPHONY_BRANCH: task.branch } : {}),
-    SYMPHONY_STATE_DIR: task.run_dir ? path.dirname(path.dirname(task.run_dir)) : "",
+    ...(task.project_id ? { MAESTRO_PROJECT_ID: task.project_id } : {}),
+    MAESTRO_TASK_ID: task.id,
+    MAESTRO_ROLE: role,
+    ...(task.worktree_path ? { MAESTRO_WORKTREE: task.worktree_path } : {}),
+    ...(task.branch ? { MAESTRO_BRANCH: task.branch } : {}),
+    MAESTRO_STATE_DIR: task.run_dir ? path.dirname(path.dirname(task.run_dir)) : "",
   };
 }
 
@@ -187,7 +187,7 @@ export function makeRoleNode(roleDef, {
           logDir: currentTask.run_dir,
           options: _stepOptions(roleDef, currentTask),
           providerDef,
-          env: _symphonyEnv(currentTask, roleKey),
+          env: _maestroEnv(currentTask, roleKey),
         });
       } catch (err) {
         // ── context-window retry ──────────────────────────────────────────────
@@ -238,7 +238,7 @@ export function makeRoleNode(roleDef, {
 
       const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 
-      // ── SYMPHONY_ACTION_REQUEST (checked before QUESTION, mirrors legacy order)
+      // ── MAESTRO_ACTION_REQUEST (checked before QUESTION, mirrors legacy order)
       const rawActionRequests = parseAgentActionRequests(combined);
       if (rawActionRequests.length > 0) {
         const actionRequests = rawActionRequests.map((r, i) => ({
@@ -281,7 +281,7 @@ export function makeRoleNode(roleDef, {
         return { event: "waiting", currentState: roleKey };
       }
 
-      // ── SYMPHONY_QUESTION ─────────────────────────────────────────────────
+      // ── MAESTRO_QUESTION ─────────────────────────────────────────────────
       const question = parseAgentQuestion(combined);
       if (question) {
         const questionId = `q${(currentTask.question_answers ?? []).length + 1}`;
@@ -332,7 +332,7 @@ export function makeRoleNode(roleDef, {
             stderrPath: result.stderrPath,
           });
         } catch (err) {
-          process.stderr.write(`[symphony] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
         }
       }
 

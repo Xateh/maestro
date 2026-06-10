@@ -1,14 +1,14 @@
 /**
- * Pure output-marker parsers shared between symphony.mjs and the LangGraph engine.
+ * Pure output-marker parsers shared between maestro.mjs and the LangGraph engine.
  * No I/O, no side effects. All parsers return null / [] on failure.
  */
 
 // ─── prefixes ────────────────────────────────────────────────────────────────
 
-export const HANDOFF_PREFIX = "SYMPHONY_HANDOFF:";
-export const QUESTION_PREFIX = "SYMPHONY_QUESTION:";
-export const REVIEW_PREFIX = "SYMPHONY_REVIEW:";
-export const ACTION_REQUEST_PREFIX = "SYMPHONY_ACTION_REQUEST:";
+export const HANDOFF_PREFIX = "MAESTRO_HANDOFF:";
+export const QUESTION_PREFIX = "MAESTRO_QUESTION:";
+export const REVIEW_PREFIX = "MAESTRO_REVIEW:";
+export const ACTION_REQUEST_PREFIX = "MAESTRO_ACTION_REQUEST:";
 
 // ─── context-window failure ───────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ export function isContextWindowFailure(error) {
   return CONTEXT_WINDOW_PATTERNS.some((p) => p.test(text));
 }
 
-// ─── SYMPHONY_QUESTION ───────────────────────────────────────────────────────
+// ─── MAESTRO_QUESTION ───────────────────────────────────────────────────────
 
 function _questionFromText(value = "") {
   for (const line of String(value).split(/\r?\n/)) {
@@ -61,7 +61,7 @@ export function parseAgentQuestion(output = "") {
   return null;
 }
 
-// ─── SYMPHONY_HANDOFF ────────────────────────────────────────────────────────
+// ─── MAESTRO_HANDOFF ────────────────────────────────────────────────────────
 
 function _handoffFromText(value = "") {
   for (const line of String(value).split(/\r?\n/)) {
@@ -95,7 +95,7 @@ export function parseAgentHandoff(output = "") {
   return null;
 }
 
-// ─── SYMPHONY_ACTION_REQUEST ─────────────────────────────────────────────────
+// ─── MAESTRO_ACTION_REQUEST ─────────────────────────────────────────────────
 
 function _actionRequestsFromText(value = "") {
   const payloads = [];
@@ -130,7 +130,7 @@ export function parseAgentActionRequests(output = "") {
   return payloads;
 }
 
-// ─── SYMPHONY_REVIEW ─────────────────────────────────────────────────────────
+// ─── MAESTRO_REVIEW ─────────────────────────────────────────────────────────
 
 const REVIEW_COMPLETION_STATES = new Set([
   "complete", "incomplete_continueable", "incomplete_needs_user",
@@ -282,7 +282,7 @@ export function parseReviewerOutput(output = "", previousReview = null) {
       payloads.push(...fromJson);
     } catch {}
   }
-  if (payloads.length === 0) return _invalidReview("Reviewer did not emit a valid SYMPHONY_REVIEW marker.");
+  if (payloads.length === 0) return _invalidReview("Reviewer did not emit a valid MAESTRO_REVIEW marker.");
   return _normalizeReview(payloads.at(-1), previousReview);
 }
 

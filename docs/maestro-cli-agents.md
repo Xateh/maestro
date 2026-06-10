@@ -1,6 +1,6 @@
-# Symphony CLI Agents
+# Maestro CLI Agents
 
-Symphony is the repo-local terminal orchestration layer for CLI coding agents.
+Maestro is the repo-local terminal orchestration layer for CLI coding agents.
 It keeps Codex as the main delegator, uses Claude for planning, and uses Codex
 for execution and review. Copilot is disabled by default until a concrete role
 is chosen.
@@ -34,7 +34,7 @@ Claude plan: auto | on | off
 Open the terminal UI:
 
 ```bash
-npm run symphony -- tui
+npm run maestro -- tui
 ```
 
 The TUI has pages for:
@@ -49,7 +49,7 @@ The TUI has pages for:
   without the timestamp prefix, and concise activity
 - settings picker that lists current values first, then lets you edit one
   setting at a time
-- projects page that lists Symphony-owned projects, blockers, path leases,
+- projects page that lists Maestro-owned projects, blockers, path leases,
   cleanup blockers, and integration worktrees
 
 Each page starts with a colored header when ANSI color is available, so main
@@ -58,7 +58,7 @@ are visually distinct. Set `NO_COLOR=1` to keep plain text headers.
 
 After you submit a task, the TUI prints `Task id: <task-id>`, starts the run in
 a detached background runner, and returns to the main menu. Quitting the TUI does
-not wait for or cancel the task. Reopen Tasks, or run `npm run symphony --
+not wait for or cancel the task. Reopen Tasks, or run `npm run maestro --
 status`, to view status, active agent step, completed steps, and log paths.
 The Tasks page lists aliases like `1. <task-id>` so you can inspect a task by
 entering `1`, `#1`, the full id, or a unique id prefix. It displays task names
@@ -82,7 +82,7 @@ json 1
 
 If the resolved flow includes `planner:claude` but the configured Claude command
 is neither an executable on `PATH` nor a bash alias/function visible to
-`bash -ic`, Symphony prompts before creating the task:
+`bash -ic`, Maestro prompts before creating the task:
 
 ```text
 Claude planner command "pclaude" was not found. Skip Claude planner for this task? y|n [y]:
@@ -96,12 +96,12 @@ aliases loaded by your interactive bash startup files.
 Agents can pause for user input by writing this marker in their output:
 
 ```text
-SYMPHONY_QUESTION: <question>
+MAESTRO_QUESTION: <question>
 ```
 
-Symphony records the task as `waiting_user`, stores the active question in the task
+Maestro records the task as `waiting_user`, stores the active question in the task
 JSON, and moves human-waiting tasks into the active task list. Open Tasks,
-select the waiting task alias, enter the answer, and Symphony records the
+select the waiting task alias, enter the answer, and Maestro records the
 answer, marks the task `queued`, and resumes it in a detached `run-task` child.
 Future agent prompts include prior user answers so the same role can continue
 with the missing context.
@@ -111,19 +111,19 @@ message is stored for the next continuation; detached agents do not receive live
 chat.
 
 ```bash
-npm run symphony -- message <task-id> --note "Use the v2 endpoint"
-npm run symphony -- retry <task-id> --note "Environment is fixed"
-npm run symphony -- retry <task-id> --force-parallel --note "I accept the path overlap"
-npm run symphony -- extend-timeout <task-id> --timeout-ms -1 --note "Continue without the old timeout"
-npm run symphony -- run-action <task-id> <action-id> --note "Run anyway after checking the changed state"
-npm run symphony -- edit-action <task-id> <action-id> --args-json '["push","origin","main"]'
-npm run symphony -- mark-done <task-id> [action-id] --note "I ran the blocked command manually"
-npm run symphony -- mark-done <task-id> [action-id] --force --note "I verified this outside Symphony"
-npm run symphony -- cancel <task-id> --note "No longer needed"
+npm run maestro -- message <task-id> --note "Use the v2 endpoint"
+npm run maestro -- retry <task-id> --note "Environment is fixed"
+npm run maestro -- retry <task-id> --force-parallel --note "I accept the path overlap"
+npm run maestro -- extend-timeout <task-id> --timeout-ms -1 --note "Continue without the old timeout"
+npm run maestro -- run-action <task-id> <action-id> --note "Run anyway after checking the changed state"
+npm run maestro -- edit-action <task-id> <action-id> --args-json '["push","origin","main"]'
+npm run maestro -- mark-done <task-id> [action-id] --note "I ran the blocked command manually"
+npm run maestro -- mark-done <task-id> [action-id] --force --note "I verified this outside Maestro"
+npm run maestro -- cancel <task-id> --note "No longer needed"
 ```
 
 `mark-done` may omit the action id only when exactly one action request is
-pending. If several actions are pending, Symphony keeps the task
+pending. If several actions are pending, Maestro keeps the task
 `waiting_user` with a `manual_done_ambiguous` blocker until you name the action.
 Manual completion is verified per action: local commit, merge, and pull actions
 must show a changed `HEAD` and no obvious merge-conflict status; push and fetch
@@ -132,9 +132,9 @@ prove the remote operation happened. `--force` records `observed: false` and
 `forced: true`, then resumes the task with the user's note.
 
 Reviewer outcomes are structured. The reviewer must finish with one
-`SYMPHONY_REVIEW: {...}` JSON marker describing `completion_state`,
+`MAESTRO_REVIEW: {...}` JSON marker describing `completion_state`,
 `required_action`, `risk_level`, `confidence`, `evidence`, `blockers`, and any
-needed `required_user_input`, `approval_request`, or `continuation`. Symphony
+needed `required_user_input`, `approval_request`, or `continuation`. Maestro
 treats reviewer output as untrusted advisory input: it validates enums and size
 limits, reads only reviewer logs, prefers the last valid marker, and never runs
 commands suggested by the reviewer. Missing or malformed markers become
@@ -152,16 +152,16 @@ or `task.review` detail. New recoverable failures prefer `waiting_user` with
 explicit unblock options; `blocked` is reserved for corrupt or unrepresentable
 task records.
 
-Approval gates can be resolved through Symphony without executing reviewer
+Approval gates can be resolved through Maestro without executing reviewer
 commands directly:
 
 ```bash
-npm run symphony -- approve <task-id> --note "user completed the gated action"
-npm run symphony -- deny <task-id> --note "not safe to proceed"
-npm run symphony -- approve-action <task-id> <action-id> --note "run it"
-npm run symphony -- run-action <task-id> <action-id> --note "explicit run-anyway or external-cwd run"
-npm run symphony -- edit-action <task-id> <action-id> --cwd ../repo --args-json '["push","origin","main"]'
-npm run symphony -- deny-action <task-id> <action-id> --note "not safe"
+npm run maestro -- approve <task-id> --note "user completed the gated action"
+npm run maestro -- deny <task-id> --note "not safe to proceed"
+npm run maestro -- approve-action <task-id> <action-id> --note "run it"
+npm run maestro -- run-action <task-id> <action-id> --note "explicit run-anyway or external-cwd run"
+npm run maestro -- edit-action <task-id> <action-id> --cwd ../repo --args-json '["push","origin","main"]'
+npm run maestro -- deny-action <task-id> <action-id> --note "not safe"
 ```
 
 Approval records are appended to `approval_decisions`. Approving requeues the
@@ -195,12 +195,12 @@ After a typed command, the TUI asks for an optional note and calls the same
 local command handlers as the CLI.
 
 Large-task handoffs are compacted before they are sent to the next agent.
-Symphony keeps the full stdout and stderr logs on disk, but prompts include
+Maestro keeps the full stdout and stderr logs on disk, but prompts include
 only bounded head/tail excerpts plus original byte counts and log paths. This
 prevents a verbose executor or planner from filling the reviewer context window
 unnecessarily.
 
-If an agent still reports a context-window failure, Symphony records the failed
+If an agent still reports a context-window failure, Maestro records the failed
 attempt as `retried`, switches that step to a stricter compact handoff, and
 retries once automatically. The task does not require the user to restate the
 prompt. If the retry also fails, the task moves to `waiting_user` with retry,
@@ -209,16 +209,16 @@ instruct, and cancel options plus log paths for inspection.
 Run a normal task:
 
 ```bash
-npm run symphony -- task "Add berth ETA regression tests"
+npm run maestro -- task "Add berth ETA regression tests"
 ```
 
 Tasks that ask a current-cwd Codex agent to `commit`, `merge`, `pull`, `fetch`,
 or `push` pause before launch with status `waiting_approval` and typed
 `action_requests`. Commit-then-push and similar multi-step Git intents are
-brokered sequentially: Symphony creates only the next Git action, re-reads the
+brokered sequentially: Maestro creates only the next Git action, re-reads the
 repository after a successful approval, then creates the next action request
 from a fresh branch, `HEAD`, dirty-status, and remote snapshot. Codex local execution still runs with
-`approval_policy="never"` inside a workspace sandbox; Symphony never trusts the
+`approval_policy="never"` inside a workspace sandbox; Maestro never trusts the
 agent to perform host Git operations itself.
 
 The host action broker supports typed Git actions (`git_commit`, `git_merge`,
@@ -250,40 +250,40 @@ the broker uses argv, not shell interpolation. The broker rejects every other
 arg count or order, force flag, refspec mapping, wildcard, branch deletion, and
 ambiguous action shape by keeping the task `waiting_user` with edit, manual,
 retry, and cancel options. If the action cwd is outside the task cwd/worktree,
-Symphony rewrites it as `external_cwd_git` and requires explicit `run-action`
+Maestro rewrites it as `external_cwd_git` and requires explicit `run-action`
 or TUI `(x)` approval. Duplicate approvals for the same `task_id + action_id`
 do not run twice.
 
 `host_command` requests contain an exact command, argv array, cwd, optional env,
 and optional timeout. They run only after user approval. Every host action result
-records exit code, stdout/stderr log paths under `.symphony/runs`, duration,
+records exit code, stdout/stderr log paths under `.maestro/runs`, duration,
 cwd, command hash, and the user note; continuations get a compact stdout/stderr
 summary plus full log paths.
 
 Run planning only:
 
 ```bash
-npm run symphony -- task --plan-only "Plan a safer production twin import flow"
+npm run maestro -- task --plan-only "Plan a safer production twin import flow"
 ```
 
 Force or disable Claude planning:
 
 ```bash
-npm run symphony -- task --planner on "Design a route migration"
-npm run symphony -- task --planner off "Fix typo in README"
+npm run maestro -- task --planner on "Design a route migration"
+npm run maestro -- task --planner off "Fix typo in README"
 ```
 
 Disable Codex review for quick tasks:
 
 ```bash
-npm run symphony -- task --review off "Update one docs sentence"
+npm run maestro -- task --review off "Update one docs sentence"
 ```
 
 Disable the per-agent timeout with `-1`:
 
 ```bash
-npm run symphony -- task --timeout-ms -1 "Run a long refactor"
-npm run symphony -- extend-timeout <task-id> --timeout-ms -1 --note "continue"
+npm run maestro -- task --timeout-ms -1 "Run a long refactor"
+npm run maestro -- extend-timeout <task-id> --timeout-ms -1 --note "continue"
 ```
 
 `-1 disables timeout` in CLI task creation, TUI settings, and timeout recovery.
@@ -344,90 +344,90 @@ Codex effort levels:
 List local task records:
 
 ```bash
-npm run symphony -- status
+npm run maestro -- status
 ```
 
 Inspect one task:
 
 ```bash
-npm run symphony -- inspect <task-id>
+npm run maestro -- inspect <task-id>
 ```
 
 Use a custom state directory:
 
 ```bash
-npm run symphony -- task --state-dir /tmp/symphony-state "Review dashboard contracts"
+npm run maestro -- task --state-dir /tmp/maestro-state "Review dashboard contracts"
 ```
 
 Use a specific working directory:
 
 ```bash
-npm run symphony -- task --cwd singapore-maritime-digital-twin "Patch map tests"
+npm run maestro -- task --cwd singapore-maritime-digital-twin "Patch map tests"
 ```
 
 Create a project-backed worktree lifecycle:
 
 ```bash
-npm run symphony -- project create alpha --target main
+npm run maestro -- project create alpha --target main
 ```
 
-This refuses to start unless `.symphony/` is ignored, the target branch is
+This refuses to start unless `.maestro/` is ignored, the target branch is
 clean, project branch names are unused, and the configured
-`max_parallel_worktrees` budget is available. Symphony owns only
-`.symphony/worktrees/<project-id>/...`; it never mutates `.claude/worktrees`.
-If a root `.env` file exists, Symphony reports it as `not_copied` and marks it
+`max_parallel_worktrees` budget is available. Maestro owns only
+`.maestro/worktrees/<project-id>/...`; it never mutates `.claude/worktrees`.
+If a root `.env` file exists, Maestro reports it as `not_copied` and marks it
 sensitive. Secrets are not copied into worktrees by default.
 
 Run a task inside a project task branch/worktree:
 
 ```bash
-npm run symphony -- task --project alpha --worktree-mode project-worktree \
-  --paths symphony/bin/symphony.mjs "Patch Symphony worktree handling"
+npm run maestro -- task --project alpha --worktree-mode project-worktree \
+  --paths maestro/bin/maestro.mjs "Patch Maestro worktree handling"
 ```
 
 Project task branches use:
 
 ```text
-symphony/<project-id>/integration
-symphony/<project-id>/task/<task-alias>
+maestro/<project-id>/integration
+maestro/<project-id>/task/<task-alias>
 ```
 
 Declared `--paths` become write leases. Overlapping project write tasks become
 `waiting_user` with a `queued_path_conflict` blocker and retry/cancel unblock
 options unless the task is created with explicit `--force-parallel`. Retrying a
 path-conflicted task rechecks the current project leases; if the conflict
-remains, the task stays waiting, and if the lease cleared Symphony creates the
+remains, the task stays waiting, and if the lease cleared Maestro creates the
 missing task branch/worktree and project task record before acquiring leases and
 running. `retry --force-parallel` clears the conflict and acquires the task's
 leases even when another task still owns the same path. Agents receive only
-Symphony metadata environment variables:
+Maestro metadata environment variables:
 
 ```text
-SYMPHONY_PROJECT_ID
-SYMPHONY_TASK_ID
-SYMPHONY_ROLE
-SYMPHONY_WORKTREE
-SYMPHONY_BRANCH
-SYMPHONY_STATE_DIR
+MAESTRO_PROJECT_ID
+MAESTRO_TASK_ID
+MAESTRO_ROLE
+MAESTRO_WORKTREE
+MAESTRO_BRANCH
+MAESTRO_STATE_DIR
 ```
 
-Agents are instructed not to commit. Symphony records the task start `HEAD`;
+Agents are instructed not to commit. Maestro records the task start `HEAD`;
 if an agent moves `HEAD`, the task becomes `needs_review`, the
 project gets an `agent_head_moved` blocker, and merge automation stops.
 
 Close and cleanup a project:
 
 ```bash
-npm run symphony -- project close alpha
-npm run symphony -- project cleanup alpha
+npm run maestro -- project close alpha
+npm run maestro -- project cleanup alpha
 ```
 
 Close performs a squash merge of the integration branch into the target branch
 and records the target merge commit in the project ledger. If the squash merge
-conflicts, Symphony creates a `merge-fix` task and marks the project
-`close_blocked`. Cleanup removes only clean `.symphony/worktrees` task
+conflicts, Maestro creates a `merge-fix` task and marks the project
+`close_blocked`. Cleanup removes only clean `.maestro/worktrees` task
 worktrees and only project-owned local branches. Dirty worktrees are preserved;
-Symphony writes a patch under `.symphony/patches/` and marks
+Maestro writes a patch under `.maestro/patches/` and marks
 `cleanup_blocked`. After a recorded target squash merge, cleanup also removes
 the clean integration worktree and local integration branch. Remote branches
 are never deleted.
@@ -437,15 +437,15 @@ are never deleted.
 Runtime state is local and ignored by git:
 
 ```text
-.symphony/tasks/<task-id>.json
-.symphony/projects/<project-id>.json
-.symphony/runs/<task-id>/<role>.stdout.log
-.symphony/runs/<task-id>/<role>.stderr.log
-.symphony/runs/<task-id>/<role>.command.json
-.symphony/runs/<task-id>/handoff.<role>.json
-.symphony/patches/<task-id>.patch
-.symphony/worktrees/<project-id>/<task-alias>/
-.symphony/config.json
+.maestro/tasks/<task-id>.json
+.maestro/projects/<project-id>.json
+.maestro/runs/<task-id>/<role>.stdout.log
+.maestro/runs/<task-id>/<role>.stderr.log
+.maestro/runs/<task-id>/<role>.command.json
+.maestro/runs/<task-id>/handoff.<role>.json
+.maestro/patches/<task-id>.patch
+.maestro/worktrees/<project-id>/<task-alias>/
+.maestro/config.json
 ```
 
 The task JSON records status, prompt, cwd, active step, active question,
@@ -453,7 +453,7 @@ active approval, question answers, interactions, unblock options, action
 requests, completed steps, providers, command
 arguments, planner policy, planner decision, review setting, timeout, command
 names, role models, blockers, `task.review`, and log paths. The run folder keeps
-raw terminal output for audit and debugging. `SYMPHONY_HANDOFF: {...}` lines are parsed into
+raw terminal output for audit and debugging. `MAESTRO_HANDOFF: {...}` lines are parsed into
 `handoff.<role>.json`, including when they appear inside Codex JSON agent
 messages; reviewer prompts use the structured handoff and log paths before
 falling back to bounded stdout excerpts.
@@ -470,7 +470,7 @@ falling back to bounded stdout excerpts.
   before that fallback is used.
 - Codex task prompts are sent through stdin instead of argv, so large planner
   or executor outputs do not hit OS argument-size limits.
-- Generated runtime logs and worktrees live under `.symphony/` and are ignored.
+- Generated runtime logs and worktrees live under `.maestro/` and are ignored.
 - Current-cwd git publish tasks require explicit typed broker approval instead
   of trusting sandboxed agent success claims.
 - Remote push is never automatic, and remote branch deletion is rejected.

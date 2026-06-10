@@ -139,7 +139,7 @@ export function resolveEffectiveConfig(workflow, { env = process.env } = {}) {
 
   const trackerKind = tracker.kind ?? null;
   const trackerApiKey = resolveDollarValue(tracker.api_key ?? env.LINEAR_API_KEY ?? null, env);
-  const workspaceRoot = expandPathValue(workspace.root ?? "/symphony_workspaces", {
+  const workspaceRoot = expandPathValue(workspace.root ?? "/maestro_workspaces", {
     env,
     baseDir: workflow.directory,
   });

@@ -1,10 +1,10 @@
-# Symphony TUI Review
+# Maestro TUI Review
 
 Date: 2026-05-13
 
 ## Scope
 
-This review covers the local `npm run symphony -- tui` path: task creation,
+This review covers the local `npm run maestro -- tui` path: task creation,
 settings, task history, agent handoff, local state, error handling, and
 responsiveness. It does not cover the older Linear polling service except where
 the same local files are shared.
@@ -21,7 +21,7 @@ Fix: task submission now starts a detached `run-task` child process after the
 task id is created. The TUI prints `Task id: <task-id>`, reports that the task
 started in the background, and returns to the main menu. Quitting the TUI does
 not wait for or cancel the task; the task record remains inspectable through
-Tasks or `npm run symphony -- status`.
+Tasks or `npm run maestro -- status`.
 
 Verification: `TUI starts submitted tasks in the background and returns to the
 main menu` and `local TUI launches tasks in a detached runner so quit does not
@@ -101,17 +101,17 @@ and `TUI tasks page shows full JSON only when requested`.
 ### User Question Flow
 
 Finding: agent runs had no clean way to pause for missing user context. A CLI
-agent could only fail, guess, or block outside the Symphony task record.
+agent could only fail, guess, or block outside the Maestro task record.
 
 Fix: planner, executor, and reviewer prompts now tell agents to emit
-`SYMPHONY_QUESTION: <question>` when they need user input. Symphony parses that
+`MAESTRO_QUESTION: <question>` when they need user input. Maestro parses that
 marker from plain output or JSON-line CLI output, records `active_question`,
 marks the task `waiting_user`, and shows human-waiting tasks in the active task list.
 Selecting a waiting task in the TUI prompts for an answer, stores it in
 `question_answers`, marks the task `queued`, and resumes the same task in a
 detached `run-task` child. Follow-up prompts include prior answers.
 
-Verification: `local task CLI marks task waiting when an agent asks a Symphony
+Verification: `local task CLI marks task waiting when an agent asks a Maestro
 question` and `TUI answers waiting task questions by alias and resumes the
 task`.
 
@@ -136,8 +136,8 @@ Finding: reviewer runs could say work was incomplete or blocked while the task
 still ended as success because the lifecycle status was inferred from step
 exit codes.
 
-Fix: reviewer prompts now require a final `SYMPHONY_REVIEW: {...}` marker.
-Symphony validates the marker, stores the normalized verdict in `task.review`,
+Fix: reviewer prompts now require a final `MAESTRO_REVIEW: {...}` marker.
+Maestro validates the marker, stores the normalized verdict in `task.review`,
 and applies one reducer for lifecycle status. Complete reviews become
 `succeeded`; missing markers become `incomplete`; user questions become
 `waiting_user`; approval gates become `waiting_approval`; external, repo, or
@@ -218,7 +218,7 @@ reported that it ran out of context and asked for a new thread.
 Fix: prior agent output is now a bounded handoff, not a raw transcript dump.
 Prompts include compacted head/tail excerpts, original byte counts, stdout and
 stderr log paths, and an explicit compacted-output heading. If a step still
-hits a context-window error, Symphony records the failed attempt as `retried`,
+hits a context-window error, Maestro records the failed attempt as `retried`,
 switches that same step to stricter compaction, and retries once automatically
 without asking the user to rewrite the task.
 
@@ -227,7 +227,7 @@ Verification: `step prompts compact large prior outputs before review` and
 
 ### Project Lifecycle Visibility
 
-Finding: Symphony now owns project-level worktree lifecycles, but the TUI still
+Finding: Maestro now owns project-level worktree lifecycles, but the TUI still
 only exposed individual task history. Users could miss integration blockers,
 path leases, dirty cleanup blockers, or agent-commit review states unless they
 opened raw project JSON on disk.

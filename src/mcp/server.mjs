@@ -11,21 +11,21 @@ import { openStore } from "../db/store.mjs";
 
 // ── Root discovery ────────────────────────────────────────────────────────────
 
-function findSymphonyRoot(startDir) {
+function findMaestroRoot(startDir) {
   let dir = startDir;
   while (true) {
-    if (existsSync(path.join(dir, ".symphony"))) return dir;
+    if (existsSync(path.join(dir, ".maestro"))) return dir;
     const parent = path.dirname(dir);
-    if (parent === dir) throw new Error("No .symphony directory found from " + startDir);
+    if (parent === dir) throw new Error("No .maestro directory found from " + startDir);
     dir = parent;
   }
 }
 
-const ROOT = process.env.SYMPHONY_ROOT ?? findSymphonyRoot(process.cwd());
-const SYMPHONY_DIR = path.join(ROOT, ".symphony");
-const TASKS_DIR = path.join(SYMPHONY_DIR, "tasks");
-const RUNS_DIR = path.join(SYMPHONY_DIR, "runs");
-const DB_PATH = path.join(SYMPHONY_DIR, "symphony.db");
+const ROOT = process.env.MAESTRO_ROOT ?? findMaestroRoot(process.cwd());
+const MAESTRO_DIR = path.join(ROOT, ".maestro");
+const TASKS_DIR = path.join(MAESTRO_DIR, "tasks");
+const RUNS_DIR = path.join(MAESTRO_DIR, "runs");
+const DB_PATH = path.join(MAESTRO_DIR, "maestro.db");
 
 const VALID_MODES = new Set(["task", "plan-only"]);
 
@@ -194,16 +194,16 @@ async function createTask({ prompt, mode = "task" } = {}) {
   if (!VALID_MODES.has(mode)) throw new Error(`invalid_mode: ${mode}`);
   return new Promise((resolve, reject) => {
     // Invoke the bundled bin directly so this package is self-contained
-    // (no npm run symphony shim required in the caller's directory).
-    const binPath = fileURLToPath(new URL("../../bin/symphony.mjs", import.meta.url));
+    // (no npm run maestro shim required in the caller's directory).
+    const binPath = fileURLToPath(new URL("../../bin/maestro.mjs", import.meta.url));
     // "--" ends option parsing so a prompt like "--timeout-ms 1 do X" is never
     // interpreted as CLI flags by the spawned process.
-    // SYMPHONY_CALLER_CWD aligns the child's state-dir with ROOT so MCP readers
+    // MAESTRO_CALLER_CWD aligns the child's state-dir with ROOT so MCP readers
     // see the same tasks the server does (critical when installed as a dependency).
     const proc = spawn(
       process.execPath,
       [binPath, mode, "--", prompt],
-      { cwd: ROOT, env: { ...process.env, SYMPHONY_CALLER_CWD: ROOT }, stdio: ["ignore", "pipe", "pipe"] },
+      { cwd: ROOT, env: { ...process.env, MAESTRO_CALLER_CWD: ROOT }, stdio: ["ignore", "pipe", "pipe"] },
     );
     let stdout = "";
     proc.stdout.on("data", (d) => { stdout += d; });
@@ -231,7 +231,7 @@ function redactConfig(cfg) {
 
 async function getState() {
   // Try HTTP first (tracker-orchestrator mode)
-  const configPath = path.join(SYMPHONY_DIR, "config.json");
+  const configPath = path.join(MAESTRO_DIR, "config.json");
   const config = await readJSON(configPath).catch(() => null);
   const port = config?.http_port ?? config?.port;
   if (port) {
@@ -244,7 +244,7 @@ async function getState() {
     } catch { /* fall through */ }
   }
   // Fallback: return config + workflow + live task state from SQLite (task mode)
-  const workflow = await readJSON(path.join(SYMPHONY_DIR, "workflow.json")).catch(() => null);
+  const workflow = await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
   let liveTasks = null;
   const db = tryOpenStore();
   if (db) {
@@ -271,7 +271,7 @@ async function getState() {
 }
 
 async function readWorkflow() {
-  const workflowPath = path.join(SYMPHONY_DIR, "workflow.json");
+  const workflowPath = path.join(MAESTRO_DIR, "workflow.json");
   const workflow = await readJSON(workflowPath).catch(() => null);
   const wfMdPath = path.join(ROOT, "WORKFLOW.md");
   const wfMd = await fs.readFile(wfMdPath, "utf8").catch(() => null);
@@ -282,8 +282,8 @@ async function readWorkflow() {
 
 const TOOLS = [
   {
-    name: "symphony_list_tasks",
-    description: "List Symphony tasks. Optionally filter by status (queued/running/waiting_user/succeeded/failed/blocked/cancelled/denied/expired/open/pending/reviewed/system). Returns up to `limit` tasks sorted newest-first.",
+    name: "maestro_list_tasks",
+    description: "List Maestro tasks. Optionally filter by status (queued/running/waiting_user/succeeded/failed/blocked/cancelled/denied/expired/open/pending/reviewed/system). Returns up to `limit` tasks sorted newest-first.",
     inputSchema: {
       type: "object",
       properties: {
@@ -293,8 +293,8 @@ const TOOLS = [
     },
   },
   {
-    name: "symphony_show_task",
-    description: "Show full details for one Symphony task: task JSON, per-role handoffs, and stdout log tails.",
+    name: "maestro_show_task",
+    description: "Show full details for one Maestro task: task JSON, per-role handoffs, and stdout log tails.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string", description: "Task ID (e.g. 20260513-133611-...)" } },
@@ -302,16 +302,16 @@ const TOOLS = [
     },
   },
   {
-    name: "symphony_list_runs",
-    description: "List recent Symphony run directories sorted by last-modified, newest first.",
+    name: "maestro_list_runs",
+    description: "List recent Maestro run directories sorted by last-modified, newest first.",
     inputSchema: {
       type: "object",
       properties: { limit: { type: "number", description: "Max runs to return (default 20)" } },
     },
   },
   {
-    name: "symphony_show_run",
-    description: "Show all files in one Symphony run: command JSON, handoffs, and stdout/stderr log tails.",
+    name: "maestro_show_run",
+    description: "Show all files in one Maestro run: command JSON, handoffs, and stdout/stderr log tails.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string", description: "Run directory name / task ID" } },
@@ -319,8 +319,8 @@ const TOOLS = [
     },
   },
   {
-    name: "symphony_create_task",
-    description: "Create and start a new Symphony task by prompt. Returns the task ID if parseable from output.",
+    name: "maestro_create_task",
+    description: "Create and start a new Maestro task by prompt. Returns the task ID if parseable from output.",
     inputSchema: {
       type: "object",
       properties: {
@@ -331,29 +331,29 @@ const TOOLS = [
     },
   },
   {
-    name: "symphony_get_state",
-    description: "Get Symphony runtime state. Tries the HTTP status endpoint first, falls back to reading config.json + workflow.json.",
+    name: "maestro_get_state",
+    description: "Get Maestro runtime state. Tries the HTTP status endpoint first, falls back to reading config.json + workflow.json.",
     inputSchema: { type: "object", properties: {} },
   },
   {
-    name: "symphony_read_workflow",
-    description: "Return the current .symphony/workflow.json and WORKFLOW.md template (if present).",
+    name: "maestro_read_workflow",
+    description: "Return the current .maestro/workflow.json and WORKFLOW.md template (if present).",
     inputSchema: { type: "object", properties: {} },
   },
 ];
 
 const HANDLERS = {
-  symphony_list_tasks: listTasks,
-  symphony_show_task: showTask,
-  symphony_list_runs: listRuns,
-  symphony_show_run: showRun,
-  symphony_create_task: createTask,
-  symphony_get_state: getState,
-  symphony_read_workflow: readWorkflow,
+  maestro_list_tasks: listTasks,
+  maestro_show_task: showTask,
+  maestro_list_runs: listRuns,
+  maestro_show_run: showRun,
+  maestro_create_task: createTask,
+  maestro_get_state: getState,
+  maestro_read_workflow: readWorkflow,
 };
 
 const server = new Server(
-  { name: "symphony", version: "1.0.0" },
+  { name: "maestro", version: "1.0.0" },
   { capabilities: { tools: {} } }
 );
 

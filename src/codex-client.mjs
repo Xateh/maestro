@@ -158,14 +158,14 @@ export class CodexAppServerClient {
         id: message.id,
         result: {
           success: false,
-          contentItems: [{ type: "inputText", text: "Symphony local-safe client does not execute dynamic tools." }],
+          contentItems: [{ type: "inputText", text: "Maestro local-safe client does not execute dynamic tools." }],
         },
       });
       return;
     }
     this.send({
       id: message.id,
-      error: { code: -32000, message: `Symphony local-safe client denies ${message.method}` },
+      error: { code: -32000, message: `Maestro local-safe client denies ${message.method}` },
     });
   }
 
@@ -217,7 +217,7 @@ export class CodexAppServerClient {
       sandbox: threadSandbox,
       config,
       model,
-      serviceName: "symphony",
+      serviceName: "maestro",
       ephemeral: false,
     });
     const threadId = result?.thread?.id;

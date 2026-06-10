@@ -16,14 +16,14 @@ function sendHtml(response) {
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Symphony</title>
+  <title>Maestro</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 2rem; color: #17202a; }
     code { background: #eef2f5; padding: 0.15rem 0.3rem; border-radius: 4px; }
   </style>
 </head>
 <body>
-  <h1>Symphony</h1>
+  <h1>Maestro</h1>
   <p>Use <code>/api/v1/state</code>, <code>/api/v1/&lt;issue_identifier&gt;</code>, and <code>POST /api/v1/refresh</code>.</p>
 </body>
 </html>`;
@@ -41,8 +41,8 @@ function methodNotAllowed(response, allowed) {
   }, { allow: allowed.join(", ") });
 }
 
-export function createSymphonyHttpHandler({ orchestrator, host = "127.0.0.1" }) {
-  return async function symphonyHttpHandler(request, response) {
+export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1" }) {
+  return async function maestroHttpHandler(request, response) {
     const url = new URL(request.url ?? "/", `http://${host}`);
     try {
       if (url.pathname === "/") {
@@ -70,7 +70,7 @@ export function createSymphonyHttpHandler({ orchestrator, host = "127.0.0.1" }) 
         const details = orchestrator.issueDetails(identifier);
         if (!details) {
           sendJson(response, 404, {
-            error: { code: "issue_not_found", message: `No Symphony state for ${identifier}` },
+            error: { code: "issue_not_found", message: `No Maestro state for ${identifier}` },
           });
           return;
         }
@@ -89,8 +89,8 @@ export function createSymphonyHttpHandler({ orchestrator, host = "127.0.0.1" }) 
   };
 }
 
-export async function startSymphonyHttpServer({ orchestrator, port, host = "127.0.0.1" }) {
-  const server = http.createServer(createSymphonyHttpHandler({ orchestrator, host }));
+export async function startMaestroHttpServer({ orchestrator, port, host = "127.0.0.1" }) {
+  const server = http.createServer(createMaestroHttpHandler({ orchestrator, host }));
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);

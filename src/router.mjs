@@ -206,7 +206,7 @@ async function priorOutputText(priorOutputs = [], { handoffMode = "normal", comp
       if (compacted.headroomFailed && !_headroomWarnedThisRun) {
         _headroomWarnedThisRun = true;
         process.stderr.write(
-          "[symphony:headroom] WARNING: headroom compression unavailable — proxy down or insufficient resources. " +
+          "[maestro:headroom] WARNING: headroom compression unavailable — proxy down or insufficient resources. " +
           "Fell back to byte-trim. Run: npm run headroom:setup\n",
         );
       }
@@ -341,7 +341,7 @@ Host action requests/results:
 ${actions}
 
 If you need user input before continuing, output exactly one line starting with:
-SYMPHONY_QUESTION: <your question>
+MAESTRO_QUESTION: <your question>
 
 Return:
 - goal
@@ -351,7 +351,7 @@ Return:
 - risks or questions
 
 When finished, include exactly one line starting with:
-SYMPHONY_HANDOFF: {"plan_summary":"","steps":[],"files_to_touch":[]}`;
+MAESTRO_HANDOFF: {"plan_summary":"","steps":[],"files_to_touch":[]}`;
   }
 
   if (role === "executor") {
@@ -380,15 +380,15 @@ Prior agent output:
 ${prior}
 
 If you need user input before continuing, output exactly one line starting with:
-SYMPHONY_QUESTION: <your question>
+MAESTRO_QUESTION: <your question>
 
-If you need Symphony to run a host-side action, output exactly one line starting with:
-SYMPHONY_ACTION_REQUEST: {"provider":"git","type":"git_commit|git_merge|git_push|git_fetch|git_pull","cwd":"","normalized_args":[],"expected_branch":"","expected_head":"","expected_status_hash":"","expected_remote_url":""}
+If you need Maestro to run a host-side action, output exactly one line starting with:
+MAESTRO_ACTION_REQUEST: {"provider":"git","type":"git_commit|git_merge|git_push|git_fetch|git_pull","cwd":"","normalized_args":[],"expected_branch":"","expected_head":"","expected_status_hash":"","expected_remote_url":""}
 or:
-SYMPHONY_ACTION_REQUEST: {"provider":"host","type":"host_command","cwd":"","command":"","args":[],"env":{},"timeout_ms":600000}
+MAESTRO_ACTION_REQUEST: {"provider":"host","type":"host_command","cwd":"","command":"","args":[],"env":{},"timeout_ms":600000}
 
 When finished, include exactly one line starting with:
-SYMPHONY_HANDOFF: {"changed_files":[],"verification":[],"residual_risks":[]}
+MAESTRO_HANDOFF: {"changed_files":[],"verification":[],"residual_risks":[]}
 
 Finish with changed files and verification run.`;
   }
@@ -419,21 +419,21 @@ Prior agent output:
 ${prior}
 
 If you need user input before continuing, output exactly one line starting with:
-SYMPHONY_QUESTION: <your question>
+MAESTRO_QUESTION: <your question>
 
-Reviewer output is advisory. Symphony decides final task status from the structured marker below.
+Reviewer output is advisory. Maestro decides final task status from the structured marker below.
 
 Return findings first, then exactly one final line starting with:
-SYMPHONY_REVIEW: {"version":1,"completion_state":"","required_action":"","risk_level":"","confidence":"","summary":"","evidence":[],"blockers":[],"required_user_input":null,"approval_request":null,"action_requests":[],"unblock_options":[],"continuation":null}
+MAESTRO_REVIEW: {"version":1,"completion_state":"","required_action":"","risk_level":"","confidence":"","summary":"","evidence":[],"blockers":[],"required_user_input":null,"approval_request":null,"action_requests":[],"unblock_options":[],"continuation":null}
 
 Valid completion_state values: complete, incomplete_continueable, incomplete_needs_user, incomplete_needs_approval, blocked_external, blocked_repo_state, blocked_safety, failed_agent, uncertain.
 Valid required_action values: none, continue, ask_user, request_approval, manual_fix, retry_after_environment_change, mark_failed.
 Use completion_state complete plus risk_level for complete-with-risk cases. Use incomplete_continueable only when a safe next Codex executor pass can finish without user input, approval, privileged commands, remote push/pull/fetch, destructive git, or unsafe repo state.
 For incomplete_needs_user, include required_user_input: {"question":"..."}.
 For incomplete_needs_approval, include approval_request: {"action":"...","reason":"..."}.
-For typed host approvals, include action_requests with provider git and type git_commit, git_merge, git_push, git_fetch, or git_pull, or provider host and type host_command with exact argv. Do not ask Symphony to run shell fragments unless the command is explicitly a shell executable plus argv.
+For typed host approvals, include action_requests with provider git and type git_commit, git_merge, git_push, git_fetch, or git_pull, or provider host and type host_command with exact argv. Do not ask Maestro to run shell fragments unless the command is explicitly a shell executable plus argv.
 For incomplete_continueable, include continuation: {"prompt":"...","reason":"..."}.
-Never suggest commands that Symphony should execute directly; describe needed action only.`;
+Never suggest commands that Maestro should execute directly; describe needed action only.`;
   }
 
   return `Role: ${role}

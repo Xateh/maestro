@@ -8,7 +8,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
-import { canonicalizeActionRequestsForTask, parseReviewerOutput, runLocalSymphonyCommand } from "../bin/symphony.mjs";
+import { canonicalizeActionRequestsForTask, parseReviewerOutput, runLocalMaestroCommand } from "../bin/maestro.mjs";
 import { buildCodexCommand } from "../src/adapters/codex.mjs";
 import { buildCopilotCommand } from "../src/adapters/copilot.mjs";
 import { buildClaudeCommand } from "../src/adapters/claude.mjs";
@@ -16,7 +16,7 @@ import { buildAntigravityCommand } from "../src/adapters/antigravity.mjs";
 import { TerminalAgentRunner } from "../src/agent-runner.mjs";
 import { buildStepPrompt, evaluatePlannerDecision, resolveAgentFlow } from "../src/router.mjs";
 import { LocalTaskStore, DEFAULT_WORKFLOW } from "../src/task-store.mjs";
-import { collectNewTaskForm, defaultCommandExists, filterTasksForView, formatPageHeader, formatProjectDetails, formatProjectList, formatSettingsList, formatTaskDetails, formatTaskDraft, formatTaskList, resolveTaskSelection, runSymphonyTui } from "../src/tui.mjs";
+import { collectNewTaskForm, defaultCommandExists, filterTasksForView, formatPageHeader, formatProjectDetails, formatProjectList, formatSettingsList, formatTaskDetails, formatTaskDraft, formatTaskList, resolveTaskSelection, runMaestroTui } from "../src/tui.mjs";
 
 import {
   loadEffectiveWorkflow,
@@ -35,13 +35,13 @@ import {
   CodexAppServerClient,
 } from "../src/codex-client.mjs";
 import {
-  SymphonyOrchestrator,
+  MaestroOrchestrator,
   computeRetryDelay,
   createRuntimeState,
   isIssueEligible,
   sortIssuesForDispatch,
 } from "../src/orchestrator.mjs";
-import { createSymphonyHttpHandler } from "../src/http-server.mjs";
+import { createMaestroHttpHandler } from "../src/http-server.mjs";
 import {
   parseAgentHandoff,
   REVIEW_MAX_CONTINUATIONS,
@@ -49,7 +49,7 @@ import {
 
 const TEST_HANDLE = process.env.USER ?? process.env.USERNAME ?? "xateh";
 
-async function tempDir(prefix = "symphony-test-") {
+async function tempDir(prefix = "maestro-test-") {
   return mkdtemp(path.join(tmpdir(), prefix));
 }
 
@@ -89,7 +89,7 @@ function createFakeGitRunner({
       throw error;
     }
     if (args[0] === "check-ignore") {
-      if (ignored) return { stdout: ".symphony/\n", stderr: "", code: 0 };
+      if (ignored) return { stdout: ".maestro/\n", stderr: "", code: 0 };
       const error = new Error("not ignored");
       error.code = 1;
       error.stdout = "";
@@ -252,16 +252,16 @@ test("workflow loading returns typed errors for bad files and strict prompt rend
 });
 
 test("CLI parser supports default workflow path, explicit path, and --port override", () => {
-  assert.deepEqual(parseCliArgs(["node", "scripts/symphony.mjs"]), {
+  assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs"]), {
     workflowPath: path.resolve("WORKFLOW.md"),
     port: null,
   });
-  assert.deepEqual(parseCliArgs(["node", "scripts/symphony.mjs", "ops/WORKFLOW.md", "--port", "0"]), {
+  assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs", "ops/WORKFLOW.md", "--port", "0"]), {
     workflowPath: path.resolve("ops/WORKFLOW.md"),
     port: 0,
   });
   assert.throws(
-    () => parseCliArgs(["node", "scripts/symphony.mjs", "--port", "nope"]),
+    () => parseCliArgs(["node", "scripts/maestro.mjs", "--port", "nope"]),
     /invalid_port/,
   );
 });
@@ -459,7 +459,7 @@ test("orchestrator dispatches eligible issues and schedules continuation retry a
     cancel: () => {},
   };
 
-  const orchestrator = new SymphonyOrchestrator({
+  const orchestrator = new MaestroOrchestrator({
     config: {
       tracker: { activeStates: ["Todo", "In Progress"], terminalStates: ["Done"], kind: "linear" },
       polling: { intervalMs: 30_000 },
@@ -504,7 +504,7 @@ test("orchestrator retry timer can relaunch its own claimed issue", async () => 
     },
     cancel: () => {},
   };
-  const orchestrator = new SymphonyOrchestrator({
+  const orchestrator = new MaestroOrchestrator({
     config: {
       tracker: { activeStates: ["Todo"], terminalStates: ["Done"], kind: "linear" },
       polling: { intervalMs: 30_000 },
@@ -554,7 +554,7 @@ test("HTTP extension serves state, issue details, refresh trigger, and JSON erro
     issueDetails: (identifier) => (identifier === "OPS-1" ? { issue_identifier: "OPS-1", status: "running" } : null),
     refresh: async () => ({ queued: true, coalesced: false, operations: ["poll", "reconcile"] }),
   };
-  const handler = createSymphonyHttpHandler({ orchestrator });
+  const handler = createMaestroHttpHandler({ orchestrator });
   const invoke = async (method, url) => {
     let statusCode = null;
     let headers = null;
@@ -716,28 +716,28 @@ test("Codex client launches in workspace cwd, tracks thread and turn, and fails 
   });
 });
 
-test("root package exposes Symphony scripts and dependencies", async () => {
+test("root package exposes Maestro scripts and dependencies", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
-  assert.equal(pkg.scripts.symphony, "node bin/symphony.mjs");
-  assert.equal(pkg.scripts["test:symphony"], "node --test test/symphony.test.mjs");
-  assert.match(pkg.scripts["test:enterprise"], /npm run test:symphony/);
+  assert.equal(pkg.scripts.maestro, "node bin/maestro.mjs");
+  assert.equal(pkg.scripts["test:maestro"], "node --test test/maestro.test.mjs");
+  assert.match(pkg.scripts["test:enterprise"], /npm run test:maestro/);
   assert.ok(pkg.dependencies.yaml);
   assert.ok(pkg.dependencies.liquidjs);
 });
 
-test("root gitignore ignores Symphony runtime and worktree state", async () => {
+test("root gitignore ignores Maestro runtime and worktree state", async () => {
   const ignore = await readFile(new URL("../.gitignore", import.meta.url), "utf8");
-  assert.match(ignore, /^\.symphony\/$/m);
+  assert.match(ignore, /^\.maestro\/$/m);
 });
 
-test("project create blocks until .symphony state is ignored", async () => {
+test("project create blocks until .maestro state is ignored", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const git = createFakeGitRunner({ ignored: false });
 
     await assert.rejects(
-      () => runLocalSymphonyCommand({
+      () => runLocalMaestroCommand({
         args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
         cwd: dir,
         stdout: { write: () => {} },
@@ -745,19 +745,19 @@ test("project create blocks until .symphony state is ignored", async () => {
         store,
         gitRunner: git.run,
       }),
-      /symphony_root_not_ignored/,
+      /maestro_root_not_ignored/,
     );
   });
 });
 
 test("project create blocks dirty target branches", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
-    const git = createFakeGitRunner({ dirty: " M scripts/symphony.mjs\n" });
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const git = createFakeGitRunner({ dirty: " M scripts/maestro.mjs\n" });
 
     await assert.rejects(
-      () => runLocalSymphonyCommand({
+      () => runLocalMaestroCommand({
         args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
         cwd: dir,
         stdout: { write: () => {} },
@@ -770,15 +770,15 @@ test("project create blocks dirty target branches", async () => {
   });
 });
 
-test("project create owns only .symphony worktrees and reports local secrets not copied", async () => {
+test("project create owns only .maestro worktrees and reports local secrets not copied", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
     await writeFile(path.join(dir, ".env"), "TOKEN=secret\n");
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const git = createFakeGitRunner();
     const output = [];
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: (text) => output.push(text) },
@@ -790,28 +790,28 @@ test("project create owns only .symphony worktrees and reports local secrets not
     const project = await store.readProject("alpha");
     assert.equal(result.project.id, "alpha");
     assert.equal(project.status, "open");
-    assert.equal(project.integration_branch, "symphony/alpha/integration");
-    assert.equal(project.integration_worktree, path.join(dir, ".symphony", "worktrees", "alpha", "integration"));
+    assert.equal(project.integration_branch, "maestro/alpha/integration");
+    assert.equal(project.integration_worktree, path.join(dir, ".maestro", "worktrees", "alpha", "integration"));
     assert.deepEqual(project.local_file_warnings, [{
       path: ".env",
       status: "not_copied",
       sensitive: true,
     }]);
-    assert.ok(git.calls.some((call) => call.args.join(" ") === "worktree add -b symphony/alpha/integration "
+    assert.ok(git.calls.some((call) => call.args.join(" ") === "worktree add -b maestro/alpha/integration "
       + `${project.integration_worktree} main`));
     assert.match(output.join(""), /local file .env not copied/);
   });
 });
 
-test("project task worktree creates a task branch with Symphony metadata env", async () => {
+test("project task worktree creates a task branch with Maestro metadata env", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner();
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -835,16 +835,16 @@ test("project task worktree creates a task branch with Symphony metadata env", a
       },
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: [
         "task",
         "--state-dir", store.root,
         "--project", "alpha",
         "--worktree-mode", "project-worktree",
-        "--paths", "scripts/symphony.mjs",
+        "--paths", "scripts/maestro.mjs",
         "--planner", "off",
         "--review", "off",
-        "Patch Symphony worktrees",
+        "Patch Maestro worktrees",
       ],
       cwd: dir,
       stdout: { write: () => {} },
@@ -857,21 +857,21 @@ test("project task worktree creates a task branch with Symphony metadata env", a
     const saved = await store.readTask(result.task.id);
     assert.equal(saved.project_id, "alpha");
     assert.equal(saved.worktree_mode, "project-worktree");
-    assert.equal(saved.branch, "symphony/alpha/task/patch-symphony-worktrees");
-    assert.equal(calls[0].cwd, path.join(dir, ".symphony", "worktrees", "alpha", "patch-symphony-worktrees"));
-    assert.equal(calls[0].env.SYMPHONY_PROJECT_ID, "alpha");
-    assert.equal(calls[0].env.SYMPHONY_TASK_ID, saved.id);
-    assert.equal(calls[0].env.SYMPHONY_BRANCH, saved.branch);
-    assert.equal(calls[0].env.SYMPHONY_WORKTREE, calls[0].cwd);
+    assert.equal(saved.branch, "maestro/alpha/task/patch-maestro-worktrees");
+    assert.equal(calls[0].cwd, path.join(dir, ".maestro", "worktrees", "alpha", "patch-maestro-worktrees"));
+    assert.equal(calls[0].env.MAESTRO_PROJECT_ID, "alpha");
+    assert.equal(calls[0].env.MAESTRO_TASK_ID, saved.id);
+    assert.equal(calls[0].env.MAESTRO_BRANCH, saved.branch);
+    assert.equal(calls[0].env.MAESTRO_WORKTREE, calls[0].cwd);
   });
 });
 
 test("overlapping project path leases queue write tasks", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const git = createFakeGitRunner();
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -881,18 +881,18 @@ test("overlapping project path leases queue write tasks", async () => {
     });
     await store.updateProject("alpha", {
       path_leases: {
-        "scripts/symphony.mjs": { task_id: "other-task", mode: "write" },
+        "scripts/maestro.mjs": { task_id: "other-task", mode: "write" },
       },
     });
     let ran = false;
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: [
         "task",
         "--state-dir", store.root,
         "--project", "alpha",
         "--worktree-mode", "project-worktree",
-        "--paths", "scripts/symphony.mjs",
+        "--paths", "scripts/maestro.mjs",
         "--planner", "off",
         "--review", "off",
         "Competing patch",
@@ -914,10 +914,10 @@ test("overlapping project path leases queue write tasks", async () => {
 
 test("retry keeps a path-conflicted task waiting while another task owns the lease", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const git = createFakeGitRunner();
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -927,16 +927,16 @@ test("retry keeps a path-conflicted task waiting while another task owns the lea
     });
     await store.updateProject("alpha", {
       path_leases: {
-        "scripts/symphony.mjs": { task_id: "other-task", mode: "write" },
+        "scripts/maestro.mjs": { task_id: "other-task", mode: "write" },
       },
     });
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: [
         "task",
         "--state-dir", store.root,
         "--project", "alpha",
         "--worktree-mode", "project-worktree",
-        "--paths", "scripts/symphony.mjs",
+        "--paths", "scripts/maestro.mjs",
         "--planner", "off",
         "--review", "off",
         "Retry blocked path",
@@ -950,7 +950,7 @@ test("retry keeps a path-conflicted task waiting while another task owns the lea
     });
     let ran = false;
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["retry", "--state-dir", store.root, waiting.task.id, "--note", "try again"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -969,13 +969,13 @@ test("retry keeps a path-conflicted task waiting while another task owns the lea
 
 test("retry force-parallel rebuilds missing project setup and runs despite path conflict", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner();
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -985,16 +985,16 @@ test("retry force-parallel rebuilds missing project setup and runs despite path 
     });
     await store.updateProject("alpha", {
       path_leases: {
-        "scripts/symphony.mjs": { task_id: "other-task", mode: "write" },
+        "scripts/maestro.mjs": { task_id: "other-task", mode: "write" },
       },
     });
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: [
         "task",
         "--state-dir", store.root,
         "--project", "alpha",
         "--worktree-mode", "project-worktree",
-        "--paths", "scripts/symphony.mjs",
+        "--paths", "scripts/maestro.mjs",
         "--planner", "off",
         "--review", "off",
         "Force retry path",
@@ -1008,7 +1008,7 @@ test("retry force-parallel rebuilds missing project setup and runs despite path 
     });
     const seen = {};
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["retry", "--state-dir", store.root, waiting.task.id, "--force-parallel", "--note", "force it"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1021,7 +1021,7 @@ test("retry force-parallel rebuilds missing project setup and runs despite path 
           seen.cwd = step.cwd;
           seen.branch = task.branch;
           seen.worktreePath = task.worktree_path;
-          seen.lease = project.path_leases["scripts/symphony.mjs"]?.task_id;
+          seen.lease = project.path_leases["scripts/maestro.mjs"]?.task_id;
           seen.record = (project.tasks ?? []).find((record) => record.id === task.id);
           return {
             status: "succeeded",
@@ -1038,8 +1038,8 @@ test("retry force-parallel rebuilds missing project setup and runs despite path 
     });
 
     assert.equal(result.task.status, "succeeded");
-    assert.equal(seen.branch, "symphony/alpha/task/force-retry-path");
-    assert.equal(seen.worktreePath, path.join(dir, ".symphony", "worktrees", "alpha", "force-retry-path"));
+    assert.equal(seen.branch, "maestro/alpha/task/force-retry-path");
+    assert.equal(seen.worktreePath, path.join(dir, ".maestro", "worktrees", "alpha", "force-retry-path"));
     assert.equal(seen.cwd, seen.worktreePath);
     assert.equal(seen.lease, waiting.task.id);
     assert.equal(seen.record.branch, seen.branch);
@@ -1048,13 +1048,13 @@ test("retry force-parallel rebuilds missing project setup and runs despite path 
 
 test("retry after a lease clears creates missing branch, project task record, and leases before running", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner();
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1064,16 +1064,16 @@ test("retry after a lease clears creates missing branch, project task record, an
     });
     await store.updateProject("alpha", {
       path_leases: {
-        "scripts/symphony.mjs": { task_id: "other-task", mode: "write" },
+        "scripts/maestro.mjs": { task_id: "other-task", mode: "write" },
       },
     });
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: [
         "task",
         "--state-dir", store.root,
         "--project", "alpha",
         "--worktree-mode", "project-worktree",
-        "--paths", "scripts/symphony.mjs",
+        "--paths", "scripts/maestro.mjs",
         "--planner", "off",
         "--review", "off",
         "Lease cleared path",
@@ -1088,7 +1088,7 @@ test("retry after a lease clears creates missing branch, project task record, an
     await store.updateProject("alpha", { path_leases: {} });
     const seen = {};
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["retry", "--state-dir", store.root, waiting.task.id],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1101,7 +1101,7 @@ test("retry after a lease clears creates missing branch, project task record, an
           seen.cwd = step.cwd;
           seen.branch = task.branch;
           seen.record = (project.tasks ?? []).find((record) => record.id === task.id);
-          seen.lease = project.path_leases["scripts/symphony.mjs"]?.task_id;
+          seen.lease = project.path_leases["scripts/maestro.mjs"]?.task_id;
           return {
             status: "succeeded",
             stdout: "executor ok",
@@ -1117,8 +1117,8 @@ test("retry after a lease clears creates missing branch, project task record, an
     });
 
     assert.equal(result.task.status, "succeeded");
-    assert.equal(seen.branch, "symphony/alpha/task/lease-cleared-path");
-    assert.equal(seen.cwd, path.join(dir, ".symphony", "worktrees", "alpha", "lease-cleared-path"));
+    assert.equal(seen.branch, "maestro/alpha/task/lease-cleared-path");
+    assert.equal(seen.cwd, path.join(dir, ".maestro", "worktrees", "alpha", "lease-cleared-path"));
     assert.equal(seen.record.id, waiting.task.id);
     assert.equal(seen.lease, waiting.task.id);
   });
@@ -1126,19 +1126,19 @@ test("retry after a lease clears creates missing branch, project task record, an
 
 test("agent HEAD movement marks project task for review and blocks automation", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
-    const taskWorktree = path.join(dir, ".symphony", "worktrees", "alpha", "agent-commit");
+    const taskWorktree = path.join(dir, ".maestro", "worktrees", "alpha", "agent-commit");
     const git = createFakeGitRunner({
       headByCwd: {
         [dir]: "main-head",
         [taskWorktree]: ["agent-start", "agent-commit"],
       },
     });
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1147,7 +1147,7 @@ test("agent HEAD movement marks project task for review and blocks automation", 
       gitRunner: git.run,
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: [
         "task",
         "--state-dir", store.root,
@@ -1184,14 +1184,14 @@ test("agent HEAD movement marks project task for review and blocks automation", 
 test("current-cwd git publish tasks request broker approval before agents run", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     let ran = false;
     const stderr = [];
     const git = createFakeGitRunner({ dirtyByCwd: { [dir]: " M package.json\n" } });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: [
         "task",
         "--state-dir", store.root,
@@ -1221,9 +1221,9 @@ test("current-cwd git publish tasks request broker approval before agents run", 
 
 test("unsupported git intent waits for user recovery instead of blocking", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Merge branch"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1245,7 +1245,7 @@ test("unsupported git intent waits for user recovery instead of blocking", async
 test("commit then push requests only commit first and refreshes push snapshot after commit", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner({ dirtyByCwd: { [dir]: " M package.json\n" }, commitHead: "head-after-commit" });
@@ -1257,7 +1257,7 @@ test("commit then push requests only commit first and refreshes push snapshot af
       },
     };
 
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Commit then push current changes"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1269,7 +1269,7 @@ test("commit then push requests only commit first and refreshes push snapshot af
     assert.equal(waiting.task.status, "waiting_approval");
     assert.deepEqual(waiting.task.action_requests.map((request) => request.type), ["git_commit"]);
 
-    const afterCommit = await runLocalSymphonyCommand({
+    const afterCommit = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, waiting.task.id, waiting.task.action_requests[0].id],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1295,7 +1295,7 @@ test("commit then push requests only commit first and refreshes push snapshot af
 test("approve-action note resumes the agent before automatic next git action", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner({ dirtyByCwd: { [dir]: " M package.json\n" }, commitHead: "head-after-commit" });
@@ -1315,7 +1315,7 @@ test("approve-action note resumes the agent before automatic next git action", a
       },
     };
 
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Commit then push current changes"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1325,7 +1325,7 @@ test("approve-action note resumes the agent before automatic next git action", a
       gitRunner: git.run,
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: [
         "approve-action",
         "--state-dir", store.root,
@@ -1354,7 +1354,7 @@ test("approve-action note resumes the agent before automatic next git action", a
 test("deny-action note resumes the agent with denied action context", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner({ dirtyByCwd: { [dir]: " M package.json\n" } });
@@ -1374,7 +1374,7 @@ test("deny-action note resumes the agent with denied action context", async () =
       },
     };
 
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Commit current changes"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1384,7 +1384,7 @@ test("deny-action note resumes the agent with denied action context", async () =
       gitRunner: git.run,
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: [
         "deny-action",
         "--state-dir", store.root,
@@ -1411,7 +1411,7 @@ test("deny-action note resumes the agent with denied action context", async () =
 test("approving git action runs broker once and resumes task", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner({ dirtyByCwd: { [dir]: " M package.json\n" } });
@@ -1431,7 +1431,7 @@ test("approving git action runs broker once and resumes task", async () => {
       },
     };
 
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Commit current changes"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1442,7 +1442,7 @@ test("approving git action runs broker once and resumes task", async () => {
     });
     const actionId = waiting.task.action_requests[0].id;
 
-    const approved = await runLocalSymphonyCommand({
+    const approved = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, waiting.task.id, actionId, "--note", "commit locally"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1451,7 +1451,7 @@ test("approving git action runs broker once and resumes task", async () => {
       runner,
       gitRunner: git.run,
     });
-    const duplicate = await runLocalSymphonyCommand({
+    const duplicate = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, waiting.task.id, actionId, "--note", "duplicate"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1476,7 +1476,7 @@ test("approving git action runs broker once and resumes task", async () => {
 test("approve-action prints receipt when stale approval is not run", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner({
@@ -1492,7 +1492,7 @@ test("approve-action prints receipt when stale approval is not run", async () =>
         type: "git_commit",
         status: "pending",
         cwd: dir,
-        normalized_args: ["commit", "-m", "symphony: test"],
+        normalized_args: ["commit", "-m", "maestro: test"],
         expected_branch: "main",
         expected_head: "head-1",
         expected_status_hash: statusHash(" M package.json\n"),
@@ -1503,7 +1503,7 @@ test("approve-action prints receipt when stale approval is not run", async () =>
     });
     const output = [];
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1"],
       cwd: dir,
       stdout: { write: (text) => output.push(text) },
@@ -1524,7 +1524,7 @@ test("approve-action prints receipt when stale approval is not run", async () =>
 
 test("approve-action prints no-op receipt for already succeeded request", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Commit current changes", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "succeeded",
@@ -1534,14 +1534,14 @@ test("approve-action prints no-op receipt for already succeeded request", async 
         type: "git_commit",
         status: "succeeded",
         cwd: dir,
-        normalized_args: ["commit", "-m", "symphony: test"],
+        normalized_args: ["commit", "-m", "maestro: test"],
         continuation_generation: 0,
         result: { code: 0, stdout: "already committed", stderr: "" },
       }],
     });
     const output = [];
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1"],
       cwd: dir,
       stdout: { write: (text) => output.push(text) },
@@ -1559,7 +1559,7 @@ test("approve-action prints no-op receipt for already succeeded request", async 
 
 test("state-changing CLI commands print feedback receipts", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     // host_command_allow required for the run-action on printf later in this test.
     await store.writeConfig({ host_command_allow: ["printf"] });
     const runner = {
@@ -1587,7 +1587,7 @@ test("state-changing CLI commands print feedback receipts", async () => {
       }],
     });
     const editOut = [];
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["edit-action", "--state-dir", store.root, editTask.id, "act-1", "--args-json", "[\"push\",\"origin\",\"feature\"]"],
       cwd: dir,
       stdout: { write: (text) => editOut.push(text) },
@@ -1611,7 +1611,7 @@ test("state-changing CLI commands print feedback receipts", async () => {
       }],
     });
     const runOut = [];
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["run-action", "--state-dir", store.root, runTask.id, "act-1", "--note", "run it"],
       cwd: dir,
       stdout: { write: (text) => runOut.push(text) },
@@ -1635,7 +1635,7 @@ test("state-changing CLI commands print feedback receipts", async () => {
       }],
     });
     const denyOut = [];
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["deny-action", "--state-dir", store.root, denyTask.id, "act-1", "--note", "do not push"],
       cwd: dir,
       stdout: { write: (text) => denyOut.push(text) },
@@ -1652,7 +1652,7 @@ test("state-changing CLI commands print feedback receipts", async () => {
       unblock_options: [{ id: "retry-task", type: "retry", label: "Retry", status: "open" }],
     });
     const retryOut = [];
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["retry", "--state-dir", store.root, retryTask.id, "--note", "again"],
       cwd: dir,
       stdout: { write: (text) => retryOut.push(text) },
@@ -1668,7 +1668,7 @@ test("state-changing CLI commands print feedback receipts", async () => {
       unblock_options: [{ id: "cancel-task", type: "cancel", label: "Cancel", status: "open" }],
     });
     const cancelOut = [];
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["cancel", "--state-dir", store.root, cancelTask.id, "--note", "stop"],
       cwd: dir,
       stdout: { write: (text) => cancelOut.push(text) },
@@ -1740,7 +1740,7 @@ test("canonical action requests collapse identical ids and split conflicting sam
 test("stale git action approval stays actionable and run-action bypasses freshness", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const git = createFakeGitRunner({
@@ -1748,7 +1748,7 @@ test("stale git action approval stays actionable and run-action bypasses freshne
       headByCwd: { [dir]: ["head-1", "head-2"] },
     });
 
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Commit current changes"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1758,7 +1758,7 @@ test("stale git action approval stays actionable and run-action bypasses freshne
       gitRunner: git.run,
     });
 
-    const blocked = await runLocalSymphonyCommand({
+    const blocked = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, waiting.task.id, waiting.task.action_requests[0].id],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1775,7 +1775,7 @@ test("stale git action approval stays actionable and run-action bypasses freshne
     assert.equal(blocked.task.action_requests[0].stale_reason, "head_changed");
     assert.equal(blocked.task.unblock_options.some((option) => option.type === "run_anyway"), true);
 
-    const resumed = await runLocalSymphonyCommand({
+    const resumed = await runLocalMaestroCommand({
       args: ["run-action", "--state-dir", store.root, waiting.task.id, waiting.task.action_requests[0].id, "--note", "state changed; run anyway"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -1809,7 +1809,7 @@ test("unsafe git action requests reject force, ref deletion, and shell injection
       ["act-inject", ["push", "origin", "main;rm -rf /"]],
     ];
     for (const [actionId, normalizedArgs] of cases) {
-      const store = new LocalTaskStore({ root: path.join(dir, `.symphony-${actionId}`) });
+      const store = new LocalTaskStore({ root: path.join(dir, `.maestro-${actionId}`) });
       const task = await store.createTask({ prompt: "Push force", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
       await store.updateTask(task.id, {
         status: "waiting_approval",
@@ -1830,7 +1830,7 @@ test("unsafe git action requests reject force, ref deletion, and shell injection
       });
       const git = createFakeGitRunner();
 
-      const result = await runLocalSymphonyCommand({
+      const result = await runLocalMaestroCommand({
         args: ["approve-action", "--state-dir", store.root, task.id, actionId],
         cwd: dir,
         stdout: { write: () => {} },
@@ -1859,7 +1859,7 @@ test("git push action validation rejects force flags, refspec mapping, wildcards
       ["extra-arg", ["push", "origin", "main", "--tags"]],
     ];
     for (const [caseId, normalizedArgs] of cases) {
-      const store = new LocalTaskStore({ root: path.join(dir, `.symphony-push-${caseId}`) });
+      const store = new LocalTaskStore({ root: path.join(dir, `.maestro-push-${caseId}`) });
       const task = await store.createTask({ prompt: "Push branch", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
       await store.updateTask(task.id, {
         status: "waiting_approval",
@@ -1879,7 +1879,7 @@ test("git push action validation rejects force flags, refspec mapping, wildcards
       });
       const git = createFakeGitRunner();
 
-      const result = await runLocalSymphonyCommand({
+      const result = await runLocalMaestroCommand({
         args: ["approve-action", "--state-dir", store.root, task.id, `act-${caseId}`],
         cwd: dir,
         stdout: { write: () => {} },
@@ -1917,7 +1917,7 @@ test("broker auth and merge failures route to recovery states", async () => {
       },
     ];
     for (const item of cases) {
-      const store = new LocalTaskStore({ root: path.join(dir, `.symphony-${item.id}`) });
+      const store = new LocalTaskStore({ root: path.join(dir, `.maestro-${item.id}`) });
       const task = await store.createTask({ prompt: `Run ${item.id}`, cwd: dir, plannerPolicy: "off", reviewEnabled: false });
       await store.updateTask(task.id, {
         status: "waiting_approval",
@@ -1935,7 +1935,7 @@ test("broker auth and merge failures route to recovery states", async () => {
           continuation_generation: 0,
         }],
       });
-      const result = await runLocalSymphonyCommand({
+      const result = await runLocalMaestroCommand({
         args: ["approve-action", "--state-dir", store.root, task.id, `act-${item.id}`],
         cwd: dir,
         stdout: { write: () => {} },
@@ -1954,7 +1954,7 @@ test("broker auth and merge failures route to recovery states", async () => {
 
 test("failed git action can be rerun or force marked done", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Push branch", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_approval",
@@ -1978,7 +1978,7 @@ test("failed git action can be rerun or force marked done", async () => {
       ],
     });
     const git = createFakeGitRunner();
-    const rerun = await runLocalSymphonyCommand({
+    const rerun = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1", "--note", "network fixed"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2019,7 +2019,7 @@ test("failed git action can be rerun or force marked done", async () => {
         result: { code: 1, stdout: "", stderr: "auth failed" },
       }],
     });
-    const forced = await runLocalSymphonyCommand({
+    const forced = await runLocalMaestroCommand({
       args: ["mark-done", "--state-dir", store.root, second.id, "act-2", "--force", "--note", "fetched manually"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2043,10 +2043,10 @@ test("failed git action can be rerun or force marked done", async () => {
   });
 });
 
-test("SYMPHONY_HANDOFF JSON is written to disk and used in reviewer prompt", async () => {
+test("MAESTRO_HANDOFF JSON is written to disk and used in reviewer prompt", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const prompts = [];
@@ -2056,8 +2056,8 @@ test("SYMPHONY_HANDOFF JSON is written to disk and used in reviewer prompt", asy
         return {
           status: "succeeded",
           stdout: step.role === "executor"
-            ? `SYMPHONY_HANDOFF: ${JSON.stringify({ changed_files: ["scripts/symphony.mjs"], verification: ["npm run test:symphony"], residual_risks: [] })}\nraw log line\n`
-            : `SYMPHONY_REVIEW: ${JSON.stringify({ version: 1, completion_state: "complete", required_action: "none", risk_level: "low", confidence: "high", summary: "ok", evidence: [], blockers: [], required_user_input: null, approval_request: null, continuation: null })}\n`,
+            ? `MAESTRO_HANDOFF: ${JSON.stringify({ changed_files: ["scripts/maestro.mjs"], verification: ["npm run test:maestro"], residual_risks: [] })}\nraw log line\n`
+            : `MAESTRO_REVIEW: ${JSON.stringify({ version: 1, completion_state: "complete", required_action: "none", risk_level: "low", confidence: "high", summary: "ok", evidence: [], blockers: [], required_user_input: null, approval_request: null, continuation: null })}\n`,
           stderr: "",
           stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
           stderrPath: path.join(step.logDir, `${step.role}.stderr.log`),
@@ -2067,7 +2067,7 @@ test("SYMPHONY_HANDOFF JSON is written to disk and used in reviewer prompt", asy
       },
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "Structured handoff"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2077,22 +2077,22 @@ test("SYMPHONY_HANDOFF JSON is written to disk and used in reviewer prompt", asy
     });
 
     const handoff = JSON.parse(await readFile(path.join(result.task.run_dir, "handoff.executor.json"), "utf8"));
-    assert.deepEqual(handoff.payload.changed_files, ["scripts/symphony.mjs"]);
+    assert.deepEqual(handoff.payload.changed_files, ["scripts/maestro.mjs"]);
     assert.match(prompts.at(-1), /Structured handoff from executor/);
-    assert.match(prompts.at(-1), /scripts\/symphony\.mjs/);
+    assert.match(prompts.at(-1), /scripts\/maestro\.mjs/);
   });
 });
 
-test("SYMPHONY_HANDOFF is parsed from Codex JSON agent messages", async () => {
+test("MAESTRO_HANDOFF is parsed from Codex JSON agent messages", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const prompts = [];
     const payload = { changed_files: ["a.txt"], verification: [], residual_risks: ["push blocked"] };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: [
         "task",
         "--state-dir", store.root,
@@ -2109,8 +2109,8 @@ test("SYMPHONY_HANDOFF is parsed from Codex JSON agent messages", async () => {
           return {
             status: "succeeded",
             stdout: step.role === "executor"
-              ? `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: `done\nSYMPHONY_HANDOFF: ${JSON.stringify(payload)}` } })}\n`
-              : `SYMPHONY_REVIEW: ${JSON.stringify({ version: 1, completion_state: "complete", required_action: "none", risk_level: "low", confidence: "high", summary: "ok", evidence: [], blockers: [], required_user_input: null, approval_request: null, continuation: null })}\n`,
+              ? `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: `done\nMAESTRO_HANDOFF: ${JSON.stringify(payload)}` } })}\n`
+              : `MAESTRO_REVIEW: ${JSON.stringify({ version: 1, completion_state: "complete", required_action: "none", risk_level: "low", confidence: "high", summary: "ok", evidence: [], blockers: [], required_user_input: null, approval_request: null, continuation: null })}\n`,
             stderr: "",
             stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
             stderrPath: path.join(step.logDir, `${step.role}.stderr.log`),
@@ -2132,7 +2132,7 @@ test("SYMPHONY_HANDOFF is parsed from Codex JSON agent messages", async () => {
 test("reviewer complete marker controls final success and records review", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const verdict = {
@@ -2148,7 +2148,7 @@ test("reviewer complete marker controls final success and records review", async
       approval_request: null,
       continuation: null,
     };
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "Patch docs"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2157,7 +2157,7 @@ test("reviewer complete marker controls final success and records review", async
       runner: {
         runStep: async (step) => ({
           status: "succeeded",
-          stdout: step.role === "reviewer" ? `SYMPHONY_REVIEW: ${JSON.stringify(verdict)}\n` : "executor ok",
+          stdout: step.role === "reviewer" ? `MAESTRO_REVIEW: ${JSON.stringify(verdict)}\n` : "executor ok",
           stderr: "",
           stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
           stderrPath: path.join(step.logDir, `${step.role}.stderr.log`),
@@ -2177,11 +2177,11 @@ test("reviewer complete marker controls final success and records review", async
 test("missing reviewer marker becomes waiting_user and uncertain", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "Patch docs"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2235,7 +2235,7 @@ test("reviewer can route task to user or approval waiting states", async () => {
 
     for (const item of cases) {
       const store = new LocalTaskStore({
-        root: path.join(dir, `.symphony-${item.expectedStatus}`),
+        root: path.join(dir, `.maestro-${item.expectedStatus}`),
         clock: () => new Date("2026-05-13T12:34:56.000Z"),
       });
       const verdict = {
@@ -2251,7 +2251,7 @@ test("reviewer can route task to user or approval waiting states", async () => {
         approval_request: item.verdict.approval_request ?? null,
         continuation: null,
       };
-      const result = await runLocalSymphonyCommand({
+      const result = await runLocalMaestroCommand({
         args: ["task", "--state-dir", store.root, "--planner", "off", item.prompt],
         cwd: dir,
         stdout: { write: () => {} },
@@ -2260,7 +2260,7 @@ test("reviewer can route task to user or approval waiting states", async () => {
         runner: {
           runStep: async (step) => ({
             status: "succeeded",
-            stdout: step.role === "reviewer" ? `SYMPHONY_REVIEW: ${JSON.stringify(verdict)}\n` : "executor ok",
+            stdout: step.role === "reviewer" ? `MAESTRO_REVIEW: ${JSON.stringify(verdict)}\n` : "executor ok",
             stderr: "",
             stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
             stderrPath: path.join(step.logDir, `${step.role}.stderr.log`),
@@ -2277,7 +2277,7 @@ test("reviewer can route task to user or approval waiting states", async () => {
 });
 
 test("reviewer marker can carry typed action requests and unblock options", () => {
-  const review = parseReviewerOutput(`SYMPHONY_REVIEW: ${JSON.stringify({
+  const review = parseReviewerOutput(`MAESTRO_REVIEW: ${JSON.stringify({
     version: 1,
     completion_state: "incomplete_needs_approval",
     required_action: "request_approval",
@@ -2292,7 +2292,7 @@ test("reviewer marker can carry typed action requests and unblock options", () =
       provider: "git",
       type: "git_commit",
       cwd: "/repo",
-      normalized_args: ["commit", "-m", "symphony: test"],
+      normalized_args: ["commit", "-m", "maestro: test"],
       expected_branch: "main",
       expected_head: "head-1",
       expected_status_hash: statusHash(" M package.json\n"),
@@ -2307,7 +2307,7 @@ test("reviewer marker can carry typed action requests and unblock options", () =
 
 test("manual mark-done records audit note and resumes task", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Publish after manual step", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_approval",
@@ -2328,7 +2328,7 @@ test("manual mark-done records audit note and resumes task", async () => {
     });
     const prompts = [];
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["mark-done", "--state-dir", store.root, task.id, "--note", "I pushed manually"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2360,7 +2360,7 @@ test("manual mark-done records audit note and resumes task", async () => {
 
 test("manual mark-done fails for commit when HEAD has not changed", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Commit current changes", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_approval",
@@ -2370,7 +2370,7 @@ test("manual mark-done fails for commit when HEAD has not changed", async () => 
         type: "git_commit",
         status: "pending",
         cwd: dir,
-        normalized_args: ["commit", "-m", "symphony: test"],
+        normalized_args: ["commit", "-m", "maestro: test"],
         expected_branch: "main",
         expected_head: "head-1",
         expected_status_hash: statusHash(" M package.json\n"),
@@ -2379,7 +2379,7 @@ test("manual mark-done fails for commit when HEAD has not changed", async () => 
       }],
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["mark-done", "--state-dir", store.root, task.id, "act-1", "--note", "committed elsewhere"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2397,7 +2397,7 @@ test("manual mark-done fails for commit when HEAD has not changed", async () => 
 
 test("manual mark-done succeeds for changed HEAD and appends the next git action", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Commit then push current changes", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_approval",
@@ -2407,7 +2407,7 @@ test("manual mark-done succeeds for changed HEAD and appends the next git action
         type: "git_commit",
         status: "pending",
         cwd: dir,
-        normalized_args: ["commit", "-m", "symphony: test"],
+        normalized_args: ["commit", "-m", "maestro: test"],
         expected_branch: "main",
         expected_head: "head-1",
         expected_status_hash: statusHash(" M package.json\n"),
@@ -2417,7 +2417,7 @@ test("manual mark-done succeeds for changed HEAD and appends the next git action
     });
     let ran = false;
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["mark-done", "--state-dir", store.root, task.id, "act-1", "--note", "committed manually"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2440,7 +2440,7 @@ test("manual mark-done succeeds for changed HEAD and appends the next git action
 
 test("manual mark-done without action id stays waiting when multiple actions are pending", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Commit and push", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_approval",
@@ -2451,7 +2451,7 @@ test("manual mark-done without action id stays waiting when multiple actions are
           type: "git_commit",
           status: "pending",
           cwd: dir,
-          normalized_args: ["commit", "-m", "symphony: test"],
+          normalized_args: ["commit", "-m", "maestro: test"],
           expected_branch: "main",
           expected_head: "head-1",
           expected_status_hash: statusHash(" M package.json\n"),
@@ -2474,7 +2474,7 @@ test("manual mark-done without action id stays waiting when multiple actions are
       ],
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["mark-done", "--state-dir", store.root, task.id, "--note", "one of them"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2492,7 +2492,7 @@ test("manual mark-done without action id stays waiting when multiple actions are
 
 test("git action args normalize a harmless leading git token before execution", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Push branch", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_approval",
@@ -2512,7 +2512,7 @@ test("git action args normalize a harmless leading git token before execution", 
     });
     const git = createFakeGitRunner();
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1", "--note", "run push"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2544,7 +2544,7 @@ test("git action outside task cwd becomes recoverable external-cwd action instea
     const externalCwd = path.join(dir, "other");
     await mkdir(taskCwd, { recursive: true });
     await mkdir(externalCwd, { recursive: true });
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Push external repo", cwd: taskCwd, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_approval",
@@ -2564,7 +2564,7 @@ test("git action outside task cwd becomes recoverable external-cwd action instea
     });
     const git = createFakeGitRunner();
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2584,7 +2584,7 @@ test("git action outside task cwd becomes recoverable external-cwd action instea
     );
     assert.equal(git.calls.some((call) => call.args[0] === "push"), false);
 
-    const resumed = await runLocalSymphonyCommand({
+    const resumed = await runLocalMaestroCommand({
       args: ["run-action", "--state-dir", store.root, task.id, "act-1", "--note", "I approve the external cwd"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2612,7 +2612,7 @@ test("git action outside task cwd becomes recoverable external-cwd action instea
 
 test("host command action captures logs and resumes with compact output context", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     // host_command_allow must be set in config; default empty = feature off (S1 fix).
     await store.writeConfig({ host_command_allow: ["printf"] });
     const task = await store.createTask({ prompt: "Run host command", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
@@ -2633,7 +2633,7 @@ test("host command action captures logs and resumes with compact output context"
     });
     const prompts = [];
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1", "--note", "safe host run"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2672,7 +2672,7 @@ test("host command action captures logs and resumes with compact output context"
 
 test("edit-action rewrites malformed git args before approval", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Push branch", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_approval",
@@ -2692,7 +2692,7 @@ test("edit-action rewrites malformed git args before approval", async () => {
     });
     const git = createFakeGitRunner();
 
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2703,14 +2703,14 @@ test("edit-action rewrites malformed git args before approval", async () => {
     assert.equal(waiting.task.status, "waiting_user");
     assert.equal(waiting.task.unblock_options.some((option) => option.type === "edit_action"), true);
 
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["edit-action", "--state-dir", store.root, task.id, "act-1", "--args-json", "[\"git\",\"push\",\"origin\",\"main\"]"],
       cwd: dir,
       stdout: { write: () => {} },
       stderr: { write: () => {} },
       store,
     });
-    const approved = await runLocalSymphonyCommand({
+    const approved = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1", "--note", "edited"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2738,7 +2738,7 @@ test("edit-action rewrites malformed git args before approval", async () => {
 
 test("host command failure stays recoverable with captured stderr log", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     // host_command_allow must be set in config; default empty = feature off (S1 fix).
     await store.writeConfig({ host_command_allow: ["sh"] });
     const task = await store.createTask({ prompt: "Run failing host command", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
@@ -2758,7 +2758,7 @@ test("host command failure stays recoverable with captured stderr log", async ()
       }],
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2780,7 +2780,7 @@ test("host command failure stays recoverable with captured stderr log", async ()
 
 test("failed host action can be approved again, edited in any flag order, and force marked done", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     // host_command_allow must be set in config; default empty = feature off (S1 fix).
     await store.writeConfig({ host_command_allow: ["sh", "printf"] });
     const task = await store.createTask({ prompt: "Run recoverable host command", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
@@ -2801,7 +2801,7 @@ test("failed host action can be approved again, edited in any flag order, and fo
     });
     let prompts = [];
 
-    const failed = await runLocalSymphonyCommand({
+    const failed = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2811,7 +2811,7 @@ test("failed host action can be approved again, edited in any flag order, and fo
     });
     assert.equal(failed.task.action_requests[0].status, "failed");
 
-    const rerun = await runLocalSymphonyCommand({
+    const rerun = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1", "--note", "try same command again"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2854,7 +2854,7 @@ test("failed host action can be approved again, edited in any flag order, and fo
         continuation_generation: 0,
       }],
     });
-    const edited = await runLocalSymphonyCommand({
+    const edited = await runLocalMaestroCommand({
       args: [
         "edit-action",
         "--state-dir", store.root,
@@ -2877,8 +2877,8 @@ test("failed host action can be approved again, edited in any flag order, and fo
     assert.equal(edited.task.action_requests[0].timeout_ms, -1);
 
     prompts = [];
-    const forced = await runLocalSymphonyCommand({
-      args: ["mark-done", "--state-dir", store.root, second.id, "act-2", "--force", "--note", "completed outside Symphony"],
+    const forced = await runLocalMaestroCommand({
+      args: ["mark-done", "--state-dir", store.root, second.id, "act-2", "--force", "--note", "completed outside Maestro"],
       cwd: dir,
       stdout: { write: () => {} },
       stderr: { write: () => {} },
@@ -2903,15 +2903,15 @@ test("failed host action can be approved again, edited in any flag order, and fo
     assert.equal(forced.task.action_requests[0].status, "succeeded");
     assert.equal(forced.task.action_requests[0].result.forced, true);
     assert.match(prompts.at(-1), /User reports command completed manually/);
-    assert.match(prompts.at(-1), /completed outside Symphony/);
+    assert.match(prompts.at(-1), /completed outside Maestro/);
   });
 });
 
 test("failed agent run becomes waiting_user with retry, instruct, and cancel options", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Run flaky task"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2940,9 +2940,9 @@ test("failed agent run becomes waiting_user with retry, instruct, and cancel opt
 
 test("agent timeout exposes extend-timeout and queues continuation", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
 
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Run slow task"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2963,7 +2963,7 @@ test("agent timeout exposes extend-timeout and queues continuation", async () =>
     assert.equal(waiting.task.unblock_options.some((option) => option.type === "extend_timeout"), true);
 
     const prompts = [];
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["extend-timeout", "--state-dir", store.root, waiting.task.id, "--timeout-ms", "-1", "--note", "disable timeout and continue"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -2996,13 +2996,13 @@ test("agent timeout exposes extend-timeout and queues continuation", async () =>
 
 test("message command queues non-running task context and preserves running task state", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const queued = await store.createTask({ prompt: "Patch docs", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     const running = await store.createTask({ prompt: "Long task", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(running.id, { status: "running" });
     const prompts = [];
 
-    const queuedResult = await runLocalSymphonyCommand({
+    const queuedResult = await runLocalMaestroCommand({
       args: ["message", "--state-dir", store.root, queued.id, "--note", "Use the v2 endpoint"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3024,7 +3024,7 @@ test("message command queues non-running task context and preserves running task
       },
       gitRunner: createFakeGitRunner().run,
     });
-    const runningResult = await runLocalSymphonyCommand({
+    const runningResult = await runLocalMaestroCommand({
       args: ["message", "--state-dir", store.root, running.id, "--note", "Pause before final review"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3044,7 +3044,7 @@ test("message command queues non-running task context and preserves running task
 test("approval command records decision and resumes through continuation", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     let reviewerCalls = 0;
@@ -3082,7 +3082,7 @@ test("approval command records decision and resumes through continuation", async
         if (step.role === "reviewer") reviewerCalls += 1;
         return {
           status: "succeeded",
-          stdout: step.role === "reviewer" ? `SYMPHONY_REVIEW: ${JSON.stringify(review)}\n` : "executor ok",
+          stdout: step.role === "reviewer" ? `MAESTRO_REVIEW: ${JSON.stringify(review)}\n` : "executor ok",
           stderr: "",
           stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
           stderrPath: path.join(step.logDir, `${step.role}.stderr.log`),
@@ -3092,7 +3092,7 @@ test("approval command records decision and resumes through continuation", async
       },
     };
 
-    const waiting = await runLocalSymphonyCommand({
+    const waiting = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "Publish after review"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3102,7 +3102,7 @@ test("approval command records decision and resumes through continuation", async
     });
     assert.equal(waiting.task.status, "waiting_approval");
 
-    const approved = await runLocalSymphonyCommand({
+    const approved = await runLocalMaestroCommand({
       args: ["approve", "--state-dir", store.root, waiting.task.id, "--note", "user handled remote push"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3132,7 +3132,7 @@ test("reviewer blocked, failed, and uncertain states stay recoverable", async ()
 
     for (const [completionState, requiredAction, expectedStatus] of cases) {
       const store = new LocalTaskStore({
-        root: path.join(dir, `.symphony-${completionState}`),
+        root: path.join(dir, `.maestro-${completionState}`),
         clock: () => new Date("2026-05-13T12:34:56.000Z"),
       });
       const review = {
@@ -3149,7 +3149,7 @@ test("reviewer blocked, failed, and uncertain states stay recoverable", async ()
         continuation: null,
       };
 
-      const result = await runLocalSymphonyCommand({
+      const result = await runLocalMaestroCommand({
         args: ["task", "--state-dir", store.root, "--planner", "off", `Review ${completionState}`],
         cwd: dir,
         stdout: { write: () => {} },
@@ -3158,7 +3158,7 @@ test("reviewer blocked, failed, and uncertain states stay recoverable", async ()
         runner: {
           runStep: async (step) => ({
             status: "succeeded",
-            stdout: step.role === "reviewer" ? `SYMPHONY_REVIEW: ${JSON.stringify(review)}\n` : "executor ok",
+            stdout: step.role === "reviewer" ? `MAESTRO_REVIEW: ${JSON.stringify(review)}\n` : "executor ok",
             stderr: "",
             stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
             stderrPath: path.join(step.logDir, `${step.role}.stderr.log`),
@@ -3183,11 +3183,11 @@ test("reviewer blocked, failed, and uncertain states stay recoverable", async ()
 test("reviewer continueable outcome queues exactly one continuation", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const roles = [];
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "Finish docs"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3211,7 +3211,7 @@ test("reviewer continueable outcome queues exactly one continuation", async () =
           };
           return {
             status: "succeeded",
-            stdout: step.role === "reviewer" ? `SYMPHONY_REVIEW: ${JSON.stringify(review)}\n` : "executor ok",
+            stdout: step.role === "reviewer" ? `MAESTRO_REVIEW: ${JSON.stringify(review)}\n` : "executor ok",
             stderr: "",
             stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
             stderrPath: path.join(step.logDir, `${step.role}.stderr.log`),
@@ -3232,7 +3232,7 @@ test("reviewer continueable outcome queues exactly one continuation", async () =
 test("reviewer continuation exhaustion becomes waiting_user with recovery actions", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({ prompt: "Finish docs", cwd: dir, plannerPolicy: "off", reviewEnabled: true });
@@ -3255,7 +3255,7 @@ test("reviewer continuation exhaustion becomes waiting_user with recovery action
       },
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["run-task", "--state-dir", store.root, task.id],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3265,7 +3265,7 @@ test("reviewer continuation exhaustion becomes waiting_user with recovery action
         runStep: async (step) => ({
           status: "succeeded",
           stdout: step.role === "reviewer"
-            ? `SYMPHONY_REVIEW: ${JSON.stringify({
+            ? `MAESTRO_REVIEW: ${JSON.stringify({
                 version: 1,
                 completion_state: "incomplete_continueable",
                 required_action: "continue",
@@ -3300,10 +3300,10 @@ test("reviewer continuation exhaustion becomes waiting_user with recovery action
 
 test("project close merge conflicts create a merge-fix task", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
-    const git = createFakeGitRunner({ fail: { "merge --squash symphony/alpha/integration": "merge conflict" } });
-    await runLocalSymphonyCommand({
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const git = createFakeGitRunner({ fail: { "merge --squash maestro/alpha/integration": "merge conflict" } });
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3312,7 +3312,7 @@ test("project close merge conflicts create a merge-fix task", async () => {
       gitRunner: git.run,
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["project", "close", "alpha", "--state-dir", store.root],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3324,18 +3324,18 @@ test("project close merge conflicts create a merge-fix task", async () => {
     const tasks = await store.listTasks();
     assert.equal(result.project.status, "close_blocked");
     assert.equal(tasks[0].mode, "merge-fix");
-    assert.match(tasks[0].prompt, /Resolve Symphony merge conflict for project alpha/);
+    assert.match(tasks[0].prompt, /Resolve Maestro merge conflict for project alpha/);
   });
 });
 
 test("project task merge conflict waits for user and retry finalizes only the merge", async () => {
   await withTempDir(async (dir) => {
-    const taskWorktree = path.join(dir, ".symphony", "worktrees", "alpha", "conflict-task");
-    const integrationWorktree = path.join(dir, ".symphony", "worktrees", "alpha", "integration");
+    const taskWorktree = path.join(dir, ".maestro", "worktrees", "alpha", "conflict-task");
+    const integrationWorktree = path.join(dir, ".maestro", "worktrees", "alpha", "integration");
     await mkdir(taskWorktree, { recursive: true });
     await mkdir(integrationWorktree, { recursive: true });
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     await store.createProject({
@@ -3343,9 +3343,9 @@ test("project task merge conflict waits for user and retry finalizes only the me
       status: "open",
       target_branch: "main",
       target_head: "target-head",
-      integration_branch: "symphony/alpha/integration",
+      integration_branch: "maestro/alpha/integration",
       integration_worktree: integrationWorktree,
-      worktree_root: path.join(dir, ".symphony", "worktrees"),
+      worktree_root: path.join(dir, ".maestro", "worktrees"),
       tasks: [],
       path_leases: {},
       blockers: [],
@@ -3358,7 +3358,7 @@ test("project task merge conflict waits for user and retry finalizes only the me
       plannerPolicy: "off",
       reviewEnabled: false,
       projectId: "alpha",
-      branch: "symphony/alpha/task/conflict-task",
+      branch: "maestro/alpha/task/conflict-task",
       worktreePath: taskWorktree,
     });
     await store.updateProject("alpha", {
@@ -3371,7 +3371,7 @@ test("project task merge conflict waits for user and retry finalizes only the me
       }],
     });
     const fail = {
-      [`merge --no-ff ${task.branch} -m symphony: merge ${task.id}`]: "CONFLICT content",
+      [`merge --no-ff ${task.branch} -m maestro: merge ${task.id}`]: "CONFLICT content",
     };
     const git = createFakeGitRunner({
       dirtyByCwd: { [taskWorktree]: " M file.txt\n" },
@@ -3379,7 +3379,7 @@ test("project task merge conflict waits for user and retry finalizes only the me
     });
     let runnerCalls = 0;
 
-    const blocked = await runLocalSymphonyCommand({
+    const blocked = await runLocalMaestroCommand({
       args: ["run-task", "--state-dir", store.root, task.id],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3409,8 +3409,8 @@ test("project task merge conflict waits for user and retry finalizes only the me
     assert.equal(blocked.task.unblock_options.some((option) => option.type === "manual_done"), true);
     assert.equal(git.calls.some((call) => call.args.join(" ") === "merge --abort"), true);
 
-    delete fail[`merge --no-ff ${task.branch} -m symphony: merge ${task.id}`];
-    const retried = await runLocalSymphonyCommand({
+    delete fail[`merge --no-ff ${task.branch} -m maestro: merge ${task.id}`];
+    const retried = await runLocalMaestroCommand({
       args: ["retry", "--state-dir", store.root, task.id, "--note", "conflict resolved"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3432,11 +3432,11 @@ test("project task merge conflict waits for user and retry finalizes only the me
 
 test("project cleanup preserves dirty worktrees and writes a patch path", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
-    const taskWorktree = path.join(dir, ".symphony", "worktrees", "alpha", "dirty-task");
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const taskWorktree = path.join(dir, ".maestro", "worktrees", "alpha", "dirty-task");
     const git = createFakeGitRunner({ dirtyByCwd: { [taskWorktree]: " M dirty.txt\n" } });
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3449,13 +3449,13 @@ test("project cleanup preserves dirty worktrees and writes a patch path", async 
       status: "closed",
       tasks: [{
         id: "dirty-task",
-        branch: "symphony/alpha/task/dirty-task",
+        branch: "maestro/alpha/task/dirty-task",
         worktree_path: taskWorktree,
         status: "succeeded",
       }],
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["project", "cleanup", "alpha", "--state-dir", store.root],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3466,17 +3466,17 @@ test("project cleanup preserves dirty worktrees and writes a patch path", async 
 
     const project = await store.readProject("alpha");
     assert.equal(result.project.status, "cleanup_blocked");
-    assert.match(project.cleanup_blockers[0].patch_path, /\.symphony\/patches\/dirty-task\.patch$/);
+    assert.match(project.cleanup_blockers[0].patch_path, /\.maestro\/patches\/dirty-task\.patch$/);
     assert.match(await readFile(project.cleanup_blockers[0].patch_path, "utf8"), /diff --git/);
   });
 });
 
 test("project cleanup removes clean project worktrees and local closed branches only", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".gitignore"), ".symphony/\n");
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const git = createFakeGitRunner();
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3485,20 +3485,20 @@ test("project cleanup removes clean project worktrees and local closed branches 
       gitRunner: git.run,
     });
     const project = await store.readProject("alpha");
-    const taskWorktree = path.join(dir, ".symphony", "worktrees", "alpha", "clean-task");
+    const taskWorktree = path.join(dir, ".maestro", "worktrees", "alpha", "clean-task");
     await mkdir(taskWorktree, { recursive: true });
     await store.updateProject("alpha", {
       status: "closed",
       target_merge_commit: "target-merge",
       tasks: [{
         id: "clean-task",
-        branch: "symphony/alpha/task/clean-task",
+        branch: "maestro/alpha/task/clean-task",
         worktree_path: taskWorktree,
         status: "succeeded",
       }],
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["project", "cleanup", "alpha", "--state-dir", store.root],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3511,9 +3511,9 @@ test("project cleanup removes clean project worktrees and local closed branches 
     assert.deepEqual(result.project.cleanup_blockers, []);
     const callTexts = git.calls.map((call) => call.args.join(" "));
     assert.ok(callTexts.includes(`worktree remove ${taskWorktree}`));
-    assert.ok(callTexts.includes(`branch -d symphony/alpha/task/clean-task`));
+    assert.ok(callTexts.includes(`branch -d maestro/alpha/task/clean-task`));
     assert.ok(callTexts.includes(`worktree remove ${project.integration_worktree}`));
-    assert.ok(callTexts.includes("branch -D symphony/alpha/integration"));
+    assert.ok(callTexts.includes("branch -D maestro/alpha/integration"));
     assert.equal(callTexts.some((text) => text.includes("origin/")), false);
   });
 });
@@ -3521,7 +3521,7 @@ test("project cleanup removes clean project worktrees and local closed branches 
 test("local task store persists queued tasks and step results", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
 
@@ -3593,7 +3593,7 @@ test("TUI page headers are plain by default and colored when enabled", () => {
 test("local task store creates unique ids for duplicate prompts in the same second", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
 
@@ -3609,7 +3609,7 @@ test("local task store creates unique ids for duplicate prompts in the same seco
 test("appendStep records step without owning final lifecycle status", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({ prompt: "Preserve lifecycle", cwd: dir });
@@ -3630,7 +3630,7 @@ test("appendStep records step without owning final lifecycle status", async () =
 test("question and approval decisions sync project task records", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     await store.createProject({
@@ -3665,7 +3665,7 @@ test("question and approval decisions sync project task records", async () => {
 
 test("local task store reports unreadable task files without crashing task history", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     await store.init();
     await writeFile(path.join(store.tasksDir, "bad-task.json"), "");
 
@@ -3711,7 +3711,7 @@ test("step prompts compact large prior outputs before review", async () => {
     priorOutputs: [{
       role: "executor",
       output: largeOutput,
-      stdoutPath: "/repo/.symphony/runs/task/executor.stdout.log",
+      stdoutPath: "/repo/.maestro/runs/task/executor.stdout.log",
     }],
   });
 
@@ -3729,14 +3729,14 @@ test("reviewer prompt requires structured review verdict", async () => {
     priorOutputs: [],
   });
 
-  assert.match(prompt, /SYMPHONY_REVIEW:/);
+  assert.match(prompt, /MAESTRO_REVIEW:/);
   assert.match(prompt, /completion_state/);
   assert.match(prompt, /incomplete_needs_approval/);
   assert.match(prompt, /Reviewer output is advisory/);
 });
 
 test("reviewer marker parser validates logs and rejects injection", () => {
-  const marker = (patch = {}) => `SYMPHONY_REVIEW: ${JSON.stringify({
+  const marker = (patch = {}) => `MAESTRO_REVIEW: ${JSON.stringify({
     version: 1,
     completion_state: "complete",
     required_action: "none",
@@ -3755,7 +3755,7 @@ test("reviewer marker parser validates logs and rejects injection", () => {
   assert.equal(parseReviewerOutput(`${marker({ summary: "first" })}\n${marker({ summary: "last" })}`).summary, "last");
   assert.equal(parseReviewerOutput(`${JSON.stringify({ type: "message", text: `done\n${marker({ summary: "json" })}` })}\n`).summary, "json");
   assert.equal(parseReviewerOutput(`${JSON.stringify({ type: "message", quote: marker({ summary: "quoted-json" }) })}\n`).status, "invalid");
-  assert.equal(parseReviewerOutput("SYMPHONY_REVIEW: {bad json").status, "invalid");
+  assert.equal(parseReviewerOutput("MAESTRO_REVIEW: {bad json").status, "invalid");
   assert.equal(parseReviewerOutput(marker({ completion_state: "bogus" })).completion_state, "uncertain");
   assert.equal(parseReviewerOutput(marker({ completion_state: "complete", required_action: "manual_fix" })).status, "invalid");
   assert.equal(parseReviewerOutput(`> ${marker({ summary: "quoted" })}`).status, "invalid");
@@ -3912,7 +3912,7 @@ test("Claude adapter sends prompts over stdin to avoid argv limits", () => {
 test("local task CLI creates a task, runs planner/executor/reviewer, and records logs", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const calls = [];
@@ -3921,10 +3921,10 @@ test("local task CLI creates a task, runs planner/executor/reviewer, and records
         calls.push(step);
         let stdout;
         if (step.role === "reviewer") {
-          stdout = `SYMPHONY_REVIEW: ${JSON.stringify({ version: 1, completion_state: "complete", required_action: "none", risk_level: "low", confidence: "high", summary: "ok", evidence: [], blockers: [], required_user_input: null, approval_request: null, continuation: null })}\n`;
+          stdout = `MAESTRO_REVIEW: ${JSON.stringify({ version: 1, completion_state: "complete", required_action: "none", risk_level: "low", confidence: "high", summary: "ok", evidence: [], blockers: [], required_user_input: null, approval_request: null, continuation: null })}\n`;
         } else if (step.role === "planner") {
           // Emit structured handoff so "planner output" flows into executor prompt
-          stdout = `planner output\nSYMPHONY_HANDOFF: ${JSON.stringify({ plan_summary: "planner output", steps: [], files_to_touch: [] })}\n`;
+          stdout = `planner output\nMAESTRO_HANDOFF: ${JSON.stringify({ plan_summary: "planner output", steps: [], files_to_touch: [] })}\n`;
         } else {
           stdout = `${step.role} output`;
         }
@@ -3942,7 +3942,7 @@ test("local task CLI creates a task, runs planner/executor/reviewer, and records
     const stdoutLines = [];
     let createdTaskId = null;
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--cwd", dir, "Improve berth ETA tests"],
       cwd: dir,
       stdout: { write: (text) => stdoutLines.push(text) },
@@ -3971,7 +3971,7 @@ test("local task CLI creates a task, runs planner/executor/reviewer, and records
 test("local task CLI records agent failure as recoverable waiting_user state", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const runner = {
@@ -3980,7 +3980,7 @@ test("local task CLI records agent failure as recoverable waiting_user state", a
       },
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Fail task"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -3999,7 +3999,7 @@ test("local task CLI records agent failure as recoverable waiting_user state", a
 test("local task CLI passes configured Claude and Codex command names to runner", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     await store.writeConfig({
@@ -4032,7 +4032,7 @@ test("local task CLI passes configured Claude and Codex command names to runner"
       },
     };
 
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "Use custom commands"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -4054,7 +4054,7 @@ test("local task CLI passes configured Claude and Codex command names to runner"
 test("local task CLI records planner decisions and supports planner/reviewer overrides", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const calls = [];
@@ -4073,7 +4073,7 @@ test("local task CLI records planner decisions and supports planner/reviewer ove
       },
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--cwd", dir, "--planner", "off", "--review", "off", "Patch one doc typo"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -4090,10 +4090,10 @@ test("local task CLI records planner decisions and supports planner/reviewer ove
   });
 });
 
-test("local task CLI marks task waiting when an agent asks a Symphony question", async () => {
+test("local task CLI marks task waiting when an agent asks a Maestro question", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const runner = {
@@ -4101,7 +4101,7 @@ test("local task CLI marks task waiting when an agent asks a Symphony question",
         status: "succeeded",
         stdout: `${JSON.stringify({
           type: "assistant",
-          message: "Need input\nSYMPHONY_QUESTION: Which port should I use?",
+          message: "Need input\nMAESTRO_QUESTION: Which port should I use?",
         })}\n`,
         stderr: "",
         stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
@@ -4111,7 +4111,7 @@ test("local task CLI marks task waiting when an agent asks a Symphony question",
       }),
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Ask user"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -4135,7 +4135,7 @@ test("local task CLI marks task waiting when an agent asks a Symphony question",
 test("local task CLI auto-compacts and retries context-window failures", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const prompts = [];
@@ -4148,7 +4148,7 @@ test("local task CLI auto-compacts and retries context-window failures", async (
           if (reviewerAttempts > 1) {
             return {
               status: "succeeded",
-              stdout: `review passed\nSYMPHONY_REVIEW: ${JSON.stringify({ version: 1, completion_state: "complete", required_action: "none", risk_level: "low", confidence: "high", summary: "ok", evidence: [], blockers: [], required_user_input: null, approval_request: null, continuation: null })}\n`,
+              stdout: `review passed\nMAESTRO_REVIEW: ${JSON.stringify({ version: 1, completion_state: "complete", required_action: "none", risk_level: "low", confidence: "high", summary: "ok", evidence: [], blockers: [], required_user_input: null, approval_request: null, continuation: null })}\n`,
               stderr: "",
               stdoutPath: path.join(step.logDir, "reviewer.stdout.log"),
               stderrPath: path.join(step.logDir, "reviewer.stderr.log"),
@@ -4178,7 +4178,7 @@ test("local task CLI auto-compacts and retries context-window failures", async (
       },
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "Large review task"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -4201,7 +4201,7 @@ test("local task CLI auto-compacts and retries context-window failures", async (
 test("local run-task command executes an existing queued task without duplicating it", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({
@@ -4232,7 +4232,7 @@ test("local run-task command executes an existing queued task without duplicatin
       },
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["run-task", "--state-dir", store.root, task.id],
       cwd: dir,
       stdout: { write: () => {} },
@@ -4251,7 +4251,7 @@ test("local run-task command executes an existing queued task without duplicatin
 
 test("status exposes stale running tasks with retry and cancel options", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     await store.writeConfig({ stale_after_ms: 1 });
     const task = await store.createTask({ prompt: "Long running", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
@@ -4260,7 +4260,7 @@ test("status exposes stale running tasks with retry and cancel options", async (
       active_step: { role: "executor", provider: "codex", status: "running" },
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["status", "--state-dir", store.root],
       cwd: dir,
       stdout: { write: () => {} },
@@ -4276,18 +4276,18 @@ test("status exposes stale running tasks with retry and cancel options", async (
 
 test("empty status commands print explicit empty messages", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const taskOutput = [];
     const projectOutput = [];
 
-    const status = await runLocalSymphonyCommand({
+    const status = await runLocalMaestroCommand({
       args: ["status", "--state-dir", store.root],
       cwd: dir,
       stdout: { write: (text) => taskOutput.push(text) },
       stderr: { write: () => {} },
       store,
     });
-    const projectStatus = await runLocalSymphonyCommand({
+    const projectStatus = await runLocalMaestroCommand({
       args: ["project", "status", "--state-dir", store.root],
       cwd: dir,
       stdout: { write: (text) => projectOutput.push(text) },
@@ -4297,15 +4297,15 @@ test("empty status commands print explicit empty messages", async () => {
 
     assert.deepEqual(status.tasks, []);
     assert.deepEqual(projectStatus.projects, []);
-    assert.equal(taskOutput.join(""), "No Symphony tasks\n");
-    assert.equal(projectOutput.join(""), "No Symphony projects\n");
+    assert.equal(taskOutput.join(""), "No Maestro tasks\n");
+    assert.equal(projectOutput.join(""), "No Maestro projects\n");
   });
 });
 
 test("local task CLI records the active agent step while it is running", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const taskId = "20260513-123456-track-active-step";
@@ -4330,7 +4330,7 @@ test("local task CLI records the active agent step while it is running", async (
       },
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--planner", "off", "--review", "off", "Track active step"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -4348,7 +4348,7 @@ test("local task CLI records the active agent step while it is running", async (
 test("local task CLI accepts -1 timeout to disable agent timeout", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const runner = {
@@ -4363,7 +4363,7 @@ test("local task CLI accepts -1 timeout to disable agent timeout", async () => {
       }),
     };
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "--cwd", dir, "--timeout-ms", "-1", "--planner", "off", "--review", "off", "Patch docs"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -4441,16 +4441,16 @@ test("terminal agent runner runs configured bash aliases through an interactive 
       prompt: "alias prompt",
       cwd: dir,
       logDir: dir,
-      options: { codexCommand: "__symphony_alias_codex__" },
+      options: { codexCommand: "__maestro_alias_codex__" },
     });
 
     const command = JSON.parse(await readFile(path.join(dir, "executor.command.json"), "utf8"));
     assert.equal(spawned[0].command, "bash");
     assert.equal(spawned[0].args[0], "-ic");
-    assert.match(spawned[0].args[1], /^__symphony_alias_codex__ /);
+    assert.match(spawned[0].args[1], /^__maestro_alias_codex__ /);
     assert.match(spawned[0].args[1], /'approval_policy="never"'/);
     assert.equal(command.command, "bash");
-    assert.equal(command.configured_command, "__symphony_alias_codex__");
+    assert.equal(command.configured_command, "__maestro_alias_codex__");
     assert.equal(command.invocation, "bash-interactive");
     assert.equal(stdinText, "alias prompt");
   });
@@ -4545,9 +4545,9 @@ test("terminal agent runner keeps full logs on disk and returns bounded tails", 
 
 test("TUI command availability check accepts bash aliases from bashrc", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(path.join(dir, ".bashrc"), "alias __symphony_alias_claude__='true'\n");
+    await writeFile(path.join(dir, ".bashrc"), "alias __maestro_alias_claude__='true'\n");
 
-    assert.equal(await defaultCommandExists("__symphony_alias_claude__", {
+    assert.equal(await defaultCommandExists("__maestro_alias_claude__", {
       cwd: dir,
       env: {
         ...process.env,
@@ -4557,16 +4557,16 @@ test("TUI command availability check accepts bash aliases from bashrc", async ()
   });
 });
 
-test("local task store persists Symphony defaults for TUI and CLI reuse", async () => {
+test("local task store persists Maestro defaults for TUI and CLI reuse", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
 
     const defaults = await store.readConfig();
     assert.equal(defaults.cwd, dir);
     assert.equal(defaults.planner_policy, "auto");
     assert.equal(defaults.review_enabled, true);
     assert.equal(defaults.timeout_ms, 3600000);
-    assert.equal(defaults.worktree_root, ".symphony/worktrees");
+    assert.equal(defaults.worktree_root, ".maestro/worktrees");
     assert.equal(defaults.stream_tail_bytes, 65536);
     assert.equal(defaults.context_retry_limit, 1);
     // legacy shim keys
@@ -4684,8 +4684,8 @@ test("task detail view defaults to a clean summary instead of raw JSON", () => {
         provider: "claude",
         status: "failed",
         error: "spawn pclaude ENOENT",
-        stdout_path: "/repo/.symphony/runs/task/planner.stdout.log",
-        stderr_path: "/repo/.symphony/runs/task/planner.stderr.log",
+        stdout_path: "/repo/.maestro/runs/task/planner.stdout.log",
+        stderr_path: "/repo/.maestro/runs/task/planner.stderr.log",
       },
     ],
   }, { alias: 5 });
@@ -4723,7 +4723,7 @@ test("task detail view shows unblock options, pending actions, and broker result
         type: "git_commit",
         status: "pending",
         cwd: "/repo",
-        normalized_args: ["commit", "-m", "symphony: publish"],
+        normalized_args: ["commit", "-m", "maestro: publish"],
       },
       {
         id: "act-2",
@@ -4752,7 +4752,7 @@ test("task detail view shows unblock options, pending actions, and broker result
   assert.match(detail, /\(r\)etry/);
   assert.match(detail, /\(f\)orce retry/);
   assert.match(detail, /\(c\)ancel/);
-  assert.match(detail, /git commit -m symphony: publish/);
+  assert.match(detail, /git commit -m maestro: publish/);
   assert.match(detail, /act-2 git_push failed/);
   assert.match(detail, /stderr: permission denied/);
   assert.match(detail, /Messages:/);
@@ -4761,7 +4761,7 @@ test("task detail view shows unblock options, pending actions, and broker result
 
 test("inspect renders human sections by default and JSON with --json", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     const task = await store.createTask({ prompt: "Inspect task", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
       status: "waiting_user",
@@ -4773,7 +4773,7 @@ test("inspect renders human sections by default and JSON with --json", async () 
       steps: [{ role: "executor", provider: "codex", status: "failed", stderr_path: path.join(dir, "stderr.log") }],
     });
     const human = [];
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["inspect", "--state-dir", store.root, task.id, "--no-color"],
       cwd: dir,
       stdout: { write: (text) => human.push(text) },
@@ -4788,7 +4788,7 @@ test("inspect renders human sections by default and JSON with --json", async () 
     assert.doesNotMatch(humanText, /^\{/);
 
     const json = [];
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["inspect", "--state-dir", store.root, task.id, "--json"],
       cwd: dir,
       stdout: { write: (text) => json.push(text) },
@@ -4815,18 +4815,18 @@ test("task detail color covers sections labels action ids blockers and paths", (
       cwd: "/repo",
       normalized_args: ["push", "origin", "main"],
       result: {
-        stdout_path: "/repo/.symphony/runs/task/actions/act-1.stdout.log",
+        stdout_path: "/repo/.maestro/runs/task/actions/act-1.stdout.log",
       },
     }],
     unblock_options: [{ id: "approve-act-1", type: "approve_action", label: "Approve push", status: "open" }],
-    steps: [{ role: "executor", provider: "codex", status: "failed", stderr_path: "/repo/.symphony/runs/task/executor.stderr.log" }],
+    steps: [{ role: "executor", provider: "codex", status: "failed", stderr_path: "/repo/.maestro/runs/task/executor.stderr.log" }],
   }, { color: true, sections: true });
 
   assert.match(detail, /\u001b\[1mSummary\u001b\[0m/);
   assert.match(detail, /\u001b\[2mStatus:\u001b\[0m/);
   assert.match(detail, /\u001b\[33mact-1\u001b\[0m/);
   assert.match(detail, /\u001b\[31mstale_action_request\u001b\[0m/);
-  assert.match(detail, /\u001b\[36m\/repo\/\.symphony\/runs\/task\/actions\/act-1\.stdout\.log\u001b\[0m/);
+  assert.match(detail, /\u001b\[36m\/repo\/\.maestro\/runs\/task\/actions\/act-1\.stdout\.log\u001b\[0m/);
 
   const plain = formatTaskDetails({
     id: "task-plain",
@@ -4886,10 +4886,10 @@ test("project list and detail views show lifecycle blockers", () => {
     id: "alpha",
     status: "close_blocked",
     target_branch: "main",
-    integration_branch: "symphony/alpha/integration",
+    integration_branch: "maestro/alpha/integration",
     tasks: [{ id: "task-1", status: "needs_review" }],
     path_leases: {
-      "scripts/symphony.mjs": { task_id: "task-1", mode: "write" },
+      "scripts/maestro.mjs": { task_id: "task-1", mode: "write" },
     },
     blockers: [{ code: "agent_head_moved" }],
     cleanup_blockers: [{ code: "dirty_worktree", task_id: "task-1" }],
@@ -4902,9 +4902,9 @@ test("project list and detail views show lifecycle blockers", () => {
   assert.match(list, /2 blockers/);
 
   const detail = formatProjectDetails(project, { alias: 1 });
-  assert.match(detail, /Integration: symphony\/alpha\/integration/);
+  assert.match(detail, /Integration: maestro\/alpha\/integration/);
   assert.match(detail, /Leases:/);
-  assert.match(detail, /scripts\/symphony\.mjs -> task-1/);
+  assert.match(detail, /scripts\/maestro\.mjs -> task-1/);
   assert.match(detail, /agent_head_moved/);
 });
 
@@ -5008,7 +5008,7 @@ test("TUI new task asks prompt first then uses a draft picker", async () => {
     readWorkflow: async () => structuredClone(DEFAULT_WORKFLOW),
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5037,7 +5037,7 @@ test("TUI new task asks prompt first then uses a draft picker", async () => {
   assert.equal(prompts[1], "Task prompt: ");
 });
 
-test("TUI new task defaults to the directory used to launch Symphony", async () => {
+test("TUI new task defaults to the directory used to launch Maestro", async () => {
   const submitted = [];
   const answers = [
     "1",
@@ -5053,7 +5053,7 @@ test("TUI new task defaults to the directory used to launch Symphony", async () 
     readWorkflow: async () => structuredClone(DEFAULT_WORKFLOW),
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo/caller",
     stdout: { write: () => {} },
     store,
@@ -5097,7 +5097,7 @@ test("TUI starts submitted tasks in the background and returns to the main menu"
     ],
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5134,7 +5134,7 @@ test("TUI task form supports per-role skip override", async () => {
     readWorkflow: async () => structuredClone(DEFAULT_WORKFLOW),
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: () => {} },
     store,
@@ -5164,7 +5164,7 @@ test("TUI reports each submitted task id only once when callback and result agre
     readWorkflow: async () => structuredClone(DEFAULT_WORKFLOW),
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5186,12 +5186,12 @@ test("local TUI launches tasks in a detached runner so quit does not await agent
     const stdin = new PassThrough();
     const spawned = [];
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     stdin.end("1\nDetached task\n4\noff\n5\noff\ns\nq\n");
 
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["tui", "--state-dir", store.root],
       cwd: dir,
       stdin,
@@ -5246,7 +5246,7 @@ test("TUI tasks page returns to main menu immediately when no tasks exist", asyn
     },
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5257,7 +5257,7 @@ test("TUI tasks page returns to main menu immediately when no tasks exist", asyn
     },
   });
 
-  assert.match(writes.join(""), /No Symphony tasks yet/);
+  assert.match(writes.join(""), /No Maestro tasks yet/);
   assert.deepEqual(prompts, ["> ", "> "]);
 });
 
@@ -5267,7 +5267,7 @@ test("TUI renders colored page headers on TTY output", async () => {
   const originalNoColor = process.env.NO_COLOR;
   delete process.env.NO_COLOR;
   try {
-    await runSymphonyTui({
+    await runMaestroTui({
       cwd: "/repo",
       stdout: { isTTY: true, write: (text) => writes.push(text) },
       store: {},
@@ -5282,7 +5282,7 @@ test("TUI renders colored page headers on TTY output", async () => {
     }
   }
 
-  assert.match(writes.join(""), /\u001b\[36m\u001b\[1m== Symphony ==\u001b\[0m/);
+  assert.match(writes.join(""), /\u001b\[36m\u001b\[1m== Maestro ==\u001b\[0m/);
 });
 
 test("TUI tasks page treats q at inspect prompt as back to menu", async () => {
@@ -5296,7 +5296,7 @@ test("TUI tasks page treats q at inspect prompt as back to menu", async () => {
     },
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5326,7 +5326,7 @@ test("TUI tasks page resolves numeric aliases when inspecting tasks", async () =
     },
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5352,7 +5352,7 @@ test("TUI tasks page shows full JSON only when requested", async () => {
     readTask: async (id) => ({ id, status: "failed", prompt: "Inspect JSON", steps: [] }),
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5374,7 +5374,7 @@ test("TUI tasks page defaults to active tasks and can switch to all tasks", asyn
     ],
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5400,7 +5400,7 @@ test("TUI tasks page can filter by failed tasks", async () => {
     ],
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -5423,15 +5423,15 @@ test("TUI projects page lists and inspects project state", async () => {
     id: "alpha",
     status: "open",
     target_branch: "main",
-    integration_branch: "symphony/alpha/integration",
-    integration_worktree: "/repo/.symphony/worktrees/alpha/integration",
+    integration_branch: "maestro/alpha/integration",
+    integration_worktree: "/repo/.maestro/worktrees/alpha/integration",
     tasks: [],
     blockers: [],
     cleanup_blockers: [],
     path_leases: {},
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text), isTTY: false },
     stdin: { isTTY: true },
@@ -5446,7 +5446,7 @@ test("TUI projects page lists and inspects project state", async () => {
   const output = writes.join("");
   assert.match(output, /== Projects ==/);
   assert.match(output, /alpha/);
-  assert.match(output, /Integration: symphony\/alpha\/integration/);
+  assert.match(output, /Integration: maestro\/alpha\/integration/);
 });
 
 test("TUI answers waiting task questions by alias and resumes the task", async () => {
@@ -5455,7 +5455,7 @@ test("TUI answers waiting task questions by alias and resumes the task", async (
     const resumed = [];
     const answers = ["2", "1", "Use port 5173", "q", "q"];
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({
@@ -5473,7 +5473,7 @@ test("TUI answers waiting task questions by alias and resumes the task", async (
       },
     });
 
-    await runSymphonyTui({
+    await runMaestroTui({
       cwd: dir,
       stdout: { write: (text) => writes.push(text) },
       store,
@@ -5502,7 +5502,7 @@ test("TUI denied legacy active approval renders receipt and refreshed status", a
     const resumed = [];
     const answers = ["2", "1", "n", "q", "q"];
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({ prompt: "Needs approval", mode: "task", cwd: dir });
@@ -5515,7 +5515,7 @@ test("TUI denied legacy active approval renders receipt and refreshed status", a
       },
     });
 
-    await runSymphonyTui({
+    await runMaestroTui({
       cwd: dir,
       stdout: { write: (text) => writes.push(text) },
       store,
@@ -5590,7 +5590,7 @@ test("TUI typed unblock controls call action callbacks", async () => {
       ? ["2", "1", item.command, "9000", "typed note", "q", "q", "q"]
       : ["2", "1", item.command, "typed note", "q", "q", "q"];
 
-    await runSymphonyTui({
+    await runMaestroTui({
       cwd: "/repo",
       stdout: { write: () => {} },
       store: {
@@ -5665,7 +5665,7 @@ test("TUI host edit updates command, args, env, timeout, and cwd", async () => {
   ];
   let currentTask = task;
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: () => {} },
     store: {
@@ -5730,7 +5730,7 @@ test("TUI edit-action invalid JSON stays on task detail page", async () => {
     "q",
   ];
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store: {
@@ -5776,7 +5776,7 @@ test("TUI task action prompt explains mnemonic aliases", async () => {
     steps: [],
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store: {
@@ -5826,7 +5826,7 @@ test("TUI deny-action note detaches continuation and refreshes task detail", asy
     const spawned = [];
     let runnerCalls = 0;
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({ prompt: "Commit current changes", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
@@ -5838,7 +5838,7 @@ test("TUI deny-action note detaches continuation and refreshes task detail", asy
         type: "git_commit",
         status: "pending",
         cwd: dir,
-        normalized_args: ["commit", "-m", "symphony: test"],
+        normalized_args: ["commit", "-m", "maestro: test"],
         expected_branch: "main",
         expected_head: "head-1",
         expected_status_hash: statusHash(" M package.json\n"),
@@ -5851,7 +5851,7 @@ test("TUI deny-action note detaches continuation and refreshes task detail", asy
     stdin.end("2\n1\nd act-1\nDo not commit; explain only.\n\nq\nq\n");
 
     const result = await Promise.race([
-      runLocalSymphonyCommand({
+      runLocalMaestroCommand({
         args: ["tui", "--state-dir", store.root],
         cwd: dir,
         stdin,
@@ -5906,7 +5906,7 @@ test("TUI approve-action note commits once, detaches continuation, and does not 
       commitHead: "head-after-commit",
     });
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({ prompt: "Commit then push current changes", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
@@ -5918,7 +5918,7 @@ test("TUI approve-action note commits once, detaches continuation, and does not 
         type: "git_commit",
         status: "pending",
         cwd: dir,
-        normalized_args: ["commit", "-m", "symphony: test"],
+        normalized_args: ["commit", "-m", "maestro: test"],
         expected_branch: "main",
         expected_head: "head-1",
         expected_status_hash: statusHash(" M package.json\n"),
@@ -5931,7 +5931,7 @@ test("TUI approve-action note commits once, detaches continuation, and does not 
     stdin.end("2\n1\na act-1\nCommit locally; do not push.\n\nq\nq\n");
 
     const result = await Promise.race([
-      runLocalSymphonyCommand({
+      runLocalMaestroCommand({
         args: ["tui", "--state-dir", store.root],
         cwd: dir,
         stdin,
@@ -5977,7 +5977,7 @@ test("TUI stale approve-action renders not-run receipt and refreshed blockers", 
     const writes = [];
     const spawned = [];
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({ prompt: "Commit current changes", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
@@ -5989,7 +5989,7 @@ test("TUI stale approve-action renders not-run receipt and refreshed blockers", 
         type: "git_commit",
         status: "pending",
         cwd: dir,
-        normalized_args: ["commit", "-m", "symphony: test"],
+        normalized_args: ["commit", "-m", "maestro: test"],
         expected_branch: "main",
         expected_head: "head-1",
         expected_status_hash: statusHash(" M package.json\n"),
@@ -6002,7 +6002,7 @@ test("TUI stale approve-action renders not-run receipt and refreshed blockers", 
     stdin.end("2\n1\na act-1\n\nq\nq\n");
 
     const result = await Promise.race([
-      runLocalSymphonyCommand({
+      runLocalMaestroCommand({
         args: ["tui", "--state-dir", store.root],
         cwd: dir,
         stdin,
@@ -6048,7 +6048,7 @@ test("TUI retry and force-retry detach continuation and refresh task detail", as
       const spawned = [];
       let runnerCalls = 0;
       const store = new LocalTaskStore({
-        root: path.join(dir, ".symphony"),
+        root: path.join(dir, ".maestro"),
         clock: () => new Date("2026-05-13T12:34:56.000Z"),
       });
       const task = await store.createTask({ prompt: `Retry ${item.command}`, cwd: dir, plannerPolicy: "off", reviewEnabled: false });
@@ -6064,7 +6064,7 @@ test("TUI retry and force-retry detach continuation and refresh task detail", as
       stdin.end(`2\n1\n${item.command}\n${item.note}\n\nq\nq\n`);
 
       const result = await Promise.race([
-        runLocalSymphonyCommand({
+        runLocalMaestroCommand({
           args: ["tui", "--state-dir", store.root],
           cwd: dir,
           stdin,
@@ -6112,7 +6112,7 @@ test("TUI mark-done detaches continuation after manual validation succeeds", asy
     const spawned = [];
     let runnerCalls = 0;
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     const task = await store.createTask({ prompt: "Publish after manual push", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
@@ -6137,7 +6137,7 @@ test("TUI mark-done detaches continuation after manual validation succeeds", asy
     stdin.end("2\n1\nm act-1\nPushed manually.\n\nq\nq\n");
 
     const result = await Promise.race([
-      runLocalSymphonyCommand({
+      runLocalMaestroCommand({
         args: ["tui", "--state-dir", store.root],
         cwd: dir,
         stdin,
@@ -6186,7 +6186,7 @@ test("TUI tasks page reports missing task aliases without crashing", async () =>
     },
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -6201,7 +6201,7 @@ test("TUI invalid main menu choices do not quit the application", async () => {
   const writes = [];
   const answers = ["wat", "q"];
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store: {},
@@ -6227,7 +6227,7 @@ test("TUI task submission failure stays in the TUI instead of crashing", async (
     readWorkflow: async () => structuredClone(DEFAULT_WORKFLOW),
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -6257,7 +6257,7 @@ test("TUI reports background task failures after returning to the menu", async (
     readWorkflow: async () => structuredClone(DEFAULT_WORKFLOW),
   };
 
-  await runSymphonyTui({
+  await runMaestroTui({
     cwd: "/repo",
     stdout: { write: (text) => writes.push(text) },
     store,
@@ -6288,9 +6288,9 @@ test("TUI settings picker updates cwd and timeout", async () => {
       "b",       // Back
       "q",
     ];
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
 
-    await runSymphonyTui({
+    await runMaestroTui({
       cwd: dir,
       stdout: { write: (text) => writes.push(text) },
       store,
@@ -6314,9 +6314,9 @@ test("TUI settings menu shows roles and providers entries", async () => {
       "b",   // Back
       "q",
     ];
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
 
-    await runSymphonyTui({
+    await runMaestroTui({
       cwd: dir,
       stdout: { write: (text) => writes.push(text) },
       store,
@@ -6337,11 +6337,11 @@ test("TUI settings menu shows roles and providers entries", async () => {
 test("TUI settings picker handles piped input for basic settings", async () => {
   await withTempDir(async (dir) => {
     const stdin = new PassThrough();
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     // Navigate: Settings (3) → cwd (1) → /newdir → timeout (2) → 1800000 → back (b) → quit (q)
     stdin.end("3\n1\n/newdir\n2\n1800000\nb\nq\n");
 
-    await runSymphonyTui({
+    await runMaestroTui({
       cwd: dir,
       stdin,
       stdout: { write: () => {} },
@@ -6358,7 +6358,7 @@ test("TUI settings picker handles piped input for basic settings", async () => {
 test("local task CLI uses custom codex command from TUI settings", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
-      root: path.join(dir, ".symphony"),
+      root: path.join(dir, ".maestro"),
       clock: () => new Date("2026-05-13T12:34:56.000Z"),
     });
     await store.writeConfig({
@@ -6371,7 +6371,7 @@ test("local task CLI uses custom codex command from TUI settings", async () => {
       executor_model: "gpt-5.5",
     });
 
-    await runLocalSymphonyCommand({
+    await runLocalMaestroCommand({
       args: ["task", "--state-dir", store.root, "Smoke custom codex command"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -6388,16 +6388,16 @@ test("local task CLI uses custom codex command from TUI settings", async () => {
   });
 });
 
-test("Symphony CLI agent README documents usage and safety defaults", async () => {
-  const text = await readFile(new URL("../docs/symphony-cli-agents.md", import.meta.url), "utf8");
-  const review = await readFile(new URL("../docs/symphony-tui-review.md", import.meta.url), "utf8");
+test("Maestro CLI agent README documents usage and safety defaults", async () => {
+  const text = await readFile(new URL("../docs/maestro-cli-agents.md", import.meta.url), "utf8");
+  const review = await readFile(new URL("../docs/maestro-tui-review.md", import.meta.url), "utf8");
 
-  assert.match(text, /npm run symphony -- task/);
+  assert.match(text, /npm run maestro -- task/);
   assert.match(text, /Claude plans/);
   assert.match(text, /Codex executes/);
-  assert.match(text, /\.symphony\/runs/);
+  assert.match(text, /\.maestro\/runs/);
   assert.match(text, /Copilot is disabled/);
-  assert.match(text, /npm run symphony -- tui/);
+  assert.match(text, /npm run maestro -- tui/);
   assert.match(text, /Submit task/);
   assert.match(text, /resolved\s+agent-flow preview/);
   assert.match(text, /colored header/);
@@ -6407,9 +6407,9 @@ test("Symphony CLI agent README documents usage and safety defaults", async () =
   assert.match(text, /timestamp prefix/);
   assert.match(text, /sorted newest first/);
   assert.match(text, /`active`, `needs-human`, `blocked`, `incomplete`, `failed`, `done`, or `all`/);
-  assert.match(text, /SYMPHONY_REVIEW/);
+  assert.match(text, /MAESTRO_REVIEW/);
   assert.match(text, /json 1/);
-  assert.match(text, /SYMPHONY_QUESTION/);
+  assert.match(text, /MAESTRO_QUESTION/);
   assert.match(text, /active question/);
   assert.match(text, /question answers/);
   assert.match(text, /retry <task-id> --force-parallel/);
@@ -6469,13 +6469,13 @@ test("Symphony CLI agent README documents usage and safety defaults", async () =
 
 // ── Regression tests for evaluation-plan fixes ────────────────────────────────
 
-test("R1: malformed SYMPHONY_HANDOFF line returns null instead of throwing", () => {
+test("R1: malformed MAESTRO_HANDOFF line returns null instead of throwing", () => {
   // Previously _handoffFromText did a bare JSON.parse → throws on bad JSON.
-  assert.equal(parseAgentHandoff("SYMPHONY_HANDOFF:{bad json"), null);
-  assert.equal(parseAgentHandoff("SYMPHONY_HANDOFF:"), null);
-  assert.equal(parseAgentHandoff("SYMPHONY_HANDOFF:not-json-at-all!!"), null);
+  assert.equal(parseAgentHandoff("MAESTRO_HANDOFF:{bad json"), null);
+  assert.equal(parseAgentHandoff("MAESTRO_HANDOFF:"), null);
+  assert.equal(parseAgentHandoff("MAESTRO_HANDOFF:not-json-at-all!!"), null);
   // Well-formed handoff still parses correctly.
-  assert.deepEqual(parseAgentHandoff('SYMPHONY_HANDOFF:{"ok":true}'), { ok: true });
+  assert.deepEqual(parseAgentHandoff('MAESTRO_HANDOFF:{"ok":true}'), { ok: true });
   assert.deepEqual(parseAgentHandoff("no marker here"), null);
 });
 
@@ -6486,7 +6486,7 @@ test("SF4: REVIEW_MAX_CONTINUATIONS is exported from markers.mjs and equals 1", 
 
 test("S1: host_command is rejected when config has no host_command_allow", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     // No writeConfig call → host_command_allow defaults to []
     const task = await store.createTask({ prompt: "Run host command", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
@@ -6504,7 +6504,7 @@ test("S1: host_command is rejected when config has no host_command_allow", async
       }],
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1"],
       cwd: dir,
       stdout: { write: () => {} },
@@ -6522,7 +6522,7 @@ test("S1: host_command is rejected when config has no host_command_allow", async
 
 test("S1: host_command with non-allowlisted binary is rejected even with an allowlist", async () => {
   await withTempDir(async (dir) => {
-    const store = new LocalTaskStore({ root: path.join(dir, ".symphony") });
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
     await store.writeConfig({ host_command_allow: ["echo"] }); // only echo, not printf
     const task = await store.createTask({ prompt: "Run host command", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
     await store.updateTask(task.id, {
@@ -6540,7 +6540,7 @@ test("S1: host_command with non-allowlisted binary is rejected even with an allo
       }],
     });
 
-    const result = await runLocalSymphonyCommand({
+    const result = await runLocalMaestroCommand({
       args: ["approve-action", "--state-dir", store.root, task.id, "act-1"],
       cwd: dir,
       stdout: { write: () => {} },
