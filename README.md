@@ -109,7 +109,7 @@ cd maestro && npm install && cd ..
 maestro task "Add a /healthcheck endpoint to the Express app"
 
 # Planner only — read the plan before anyone touches code
-maestro plan-only "Refactor the authentication module"
+maestro task --plan-only "Refactor the authentication module"
 
 # Watch and steer from the terminal UI
 maestro tui
@@ -133,7 +133,7 @@ the same tab, same context, no encore required.
 | Mode | Flow | Command |
 |---|---|---|
 | `task` | planner → executor → reviewer | `maestro task "<prompt>"` |
-| `plan-only` | planner only; stops at handoff | `maestro plan-only "<prompt>"` |
+| `plan-only` | planner only; stops at handoff | `maestro task --plan-only "<prompt>"` |
 | server | polls Linear, auto-dispatches | `maestro [WORKFLOW.md]` |
 
 ---

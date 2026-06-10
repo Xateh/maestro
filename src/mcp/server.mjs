@@ -16,7 +16,7 @@ function findMaestroRoot(startDir) {
   while (true) {
     if (existsSync(path.join(dir, ".maestro"))) return dir;
     const parent = path.dirname(dir);
-    if (parent === dir) throw new Error("No .maestro directory found from " + startDir);
+    if (parent === dir) throw new Error(`No .maestro directory found from ${startDir}`);
     dir = parent;
   }
 }

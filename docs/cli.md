@@ -33,12 +33,12 @@ maestro task "Add a /healthcheck endpoint"
 maestro task "Refactor auth module" --state-dir /path/to/project/.maestro
 ```
 
-### `plan-only "<prompt>"`
+### `task --plan-only "<prompt>"`
 
 Planner only. Produces a plan handoff and stops. Review it before running the full pipeline.
 
 ```bash
-maestro plan-only "Migrate database schema to v2"
+maestro task --plan-only "Migrate database schema to v2"
 ```
 
 ### `run-task <id>`

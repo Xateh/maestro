@@ -244,6 +244,16 @@ test("runLangGraphTask: closes herdr tab on success under default policy", async
   assert.deepEqual(closedTabs, [taskId], "closeTab called exactly once for the task");
 });
 
+test("runLangGraphTask: close_tab_on=terminal closes on success, keeps waiting_user tabs", async () => {
+  const success = await runTaskWithPolicy({ policy: "terminal" });
+  assert.equal(success.finalTask.status, "succeeded");
+  assert.deepEqual(success.closedTabs, [success.taskId]);
+
+  const waiting = await runTaskWithPolicy({ policy: "terminal", emitQuestion: true });
+  assert.equal(waiting.finalTask.status, "waiting_user");
+  assert.deepEqual(waiting.closedTabs, []);
+});
+
 test("runLangGraphTask: close_tab_on=never leaves the tab open on success", async () => {
   const { finalTask, closedTabs } = await runTaskWithPolicy({ policy: "never" });
   assert.equal(finalTask.status, "succeeded");

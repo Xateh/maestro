@@ -31,7 +31,7 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
       output.write(`Provider "${providerKey}" not found.\n`);
       return;
     }
-    output.write([
+    output.write(`${[
       `\n== Provider: ${providerKey} ==`,
       `1. Label:         ${def.label}`,
       `2. Adapter:       ${def.adapter}`,
@@ -41,7 +41,7 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
       `6. Efforts:       ${(def.efforts ?? []).join(", ") || "(none)"}`,
       "d. Delete provider",
       "b. Back",
-    ].join("\n") + "\n");
+    ].join("\n")}\n`);
 
     const choice = String(await ask("> ") ?? "").trim().toLowerCase();
     if (!choice || choice === "b" || choice === "q") return;
@@ -85,7 +85,7 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
         label: "Default alias",
         options: def.aliases ?? [],
         current: def.default_alias,
-        recent: (config.recent?.aliases_by_provider ?? {})[providerKey] ?? [],
+        recent: config.recent?.aliases_by_provider?.[providerKey] ?? [],
         allowDefault: false,
       });
       if (v !== def.default_alias) {
@@ -158,12 +158,12 @@ export async function runProvidersMenu({ ask, output, store }) {
   while (!done) {
     const config = await store.readConfig();
     const providerEntries = Object.entries(config.providers ?? {});
-    output.write([
+    output.write(`${[
       "\n== Providers ==",
       ...providerEntries.map(([k, def], i) => `${i + 1}. ${providerSummary(k, def)}`),
       "+. Add provider (wizard)",
       "b. Back",
-    ].join("\n") + "\n");
+    ].join("\n")}\n`);
 
     const choice = String(await ask("> ") ?? "").trim().toLowerCase();
     if (!choice || choice === "b" || choice === "q") { done = true; continue; }

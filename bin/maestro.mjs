@@ -176,8 +176,35 @@ export async function startMaestro({ workflowPath, port = null, env = process.en
   };
 }
 
+const USAGE = `maestro — multi-agent plan → execute → review orchestrator
+
+Usage:
+  maestro task "<prompt>"              create + run a task (planner → executor → reviewer)
+  maestro task --plan-only "<prompt>"  planner only; stops at the plan handoff
+  maestro run-task <id>                re-run or continue an existing task
+  maestro status                       list tasks
+  maestro inspect <id>                 dump full JSON state for a task
+  maestro tui                          interactive terminal UI
+  maestro message <id> "<text>"        answer a waiting task
+  maestro approve <id> | deny <id> "<reason>"
+  maestro approve-action <id> <action-id> | deny-action <id> <action-id> "<reason>"
+  maestro retry <id> | cancel <id> | mark-done <id> | extend-timeout <id> <ms>
+  maestro project <subcommand>         project (multi-task) commands
+  maestro [WORKFLOW.md]                server mode: poll Linear, auto-dispatch issues
+
+Global flags: --state-dir <path>  --workflow-path <path>  --port <n>
+Docs: docs/cli.md
+`;
+
 async function main() {
   const rawArgs = process.argv.slice(2);
+  // --help anywhere before a "--" separator prints usage; after "--" it is
+  // literal prompt text.
+  const preDashDash = rawArgs.includes("--") ? rawArgs.slice(0, rawArgs.indexOf("--")) : rawArgs;
+  if (rawArgs[0] === "help" || preDashDash.includes("--help") || preDashDash.includes("-h")) {
+    process.stdout.write(USAGE);
+    return;
+  }
   if (LOCAL_COMMANDS.has(rawArgs[0])) {
     const invocation = resolveWorkspaceLocalInvocation({ args: rawArgs });
     await runLocalMaestroCommand(invocation);

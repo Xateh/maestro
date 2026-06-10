@@ -15,16 +15,16 @@ export async function pickFromList({
   const lines = [`\n${label}`];
   if (current) lines.push(`Current: ${current}`);
   if (recentUniq.length > 0) {
-    lines.push("Recent: " + recentUniq.map((v, i) => `${i + 1}) ${v}`).join("  "));
+    lines.push(`Recent: ${recentUniq.map((v, i) => `${i + 1}) ${v}`).join("  ")}`);
   }
   if (allUniq.length > 0) {
     const letters = "abcdefghijklmnopqrstuvwxyz";
-    lines.push("All:    " + allUniq.map((v, i) => `${letters[i] ?? i}) ${v}`).join("  "));
+    lines.push(`All:    ${allUniq.map((v, i) => `${letters[i] ?? i}) ${v}`).join("  ")}`);
   }
   if (allowCustom) lines.push("+ custom");
   if (allowDefault) lines.push("0 <cli default>");
   lines.push("Enter to keep current");
-  output.write(lines.join("\n") + "\n");
+  output.write(`${lines.join("\n")}\n`);
 
   const raw = String(await ask("> ") ?? "").trim();
   if (!raw) return current;

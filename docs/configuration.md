@@ -108,7 +108,7 @@ instead of spawning blank new tabs.
 | Value | Behaviour |
 |---|---|
 | `"success"` (default) | Close when the task reaches `succeeded`. Failed and waiting tasks keep their tab as a trail. |
-| `"terminal"` | Close on `succeeded` and `failed`. |
+| `"terminal"` | Close on `succeeded` and `failed`. Note: hard agent failures currently park the task in `waiting_user` (tab kept), so today this behaves like `"success"`; the distinction is reserved for a future failed terminal state. |
 | `"never"` | Never close tabs automatically. |
 
 Tabs are **never** closed while a task is `waiting_user`, `waiting_approval`,

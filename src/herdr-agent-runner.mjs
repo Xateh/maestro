@@ -31,6 +31,8 @@ async function waitForFile(filePath, intervalMs, timeoutMs) {
 export class HerdrAgentRunner {
   // tabStore: optional { get(taskId) -> tabId|null, set(taskId, tabId|null) }
   // persistence delegate so tabs survive runner instances (resume reuses them).
+  // Assumes one active runner per task: concurrent cross-process runs of the
+  // same task may race _ensureTab and orphan a tab (cosmetic herdr clutter).
   constructor({ timeoutMs = 3_600_000, pollIntervalMs = 500, logger = nullLogger(), cli = herdrCli, tabStore = null } = {}) {
     this.timeoutMs = timeoutMs;
     this.pollIntervalMs = pollIntervalMs;

@@ -20,14 +20,6 @@ function parsePositiveInteger(value, fallback) {
   return Number.isInteger(parsed) && (parsed > 0 || parsed === -1) ? parsed : fallback;
 }
 
-function parseYesNo(value, fallback = true) {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (!normalized) return fallback;
-  if (["y", "yes"].includes(normalized)) return true;
-  if (["n", "no"].includes(normalized)) return false;
-  return fallback;
-}
-
 const SAFE_SHELL_COMMAND = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 async function canExecute(filePath) {
@@ -430,7 +422,6 @@ async function runSettingsMenu({ ask, output, store, color = false }) {
     { label: "Providers",        drill: "providers" },
   ];
   const totalLegacy = SETTINGS_FIELDS.length;
-  const totalItems = totalLegacy + EXTRA_ITEMS.length;
 
   let done = false;
   while (!done) {
@@ -891,7 +882,6 @@ export async function runMaestroTui({
   messageTask = null,
   retryTask = null,
   cancelTask = null,
-  commandExists = defaultCommandExists,
   ask: injectedAsk = null,
 } = {}) {
   let rl = null;

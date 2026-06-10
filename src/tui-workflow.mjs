@@ -19,13 +19,13 @@ async function runTransitionsEditor({ ask, output, workflow, roleKey }) {
   while (true) {
     const trans = localWorkflow.transitions[roleKey] ?? {};
     const entries = Object.entries(trans);
-    output.write([
+    output.write(`${[
       `\n== Transitions: ${roleKey} ==`,
       ...entries.map(([event, target], i) => `${i + 1}. ${event.padEnd(10)} -> ${target}`),
       "+. Add transition",
       entries.length > 0 ? "d N. Delete transition" : "",
       "s. Save     b. Back (discard)",
-    ].filter(Boolean).join("\n") + "\n");
+    ].filter(Boolean).join("\n")}\n`);
 
     const choice = String(await ask("> ") ?? "").trim().toLowerCase();
     if (!choice || choice === "b" || choice === "q") return { workflow: null };
@@ -97,7 +97,7 @@ async function runRoleEditor({ ask, output, store, roleKey }) {
       return;
     }
     const providerDef = config.providers?.[role.provider] ?? null;
-    output.write([
+    output.write(`${[
       `\n== Role: ${roleKey} ==`,
       `1. Label:       ${role.label ?? roleKey}`,
       `2. Provider:    ${role.provider ?? "?"}`,
@@ -109,7 +109,7 @@ async function runRoleEditor({ ask, output, store, roleKey }) {
       `8. Skip:        ${role.skip ?? "auto"}  (auto|always|never)`,
       "t. Edit transitions",
       "s. Save     b. Back",
-    ].join("\n") + "\n");
+    ].join("\n")}\n`);
 
     const choice = String(await ask("> ") ?? "").trim().toLowerCase();
     if (!choice || choice === "b" || choice === "q") return;
@@ -134,7 +134,7 @@ async function runRoleEditor({ ask, output, store, roleKey }) {
     } else if (choice === "2") {
       const providerKeys = Object.keys(config.providers ?? {});
       const current = role.provider ?? "";
-      const recent = (config.recent?.providers_by_role ?? {})[roleKey] ?? [];
+      const recent = config.recent?.providers_by_role?.[roleKey] ?? [];
       const v = await pickFromList({
         ask, output,
         label: "Provider",
@@ -152,7 +152,7 @@ async function runRoleEditor({ ask, output, store, roleKey }) {
     } else if (choice === "3") {
       const aliases = providerDef?.aliases ?? [];
       const current = role.alias || providerDef?.default_alias || "";
-      const recent = (config.recent?.aliases_by_provider ?? {})[role.provider ?? ""] ?? [];
+      const recent = config.recent?.aliases_by_provider?.[role.provider ?? ""] ?? [];
       const v = await pickFromList({ ask, output, label: "Alias", options: aliases, current, recent, allowDefault: false });
       if (v && v !== current) {
         const updated = applyRecentUpdate(config, { kind: "aliases_by_provider", key: role.provider ?? roleKey, value: v });
@@ -163,7 +163,7 @@ async function runRoleEditor({ ask, output, store, roleKey }) {
     } else if (choice === "4") {
       const models = providerDef?.models ?? [];
       const current = role.model || "";
-      const recent = (config.recent?.models_by_provider ?? {})[role.provider ?? ""] ?? [];
+      const recent = config.recent?.models_by_provider?.[role.provider ?? ""] ?? [];
       const v = await pickFromList({ ask, output, label: "Model", options: models, current, recent });
       if (v !== current) {
         const updated = applyRecentUpdate(config, { kind: "models_by_provider", key: role.provider ?? roleKey, value: v });
@@ -174,7 +174,7 @@ async function runRoleEditor({ ask, output, store, roleKey }) {
     } else if (choice === "5") {
       const efforts = providerDef?.efforts ?? [];
       const current = role.effort || "";
-      const recent = (config.recent?.efforts_by_provider ?? {})[role.provider ?? ""] ?? [];
+      const recent = config.recent?.efforts_by_provider?.[role.provider ?? ""] ?? [];
       const v = await pickFromList({ ask, output, label: "Effort", options: efforts, current, recent });
       if (v !== current) {
         const updated = applyRecentUpdate(config, { kind: "efforts_by_provider", key: role.provider ?? roleKey, value: v });
@@ -223,7 +223,7 @@ export async function runWorkflowMenu({ ask, output, store }) {
   while (!done) {
     const workflow = await store.readWorkflow();
     const roleEntries = Object.entries(workflow.roles ?? {});
-    output.write([
+    output.write(`${[
       "\n== Workflow ==",
       `Initial: ${workflow.initial ?? "planner"}`,
       ...roleEntries.map(([k, r], i) => `${i + 1}. ${roleOneLiner(k, r)}`),
@@ -231,7 +231,7 @@ export async function runWorkflowMenu({ ask, output, store }) {
       "t. Edit all transitions",
       "i. Change initial state",
       "b. Back",
-    ].join("\n") + "\n");
+    ].join("\n")}\n`);
 
     const choice = String(await ask("> ") ?? "").trim().toLowerCase();
     if (!choice || choice === "b" || choice === "q") { done = true; continue; }
@@ -276,7 +276,7 @@ export async function runWorkflowMenu({ ask, output, store }) {
 
     if (choice === "t") {
       // Show all roles for transition editing
-      output.write("Which role? " + roleEntries.map(([k], i) => `${i + 1}) ${k}`).join("  ") + "\n");
+      output.write(`Which role? ${roleEntries.map(([k], i) => `${i + 1}) ${k}`).join("  ")}\n`);
       const ridx = Number(await ask("> ") ?? "") - 1;
       if (ridx >= 0 && ridx < roleEntries.length) {
         const [roleKey] = roleEntries[ridx];
