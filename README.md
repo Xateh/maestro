@@ -48,8 +48,12 @@ prompt → [planner] ──handoff──► [executor] ──handoff──► [r
 - **MCP server** — seven tools expose Maestro state and task creation to any
   MCP-compatible agent (Claude Code, Cursor, …). One `.mcp.json` entry, no
   other config.
-- **Interactive TUI** — browse tasks, approve or deny action requests, answer
-  agent questions, edit the workflow, and re-seat providers from the podium.
+- **Full-screen TUI** — a resize-aware, keyboard-driven terminal UI: a live
+  task board with filter views, one-keystroke approve/deny/answer on waiting
+  tasks, a settings editor, and a **workflow graph screen** that draws your
+  roles, handoff arrows, and every event transition as a grid (and reflows to
+  a vertical stack on narrow terminals). Pipes and scripts get the classic
+  prompt-driven TUI automatically.
 - **Security model** — host commands are off by default, network binaries are
   hard-denied even when allowlisted, secrets are stripped from subprocess env,
   and MCP file access is path-traversal-guarded. Trust the players, frisk the

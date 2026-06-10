@@ -1,6 +1,23 @@
 # Maestro TUI Review
 
-Date: 2026-05-13
+Date: 2026-05-13 (full-screen TUI added 2026-06-11)
+
+## Full-Screen TUI (current default)
+
+On real terminals `maestro tui` now opens a full-screen, keyboard-driven UI
+(`src/tui/`): alternate screen buffer, raw-mode key handling, 2s live refresh,
+and layout that reflows on terminal resize. Screens: **Tasks** (filterable
+table + detail view with approve/deny/message/retry/cancel/mark-done/resume/
+extend), **Workflow** (grid graph of roles, handoff arrows, and event
+transitions, with a role detail panel; vertical-stack fallback on narrow
+terminals), and **Settings** (config.json editor incl. the herdr tab policy).
+All rendering is pure (`screens.mjs`, `graph.mjs`, `layout.mjs`) and covered by
+`test/maestro-tui-app.test.mjs` at 40×10, 80×24, and 120×40.
+
+The classic prompt-driven TUI below remains the automatic fallback for
+non-TTY stdin/stdout and via `MAESTRO_TUI_CLASSIC=1`; everything documented in
+this review still applies to it, and both front-ends share the same action
+callbacks, so behavior is identical.
 
 ## Scope
 

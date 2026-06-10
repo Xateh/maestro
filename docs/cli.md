@@ -188,12 +188,28 @@ Close a project (optional worktree merge/cleanup).
 
 ### `tui`
 
-Launch the full interactive terminal UI. Browse tasks, pick providers, edit workflow, respond to
-waiting tasks, approve/deny action requests.
+Launch the interactive terminal UI.
 
 ```bash
 maestro tui
 ```
+
+On a real terminal this opens the **full-screen TUI** (alternate screen,
+keyboard-driven, live-refreshing, resize-aware):
+
+| Screen | Keys | What it shows |
+|---|---|---|
+| **Tasks** (`1`) | `↑↓/jk` move · `⏎` open · `n` new task · `v` cycle view · `r` refresh | Filterable task table (active/needs-human/blocked/incomplete/failed/done/all) |
+| **Task detail** (`⏎`) | `↑↓` scroll · `[ ]` pick action · `a/d` approve/deny · `m` message · `R` retry · `c` cancel · `x` mark-done · `o` resume · `e` extend · `esc` back | Full task state, pending action requests, blockers, review |
+| **Workflow** (`2`) | `←→/hl` select role | Grid graph of roles, `done` handoff arrows, and every event transition; role detail panel |
+| **Settings** (`3`) | `↑↓` select · `⏎` edit/cycle | config.json fields (planner policy, review, timeouts, herdr tab policy, …) and role seating |
+
+`q` or `ctrl+c` quits; `tab` cycles screens. The layout reflows live on
+terminal resize; the workflow graph collapses to a vertical stack when the
+terminal is too narrow for the grid.
+
+The classic prompt-driven TUI is used automatically when stdin/stdout are not
+TTYs (pipes, scripts), or on demand with `MAESTRO_TUI_CLASSIC=1`.
 
 ---
 

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Full-screen TUI (`maestro tui` on a real terminal): keyboard-driven task
+  board with filter views and live refresh, task detail with one-keystroke
+  approve/deny/message/retry/cancel/mark-done/resume/extend, a settings
+  editor, and a workflow graph screen that renders roles, handoff arrows, and
+  event transitions as a responsive grid (vertical stack on narrow
+  terminals). The classic prompt-driven TUI remains the fallback for non-TTY
+  use and via `MAESTRO_TUI_CLASSIC=1`.
+- `--help` / `-h` / `help` CLI usage output.
+
+### Fixed
+
+- MCP server no longer throws at import time when no `.maestro` directory
+  exists up-tree; root discovery is lazy and errors surface on first tool call.
+
 ## [0.1.0] - 2026-06-10
 
 Initial release.

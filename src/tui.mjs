@@ -884,6 +884,24 @@ export async function runMaestroTui({
   cancelTask = null,
   ask: injectedAsk = null,
 } = {}) {
+  // Full-screen TUI on real terminals; the classic prompt-driven TUI remains
+  // for pipes, injected ask functions (tests), and MAESTRO_TUI_CLASSIC=1.
+  if (!injectedAsk && stdin.isTTY === true && stdout.isTTY === true && process.env.MAESTRO_TUI_CLASSIC !== "1") {
+    const { runFullScreenTui } = await import("./tui/app.mjs");
+    return runFullScreenTui({
+      stdin,
+      stdout,
+      store,
+      cwd,
+      callbacks: {
+        runTask, resumeTask, approveAction, runAction, denyAction, editAction,
+        markDone, extendTimeout, messageTask, retryTask, cancelTask,
+      },
+      formatDetails: (task, opts = {}) => formatTaskDetails(task, { ...opts, sections: true }),
+      filterTasks: filterTasksForView,
+    });
+  }
+
   let rl = null;
   let ask = injectedAsk;
   const activeRuns = new Map();
