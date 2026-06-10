@@ -6353,7 +6353,15 @@ test("TUI settings picker handles piped input for basic settings", async () => {
   });
 });
 
-test("local task CLI uses custom codex command from TUI settings", async () => {
+test("local task CLI uses custom codex command from TUI settings", async (t) => {
+  // Force the spawn backend: CI runners have no herdr binary, and this test
+  // exercises command building, not the herdr integration.
+  const prevBackend = process.env.MAESTRO_BACKEND;
+  process.env.MAESTRO_BACKEND = "terminal";
+  t.after(() => {
+    if (prevBackend === undefined) delete process.env.MAESTRO_BACKEND;
+    else process.env.MAESTRO_BACKEND = prevBackend;
+  });
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
       root: path.join(dir, ".maestro"),

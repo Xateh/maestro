@@ -21,16 +21,30 @@ function findMaestroRoot(startDir) {
   }
 }
 
-const ROOT = process.env.MAESTRO_ROOT ?? findMaestroRoot(process.cwd());
-const MAESTRO_DIR = path.join(ROOT, ".maestro");
-const TASKS_DIR = path.join(MAESTRO_DIR, "tasks");
-const RUNS_DIR = path.join(MAESTRO_DIR, "runs");
-const DB_PATH = path.join(MAESTRO_DIR, "maestro.db");
+// Resolved lazily (and cached) so importing this module never throws — root
+// discovery errors surface on the first tool call with a clear message
+// instead of crashing the host process at import time.
+let _paths = null;
+function maestroPaths() {
+  if (!_paths) {
+    const ROOT = process.env.MAESTRO_ROOT ?? findMaestroRoot(process.cwd());
+    const MAESTRO_DIR = path.join(ROOT, ".maestro");
+    _paths = {
+      ROOT,
+      MAESTRO_DIR,
+      TASKS_DIR: path.join(MAESTRO_DIR, "tasks"),
+      RUNS_DIR: path.join(MAESTRO_DIR, "runs"),
+      DB_PATH: path.join(MAESTRO_DIR, "maestro.db"),
+    };
+  }
+  return _paths;
+}
 
 const VALID_MODES = new Set(["task", "plan-only"]);
 
 // Open SQLite store only if the DB file exists (LangGraph engine was used)
 function tryOpenStore() {
+  const { DB_PATH } = maestroPaths();
   if (existsSync(DB_PATH)) {
     try { return openStore(DB_PATH); } catch { return null; }
   }
@@ -83,6 +97,7 @@ async function listDir(dir) {
 // ── Tool implementations ──────────────────────────────────────────────────────
 
 async function listTasks({ limit = 20, status } = {}) {
+  const { TASKS_DIR } = maestroPaths();
   // DB path: use SQLite store if available
   const db = tryOpenStore();
   if (db) {
@@ -117,6 +132,7 @@ async function listTasks({ limit = 20, status } = {}) {
 async function showTask({ id } = {}) {
   if (!id) throw new Error("id required");
   if (!isValidId(id)) throw new Error(`invalid_id: ${id}`);
+  const { TASKS_DIR, RUNS_DIR } = maestroPaths();
   // DB path: try SQLite first
   const db = tryOpenStore();
   if (db) {
@@ -158,6 +174,7 @@ async function showTask({ id } = {}) {
 }
 
 async function listRuns({ limit = 20 } = {}) {
+  const { RUNS_DIR } = maestroPaths();
   const entries = await listDir(RUNS_DIR);
   const runs = await Promise.all(
     entries.map(async (name) => {
@@ -174,6 +191,7 @@ async function listRuns({ limit = 20 } = {}) {
 async function showRun({ id } = {}) {
   if (!id) throw new Error("id required");
   if (!isValidId(id)) throw new Error(`invalid_id: ${id}`);
+  const { RUNS_DIR } = maestroPaths();
   const runDir = path.join(RUNS_DIR, id);
   assertInsideDir(RUNS_DIR, runDir);
   const files = await listDir(runDir);
@@ -192,6 +210,7 @@ async function showRun({ id } = {}) {
 async function createTask({ prompt, mode = "task" } = {}) {
   if (!prompt) throw new Error("prompt required");
   if (!VALID_MODES.has(mode)) throw new Error(`invalid_mode: ${mode}`);
+  const { ROOT } = maestroPaths();
   return new Promise((resolve, reject) => {
     // Invoke the bundled bin directly so this package is self-contained
     // (no npm run maestro shim required in the caller's directory).
@@ -230,6 +249,7 @@ function redactConfig(cfg) {
 }
 
 async function getState() {
+  const { MAESTRO_DIR } = maestroPaths();
   // Try HTTP first (tracker-orchestrator mode)
   const configPath = path.join(MAESTRO_DIR, "config.json");
   const config = await readJSON(configPath).catch(() => null);
@@ -271,6 +291,7 @@ async function getState() {
 }
 
 async function readWorkflow() {
+  const { MAESTRO_DIR, ROOT } = maestroPaths();
   const workflowPath = path.join(MAESTRO_DIR, "workflow.json");
   const workflow = await readJSON(workflowPath).catch(() => null);
   const wfMdPath = path.join(ROOT, "WORKFLOW.md");
