@@ -86,10 +86,35 @@ Key fields:
     // ...copilot, gemini, antigravity
   },
 
+  // Herdr terminal integration
+  "herdr": {
+    "close_tab_on": "success"     // "success" | "terminal" | "never"
+  },
+
   // Security
   "host_command_allow": []        // exact basenames; network binaries hard-denied
 }
 ```
+
+### Herdr Tab Lifecycle
+
+Each task gets one herdr tab (label `mae:<taskId>`); all agent panes for the
+task open inside it. The tab id is persisted on the task (`herdr_tab_id`), so
+a resumed task reuses its original tab — the conversation stays in one place
+instead of spawning blank new tabs.
+
+`herdr.close_tab_on` controls when Maestro closes the tab:
+
+| Value | Behaviour |
+|---|---|
+| `"success"` (default) | Close when the task reaches `succeeded`. Failed and waiting tasks keep their tab as a trail. |
+| `"terminal"` | Close on `succeeded` and `failed`. |
+| `"never"` | Never close tabs automatically. |
+
+Tabs are **never** closed while a task is `waiting_user`, `waiting_approval`,
+or `needs_review` — the conversation stays visible until the task resumes,
+and the resume lands in the same tab (verified via `herdr tab get`; recreated
+if the tab was closed manually).
 
 ### Planner Policy
 

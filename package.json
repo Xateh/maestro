@@ -20,7 +20,7 @@
   "scripts": {
     "maestro": "node bin/maestro.mjs",
     "maestro:mcp": "node src/mcp/server.mjs",
-    "test": "node --test test/maestro-package.test.mjs test/maestro-mcp.test.mjs test/maestro.test.mjs test/maestro-engine.test.mjs",
+    "test": "node --test test/maestro-package.test.mjs test/maestro-mcp.test.mjs test/maestro.test.mjs test/maestro-engine.test.mjs test/maestro-herdr-runner.test.mjs",
     "test:package": "node --test test/maestro-package.test.mjs",
     "test:maestro": "node --test test/maestro.test.mjs",
     "test:mcp": "node --test test/maestro-mcp.test.mjs",

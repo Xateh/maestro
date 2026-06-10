@@ -29,10 +29,14 @@ async function waitForFile(filePath, intervalMs, timeoutMs) {
 }
 
 export class HerdrAgentRunner {
-  constructor({ timeoutMs = 3_600_000, pollIntervalMs = 500, logger = nullLogger() } = {}) {
+  // tabStore: optional { get(taskId) -> tabId|null, set(taskId, tabId|null) }
+  // persistence delegate so tabs survive runner instances (resume reuses them).
+  constructor({ timeoutMs = 3_600_000, pollIntervalMs = 500, logger = nullLogger(), cli = herdrCli, tabStore = null } = {}) {
     this.timeoutMs = timeoutMs;
     this.pollIntervalMs = pollIntervalMs;
     this.logger = logger;
+    this.cli = cli;
+    this.tabStore = tabStore;
     this._taskTabs = new Map();
     this._taskPanes = new Map();
     this._maestroWsId = null;
@@ -40,22 +44,35 @@ export class HerdrAgentRunner {
 
   async _ensureMaestroWorkspace(cwd) {
     if (this._maestroWsId) return this._maestroWsId;
-    const list = await herdrCli(["workspace", "list"]);
+    const list = await this.cli(["workspace", "list"]);
     const workspaces = list?.workspaces ?? [];
     const existing = workspaces.find((w) => (w.custom_name ?? w.label ?? "") === "maestro");
     if (existing) {
       this._maestroWsId = existing.workspace_id;
       return this._maestroWsId;
     }
-    const created = await herdrCli(["workspace", "create", "--label", "maestro", "--cwd", cwd, "--no-focus"]);
+    const created = await this.cli(["workspace", "create", "--label", "maestro", "--cwd", cwd, "--no-focus"]);
     this._maestroWsId = created?.workspace?.workspace_id;
     return this._maestroWsId;
   }
 
   async _ensureTab(taskId, cwd) {
     if (this._taskTabs.has(taskId)) return this._taskTabs.get(taskId);
+
+    // Reuse a persisted tab (task resumed by a fresh runner instance) so the
+    // conversation trail stays in one place. Any failure means the tab is
+    // gone — fall through and create a new one.
+    const persisted = this.tabStore?.get(taskId);
+    if (persisted) {
+      try {
+        await this.cli(["tab", "get", persisted]);
+        this._taskTabs.set(taskId, persisted);
+        return persisted;
+      } catch { /* tab gone — recreate */ }
+    }
+
     const wsId = await this._ensureMaestroWorkspace(cwd);
-    const result = await herdrCli([
+    const result = await this.cli([
       "tab", "create",
       "--workspace", wsId,
       "--label", `mae:${taskId}`,
@@ -64,7 +81,22 @@ export class HerdrAgentRunner {
     ]);
     const tabId = result?.tab?.tab_id;
     this._taskTabs.set(taskId, tabId);
+    this.tabStore?.set(taskId, tabId);
     return tabId;
+  }
+
+  async closeTab(taskId) {
+    const tabId = this._taskTabs.get(taskId) ?? this.tabStore?.get(taskId);
+    if (!tabId) return;
+    try {
+      await this.cli(["tab", "close", tabId]);
+      this.logger.info("herdr_tab_closed", { task_id: taskId, tab_id: tabId });
+    } catch { /* best effort */ }
+    this._taskTabs.delete(taskId);
+    for (const key of this._taskPanes.keys()) {
+      if (key.startsWith(`${taskId}:`)) this._taskPanes.delete(key);
+    }
+    this.tabStore?.set(taskId, null);
   }
 
   async runStep({ provider, role, prompt, cwd, logDir, options = {}, env = {}, providerDef = null }) {
@@ -100,7 +132,7 @@ export class HerdrAgentRunner {
     const agentLabel = `${provider}:${role}#${attempt}`;
     const tabId = await this._ensureTab(taskId, cwd);
 
-    const paneResult = await herdrCli([
+    const paneResult = await this.cli([
       "agent", "start", agentLabel,
       "--tab", tabId,
       "--cwd", cwd,
@@ -116,7 +148,7 @@ export class HerdrAgentRunner {
 
     if (exitCodeStr === null) {
       try {
-        await herdrCli(["pane", "send-keys", paneId, "ctrl+c"]);
+        await this.cli(["pane", "send-keys", paneId, "ctrl+c"]);
       } catch { /* best effort */ }
       const error = new Error(`agent_timeout: ${provider}:${role} exceeded ${this.timeoutMs}ms`);
       error.code = "agent_timeout";
@@ -161,11 +193,11 @@ export class HerdrAgentRunner {
       const tabId = this._taskTabs.get(taskId);
       if (!tabId) continue;
       try {
-        const list = await herdrCli(["pane", "list", "--workspace", this._maestroWsId ?? ""]);
+        const list = await this.cli(["pane", "list", "--workspace", this._maestroWsId ?? ""]);
         const panes = list?.panes ?? [];
         for (const pane of panes) {
           if (pane.tab_id === tabId) {
-            await herdrCli(["pane", "send-keys", pane.id, "ctrl+c"]);
+            await this.cli(["pane", "send-keys", pane.id, "ctrl+c"]);
           }
         }
       } catch { /* best effort */ }

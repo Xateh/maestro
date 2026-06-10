@@ -8,15 +8,16 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import { buildGraph } from "../src/langgraph/graph.mjs";
 import { makeRoleNode } from "../src/langgraph/nodes.mjs";
+import { runLangGraphTask } from "../src/langgraph/engine.mjs";
 import { SqliteTaskStore } from "../src/db/store.mjs";
-import { DEFAULT_WORKFLOW } from "../src/task-store.mjs";
+import { DEFAULT_WORKFLOW, LocalTaskStore } from "../src/task-store.mjs";
 
 const DEFAULT_CONFIG = {
   default_role: "executor",
@@ -190,4 +191,67 @@ test("makeRoleNode: returns done and records handoff when agent emits MAESTRO_HA
     db?.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ── runLangGraphTask: herdr tab close policy ─────────────────────────────────────
+
+const silent = { write: () => {} };
+
+// Drives a full task run over a tmp LocalTaskStore with a stub runner whose
+// closeTab calls are recorded. review_enabled=false makes the reviewer node
+// synthesize a "complete" review so the run ends succeeded without a real agent.
+async function runTaskWithPolicy({ policy = null, emitQuestion = false } = {}) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-engine-tab-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "add logging", cwd: dir, reviewEnabled: false });
+    if (policy) {
+      await writeFile(
+        path.join(store.root, "config.json"),
+        JSON.stringify({ version: 2, herdr: { close_tab_on: policy } }),
+      );
+    }
+
+    const closedTabs = [];
+    const stubRunner = {
+      runStep: async () => ({
+        stdout: emitQuestion
+          ? "MAESTRO_QUESTION: which logger?"
+          : `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "done" })}`,
+        stderr: "",
+        stdoutPath: null,
+        stderrPath: null,
+      }),
+      closeTab: async (taskId) => { closedTabs.push(taskId); },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+    });
+    return { finalTask, closedTabs, taskId: task.id };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("runLangGraphTask: closes herdr tab on success under default policy", async () => {
+  const { finalTask, closedTabs, taskId } = await runTaskWithPolicy();
+  assert.equal(finalTask.status, "succeeded");
+  assert.deepEqual(closedTabs, [taskId], "closeTab called exactly once for the task");
+});
+
+test("runLangGraphTask: close_tab_on=never leaves the tab open on success", async () => {
+  const { finalTask, closedTabs } = await runTaskWithPolicy({ policy: "never" });
+  assert.equal(finalTask.status, "succeeded");
+  assert.deepEqual(closedTabs, [], "closeTab not called under never policy");
+});
+
+test("runLangGraphTask: waiting_user leaves the tab open as a trail", async () => {
+  const { finalTask, closedTabs } = await runTaskWithPolicy({ emitQuestion: true });
+  assert.equal(finalTask.status, "waiting_user");
+  assert.deepEqual(closedTabs, [], "tab kept so the user can read the conversation");
 });

@@ -110,6 +110,9 @@ export const DEFAULT_LOCAL_CONFIG_V2 = {
   max_steps: 20,
   default_role: "executor",
   providers: DEFAULT_PROVIDERS,
+  herdr: {
+    close_tab_on: "success", // "success" | "terminal" | "never"
+  },
   headroom: {
     mode: "light",           // "light" | "heavy"
     extras_light: "proxy,mcp,code",

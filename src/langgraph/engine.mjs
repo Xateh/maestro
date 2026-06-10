@@ -24,10 +24,30 @@ function _dbPath(maestroRoot) {
   return path.join(maestroRoot, "maestro.db");
 }
 
-function _getRunner(timeoutMs) {
-  return process.env.MAESTRO_BACKEND === "terminal"
-    ? new TerminalAgentRunner({ timeoutMs })
-    : new HerdrAgentRunner({ timeoutMs });
+function _getRunner(timeoutMs, { db = null } = {}) {
+  if (process.env.MAESTRO_BACKEND === "terminal") {
+    return new TerminalAgentRunner({ timeoutMs });
+  }
+  // tabStore persists herdr tab ids across runner instances so resumed tasks
+  // reuse their tab (conversation trail) instead of opening a new one.
+  const tabStore = db ? {
+    get: (taskId) => db.getTask(taskId)?.herdr_tab_id ?? null,
+    set: (taskId, tabId) => { db.updateTask(taskId, { herdr_tab_id: tabId }); },
+  } : null;
+  return new HerdrAgentRunner({ timeoutMs, tabStore });
+}
+
+// Close the task's herdr tab according to config policy. Tabs for tasks that
+// still need the user (waiting_user, waiting_approval, needs_review) are never
+// closed — the conversation stays visible as a trail until the task resumes.
+async function _maybeCloseTab(runner, taskId, config, status) {
+  const policy = config?.herdr?.close_tab_on ?? "success";
+  if (policy === "never") return;
+  const closable = policy === "terminal" ? ["succeeded", "failed"] : ["succeeded"];
+  if (!closable.includes(status)) return;
+  try {
+    await runner.closeTab?.(taskId);
+  } catch { /* best effort */ }
 }
 
 function _reviewStatusForCompletionState(review) {
@@ -208,6 +228,7 @@ function _mirrorPatch(dbTask) {
     unblock_options: dbTask.unblock_options ?? [],
     continuation_prompt: dbTask.continuation_prompt ?? null,
     observed_head: dbTask.observed_head ?? null,
+    herdr_tab_id: dbTask.herdr_tab_id ?? null,
   };
 }
 
@@ -278,7 +299,7 @@ export async function runLangGraphTask(taskId, {
   ]);
 
   // ── build runner ──────────────────────────────────────────────────────────
-  const agentRunner = runner ?? _getRunner(task.timeout_ms);
+  const agentRunner = runner ?? _getRunner(task.timeout_ms, { db });
 
   // ── determine initial state for this run ─────────────────────────────────
   const initialState = task.current_state ?? resolveInitialState(workflow, { mode: task.mode });
@@ -341,6 +362,7 @@ export async function runLangGraphTask(taskId, {
     const review = endTask.review;
     if (review) {
       const updated = await _applyReviewerOutcome(db, taskId, review, ops);
+      await _maybeCloseTab(agentRunner, taskId, config, updated.status);
       await taskStore.updateTask(taskId, _mirrorPatch(updated));
       write(stdout, `task ${taskId} ${updated.status}`);
       return { task: updated };
@@ -366,6 +388,7 @@ export async function runLangGraphTask(taskId, {
       updated = db.updateTask(taskId, { status: "succeeded", active_step: null });
     }
     if (ops.markProjectTaskStatus) await ops.markProjectTaskStatus(updated, "succeeded", { review: reviewSkipped });
+    await _maybeCloseTab(agentRunner, taskId, config, "succeeded");
     await taskStore.updateTask(taskId, _mirrorPatch(db.getTask(taskId)));
     write(stdout, `task ${taskId} succeeded`);
     return { task: db.getTask(taskId) };
@@ -396,6 +419,7 @@ export async function runLangGraphTask(taskId, {
       updated = db.updateTask(taskId, { status: "succeeded", active_step: null });
     }
     if (ops.markProjectTaskStatus) await ops.markProjectTaskStatus(updated, "succeeded");
+    await _maybeCloseTab(agentRunner, taskId, config, "succeeded");
     await taskStore.updateTask(taskId, _mirrorPatch(db.getTask(taskId)));
     write(stdout, `task ${taskId} succeeded`);
     return { task: db.getTask(taskId) };
