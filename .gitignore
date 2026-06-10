@@ -1,2 +1,9 @@
 .maestro/
 node_modules/
+.serena/
+.remember/
+*.log
+*.db
+.env*
+coverage/
+.DS_Store
