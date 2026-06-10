@@ -6,28 +6,44 @@
 
 **Your agents, conducted.**
 
-One coding agent improvises. Several of them, unsupervised, are a garage band
-at 2 a.m. Maestro hands them sheet music: it turns a prompt (or a Linear
-issue) into a plan → execute → review pipeline dispatched across CLI coding
-agents, where each role — planner, executor, reviewer — plays its part in its
-own terminal pane, hands a compact typed score to the next chair, and every
-note lands in a local SQLite database. Runs are inspectable, resumable, and
-auditable. Nobody plays from memory.
+Most developers already know which model to reach for: Gemini for deep
+research and big-context reading, Claude for planning and architecture, Codex
+for writing and editing code. Maestro makes that instinct automatic — and it
+does it without a single API key.
+
+Instead of wrapping LLM APIs in your own glue code, Maestro dispatches the CLI
+tools already installed on your machine. Each role in the pipeline runs the
+CLI you choose, authenticated however you already have it set up. No new
+credentials to manage, no vendor lock-in, no per-token billing you didn't
+sign up for. The right model at the right seat, every run.
 
 ```
 prompt → [planner] ──handoff──► [executor] ──handoff──► [reviewer] → done
             │                       │                       │
-          claude                  codex                   codex
-          (plan mode)           (workspace-write)        (read-only)
+          gemini                  codex                   claude
+        (research +              (writes +              (reviews +
+        architecture)             edits code)            approves)
 ```
+
+Mix and match freely: swap any role to any provider in `.maestro/config.json`
+or live in the TUI. The pipeline — plan → execute → review — stays the same;
+only the instruments change.
 
 ---
 
 ## Features
 
+- **CLI agents, no API keys** — Maestro runs the coding CLIs already on your
+  machine (`claude`, `codex`, `gemini`, `copilot`, `antigravity`). No new
+  credentials to provision, no per-token billing to route through your own
+  code, no API wrapper to maintain. If you can run `claude --version`, you're
+  ready.
+- **Right model per role** — assign any provider to any role. Use Gemini for
+  research-heavy planning, Claude for architecture and review, Codex for
+  workspace writes. The multi-provider instinct developers already have —
+  "different models for different jobs" — is automated, not manual.
 - **LangGraph-powered flow** — roles are graph nodes, transitions are edges; no
-  bespoke state-machine code to maintain. No API key required: LangGraph keeps
-  time, it never makes model calls.
+  bespoke state-machine code to maintain.
 - **Compact typed handoffs** — only `{ role, provider, payload, log_path }`
   objects pass between roles. Raw stdout (300–400 KB a step) stays on disk and
   is never re-sent as prompt context. The orchestra passes notes, not noise.
@@ -41,10 +57,6 @@ prompt → [planner] ──handoff──► [executor] ──handoff──► [r
   resumed task picks up in the *same* tab — no trail of empty seats. Tune it
   with `herdr.close_tab_on`; or skip the theatre entirely with
   `MAESTRO_BACKEND=terminal`.
-- **Five providers** — claude, codex, copilot, gemini, antigravity. Mix per
-  role; the default seating puts claude at first chair (planner) and codex on
-  execution and review. Configurable via `.maestro/config.json` and
-  `WORKFLOW.md`.
 - **MCP server** — seven tools expose Maestro state and task creation to any
   MCP-compatible agent (Claude Code, Cursor, …). One `.mcp.json` entry, no
   other config.
@@ -69,7 +81,7 @@ prompt → [planner] ──handoff──► [executor] ──handoff──► [r
 |---|---|
 | **Node.js ≥ 22.13** | Uses the built-in `node:sqlite` (`DatabaseSync`). Check with `node --version`. |
 | **herdr** (optional) | Default terminal-pane backend. Install separately; set `MAESTRO_BACKEND=terminal` to bypass. |
-| **Provider CLIs** | At least one of `claude`, `codex`, `copilot`, `gemini`, `antigravity`. The default workflow uses `claude` (planner) and `codex` (executor + reviewer). |
+| **Provider CLIs** | At least one of `claude`, `codex`, `copilot`, `gemini`, `antigravity` — whichever you already have installed and authenticated. No API keys needed beyond what those CLIs already use. The default workflow uses `claude` (planner) and `codex` (executor + reviewer). |
 
 ---
 
@@ -144,17 +156,34 @@ the same tab, same context, no encore required.
 
 ## Providers
 
-Default role mapping: **planner = claude**, **executor = codex**, **reviewer = codex**.
+Maestro drives CLI tools — the same ones you already have open in other
+tabs — so there's no API key setup and no new billing surface. Each provider
+runs as a subprocess with its own authenticated session.
 
-| Provider | CLI binary | Notes |
+Default mapping: **planner = claude**, **executor = codex**, **reviewer = codex**.
+
+| Provider | CLI binary | Plays best at |
 |---|---|---|
-| `claude` | `claude` | Runs in `plan` permission mode for the planner role |
-| `codex` | `codex` | Default executor/reviewer; uses `codex exec` |
-| `copilot` | `copilot` | Optional |
-| `gemini` | `gemini` | Optional |
-| `antigravity` | `antigravity` | Optional |
+| `claude` | `claude` | Planning, architecture, nuanced review — strong at reasoning and instruction-following |
+| `codex` | `codex` | Execution and editing — tight workspace integration, file writes, shell commands |
+| `gemini` | `gemini` | Research-heavy planning — large context window, web-grounded tasks |
+| `copilot` | `copilot` | Optional; good for teams already in the GitHub ecosystem |
+| `antigravity` | `antigravity` | Optional; bring-your-own CLI |
 
-Override per role in `.maestro/workflow.json`, or interactively via `maestro tui`.
+### Example: multi-provider setup
+
+```jsonc
+// .maestro/config.json
+{
+  "providers": {
+    "planner":  "gemini",   // large context, research
+    "executor": "codex",    // writes and edits code
+    "reviewer": "claude"    // careful review and approval
+  }
+}
+```
+
+Override per role in `.maestro/workflow.json`, or live in `maestro tui`.
 
 ### Terminal backend
 
