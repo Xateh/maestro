@@ -24,7 +24,7 @@ export function resolveInitialState(workflow, { mode = "task" } = {}) {
 // Task-level role_skips override the workflow role's skip field.
 // Returns "auto" | "always" | "never".
 export function effectiveSkipForState(workflow, state, taskRoleSkips = null) {
-  if (taskRoleSkips && Object.prototype.hasOwnProperty.call(taskRoleSkips, state)) {
+  if (taskRoleSkips && Object.hasOwn(taskRoleSkips, state)) {
     return taskRoleSkips[state];
   }
   return workflow?.roles?.[state]?.skip ?? "auto";

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -606,7 +605,6 @@ test("Codex client launches in workspace cwd, tracks thread and turn, and fails 
     const stderr = new PassThrough();
     const stdin = new PassThrough();
     const writes = [];
-    const resumed = [];
     const child = {
       pid: 12345,
       stdin,

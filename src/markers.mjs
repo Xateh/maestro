@@ -69,7 +69,7 @@ function _handoffFromText(value = "") {
     if (!t.startsWith(HANDOFF_PREFIX)) continue;
     const payload = t.slice(HANDOFF_PREFIX.length).trim();
     if (!payload) continue;
-    try { return JSON.parse(payload); } catch { continue; }
+    try { return JSON.parse(payload); } catch { }
   }
   return null;
 }

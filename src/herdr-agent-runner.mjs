@@ -187,9 +187,8 @@ export class HerdrAgentRunner {
   }
 
   async cancel(taskId) {
-    for (const [key, ] of this._taskPanes) {
+    for (const key of this._taskPanes.keys()) {
       if (!key.startsWith(`${taskId}:`)) continue;
-      const role = key.slice(taskId.length + 1).replace(/#\d+$/, "");
       const tabId = this._taskTabs.get(taskId);
       if (!tabId) continue;
       try {

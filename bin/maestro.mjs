@@ -1733,7 +1733,7 @@ function compactLogSnippet(value = "", maxLength = 600) {
   return `${text.slice(0, maxLength)}...`;
 }
 
-function buildActionResult({ task, request, actionId, note, startedAt, output, stdoutPath, stderrPath }) {
+function buildActionResult({ task, request, note, startedAt, output, stdoutPath, stderrPath }) {
   const stdoutText = String(output?.stdout ?? "");
   const stderrText = String(output?.stderr ?? "");
   const exitCode = Number.isInteger(output?.code) ? output.code : 0;

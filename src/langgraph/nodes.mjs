@@ -21,7 +21,6 @@ import {
   parseReviewerOutput,
   isContextWindowFailure,
   skippedReview,
-  REVIEW_MAX_CONTINUATIONS,
 } from "../markers.mjs";
 import { effectiveSkipForState } from "../state-machine.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";

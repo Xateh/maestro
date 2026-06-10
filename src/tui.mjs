@@ -1283,7 +1283,6 @@ export async function runMaestroTui({
                     detailNotice = receiptNotice(result, "Task cancelled.");
                     detailTask = await store.readTask(detailTask.id);
                     forceDetailPrompt = true;
-                    continue;
                   }
                 }
               }
