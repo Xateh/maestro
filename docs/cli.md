@@ -69,11 +69,7 @@ Dump full JSON state for a task.
 maestro inspect 20260608-120000-add-healthcheck
 ```
 
-### `list` (alias for `status` in list mode)
-
-```bash
-maestro list
-```
+> `status` is also the task list — there is no separate `list` command.
 
 ---
 
