@@ -4,7 +4,7 @@
   "description": "Multi-agent plan→execute→review orchestrator built on LangGraph",
   "type": "module",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.13"
   },
   "bin": {
     "maestro": "bin/maestro.mjs"
@@ -26,6 +26,7 @@
     "test:mcp": "node --test test/maestro-mcp.test.mjs",
     "test:enterprise": "npm run test:package && npm run test:maestro && npm run test:mcp",
     "lint": "biome lint .",
+    "test:coverage": "c8 --reporter=text --reporter=lcov npm test",
     "headroom:setup": "bash scripts/headroom-setup.sh"
   },
   "dependencies": {
@@ -37,6 +38,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.16"
+    "@biomejs/biome": "2.4.16",
+    "c8": "11.0.0"
   }
 }
