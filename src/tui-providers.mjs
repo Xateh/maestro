@@ -1,3 +1,4 @@
+import { DEFAULT_PROVIDERS } from "./task-store.mjs";
 import { pickFromList, applyRecentUpdate } from "./tui-pickers.mjs";
 
 const BUILTIN_ADAPTERS = [
@@ -8,6 +9,18 @@ const BUILTIN_ADAPTERS = [
   "built-in:antigravity",
   "built-in:ollama",
 ];
+
+// Provider edits persist into the shareable config.json, so the write base
+// must be the RAW config — writing the effective (overlay-merged) view would
+// leak config.local.json values into config.json.
+async function shareableProviders(store) {
+  const raw = typeof store.readConfigRaw === "function" ? await store.readConfigRaw() : null;
+  return structuredClone(raw?.providers ?? DEFAULT_PROVIDERS);
+}
+
+function shareableDef(providers, key, effectiveDef) {
+  return providers[key] ?? structuredClone(DEFAULT_PROVIDERS[key] ?? effectiveDef);
+}
 
 function providerSummary(key, def) {
   const aliasCount = (def.aliases ?? []).length;
@@ -50,7 +63,7 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
     if (choice === "d") {
       const confirm = String(await ask(`Delete provider "${providerKey}"? y/n [n]: `) ?? "").trim().toLowerCase();
       if (confirm === "y" || confirm === "yes") {
-        const providers = { ...config.providers };
+        const providers = await shareableProviders(store);
         delete providers[providerKey];
         await store.writeConfig({ providers });
         output.write(`Provider "${providerKey}" deleted.\n`);
@@ -62,7 +75,8 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
     if (choice === "1") {
       const v = String(await ask(`Label [${def.label}]: `) ?? "").trim();
       if (v) {
-        const providers = { ...config.providers, [providerKey]: { ...def, label: v } };
+        const providers = await shareableProviders(store);
+        providers[providerKey] = { ...shareableDef(providers, providerKey, def), label: v };
         await store.writeConfig({ providers });
         output.write("Saved.\n");
       }
@@ -70,13 +84,21 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
       output.write(`Built-in adapters: ${BUILTIN_ADAPTERS.join(", ")}\nOr "custom" for a custom template.\n`);
       const v = String(await ask(`Adapter [${def.adapter}]: `) ?? "").trim();
       if (v) {
-        let patch = { ...def, adapter: v };
+        const providers = await shareableProviders(store);
+        let patch = { ...shareableDef(providers, providerKey, def), adapter: v };
         if (v === "custom" || v.startsWith("custom")) {
           const tmpl = String(await ask(`Command template (e.g. {alias} --model {model}) [${def.custom?.command_template ?? ""}]: `) ?? "").trim();
           const via = String(await ask(`Prompt via stdin|arg [${def.custom?.prompt_via ?? "stdin"}]: `) ?? "").trim();
-          patch = { ...patch, custom: { command_template: tmpl || "{alias}", prompt_via: ["stdin", "arg"].includes(via) ? via : "stdin" } };
+          // empty answers keep the existing template/mode shown in the prompt
+          patch = {
+            ...patch,
+            custom: {
+              command_template: tmpl || def.custom?.command_template || "{alias}",
+              prompt_via: ["stdin", "arg"].includes(via) ? via : (def.custom?.prompt_via ?? "stdin"),
+            },
+          };
         }
-        const providers = { ...config.providers, [providerKey]: patch };
+        providers[providerKey] = patch;
         await store.writeConfig({ providers });
         output.write("Saved.\n");
       }
@@ -90,24 +112,31 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
         allowDefault: false,
       });
       if (v !== def.default_alias) {
-        const providers = { ...config.providers, [providerKey]: { ...def, default_alias: v } };
-        const updated = applyRecentUpdate({ ...config, providers }, { kind: "aliases_by_provider", key: providerKey, value: v });
+        const providers = await shareableProviders(store);
+        providers[providerKey] = { ...shareableDef(providers, providerKey, def), default_alias: v };
+        // recent lists are persisted too — base them on the raw config so
+        // overlay-only recents stay out of config.json
+        const rawRecent = (await store.readConfigRaw())?.recent ?? {};
+        const updated = applyRecentUpdate({ ...config, recent: rawRecent, providers }, { kind: "aliases_by_provider", key: providerKey, value: v });
         await store.writeConfig({ providers: updated.providers, recent: updated.recent });
         output.write("Saved.\n");
       }
     } else if (choice === "4") {
       const newList = await editStringList(ask, output, "Aliases", def.aliases ?? []);
-      const providers = { ...config.providers, [providerKey]: { ...def, aliases: newList } };
+      const providers = await shareableProviders(store);
+      providers[providerKey] = { ...shareableDef(providers, providerKey, def), aliases: newList };
       await store.writeConfig({ providers });
       output.write("Saved.\n");
     } else if (choice === "5") {
       const newList = await editStringList(ask, output, "Models", def.models ?? []);
-      const providers = { ...config.providers, [providerKey]: { ...def, models: newList } };
+      const providers = await shareableProviders(store);
+      providers[providerKey] = { ...shareableDef(providers, providerKey, def), models: newList };
       await store.writeConfig({ providers });
       output.write("Saved.\n");
     } else if (choice === "6") {
       const newList = await editStringList(ask, output, "Efforts", def.efforts ?? []);
-      const providers = { ...config.providers, [providerKey]: { ...def, efforts: newList } };
+      const providers = await shareableProviders(store);
+      providers[providerKey] = { ...shareableDef(providers, providerKey, def), efforts: newList };
       await store.writeConfig({ providers });
       output.write("Saved.\n");
     } else {
@@ -149,7 +178,8 @@ async function runAddProviderWizard({ ask, output, store }) {
   const efforts = effortsRaw ? effortsRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
 
   const newDef = { label, adapter, default_alias: defaultAlias, aliases, models, efforts, ...(custom ? { custom } : {}) };
-  const providers = { ...(config.providers ?? {}), [key]: newDef };
+  const providers = await shareableProviders(store);
+  providers[key] = newDef;
   await store.writeConfig({ providers });
   output.write(`Provider "${key}" added.\n`);
 }

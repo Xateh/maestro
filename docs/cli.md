@@ -41,6 +41,16 @@ Planner only. Produces a plan handoff and stops. Review it before running the fu
 maestro task --plan-only "Migrate database schema to v2"
 ```
 
+### `task --mode <name> "<prompt>"`
+
+Run a task in any mode defined in `workflow.json` `modes` — including
+standalone modes created by `setup import` for imported subagents.
+`--plan-only` remains an alias for `--mode plan-only`.
+
+```bash
+maestro task --mode system_evaluator "evaluate the markers module"
+```
+
 ### `run-task <id>`
 
 Re-run or continue an existing task by ID.
@@ -161,6 +171,56 @@ Manually mark a task as done (e.g. after out-of-band resolution).
 ```bash
 maestro mark-done 20260608-120000-add-healthcheck
 ```
+
+---
+
+## Setup, Import & Export Commands
+
+See [import-export.md](import-export.md) for the full guide.
+
+### `setup import [flags]`
+
+Scan existing agent setups (subagents, skills, instruction docs, `.mcp.json`,
+codex/gemini configs) and import them into the workflow with credits.
+Flags: `--agents <dir>` `--skills <dir>` `--instructions <file>` `--mcp <file>`
+`--codex <file>` `--gemini <file>` `--hooks <file>` `--attach <role>=<path>`
+`--wire "state:event=dest"` `--copy` `--dry-run` `--yes`. With no source
+flags, default locations are scanned.
+
+```bash
+maestro setup import --dry-run
+maestro setup import --agents ~/.claude/agents --attach planner=~/.agents/skills/maestro/SKILL.md --yes
+```
+
+### `setup local [--json] [--yes]`
+
+Detect installed agent runtimes (claude/codex/copilot/gemini/antigravity +
+ollama/pi/hermes/openclaw), discover Ollama models, and record
+machine-specific values in `config.local.json`.
+
+### `setup keys [--var NAME]`
+
+Manage API keys in `.maestro/secrets.local.json` (mode 0600). Interactive by
+default (input hidden); `--var NAME` reads the value from stdin for scripts.
+Keys are optional — provider CLIs handle their own auth.
+
+### `workflow validate [--json] [--strict]`
+
+Validate `workflow.json`: structural errors (bad initial/transitions/modes,
+invalid limits) and warnings (unreachable roles, unknown providers, cycles
+without termination clauses). Exit 1 on errors, or on warnings with
+`--strict`.
+
+### `export [--out <path>] [--single-file] [--name <n>]`
+
+Package the workflow as a portable bundle (dir or single
+`.maestro-bundle.json`). Excludes `config.local.json` and
+`secrets.local.json`; includes credits and sha256 hashes.
+
+### `import <bundle> [--dry-run] [--force]`
+
+Import a bundle: backs up `workflow.json`, validates, materializes bundled
+prompt docs, merges providers (existing entries win unless `--force`).
 
 ---
 

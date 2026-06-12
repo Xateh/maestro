@@ -106,7 +106,7 @@ function _resumeText(task = {}) {
  * @param {Array}  priorHandoffs - compact typed handoff objects
  * @param {string} handoffMode - "normal" | "strict" (on context retry)
  */
-export function buildPromptFromHandoffs({ role, task, priorHandoffs = [], handoffMode = "normal" }) {
+export function buildPromptFromHandoffs({ role, task, priorHandoffs = [], handoffMode = "normal", roleInstructions = "" }) {
   const taskText = task?.prompt ?? "";
   const prior = _priorHandoffText(priorHandoffs);
   const answers = _answersText(task?.question_answers ?? []);
@@ -117,10 +117,13 @@ export function buildPromptFromHandoffs({ role, task, priorHandoffs = [], handof
   const retryNote = handoffMode === "strict"
     ? "\nAuto-retry note: previous attempt exhausted context window. Use compacted handoffs below, inspect logs only if necessary.\n"
     : "";
+  const instructionsBlock = String(roleInstructions ?? "").trim()
+    ? `\nAdditional role instructions:\n${String(roleInstructions).trim()}\n`
+    : "";
 
   if (role === "planner") {
     return `Claude plans only. Do not edit files. Do not run destructive commands.
-${retryNote}
+${retryNote}${instructionsBlock}
 
 Task:
 ${taskText}
@@ -156,7 +159,7 @@ MAESTRO_HANDOFF: {"plan_summary":"","steps":[],"files_to_touch":[]}`;
 
   if (role === "executor") {
     return `Codex owns execution. Inspect repository state before edits. Preserve user-owned dirty files.
-${retryNote}
+${retryNote}${instructionsBlock}
 
 Task:
 ${taskText}
@@ -195,7 +198,7 @@ Finish with changed files and verification run.`;
 
   if (role === "reviewer") {
     return `Codex reviews only. Do not edit files. Review for bugs, contract drift, missing tests, and unsafe agent behavior.
-${retryNote}
+${retryNote}${instructionsBlock}
 
 Task:
 ${taskText}
@@ -232,9 +235,10 @@ Use completion_state complete plus risk_level for complete-with-risk cases.
 For incomplete_continueable, include continuation: {"prompt":"...","reason":"..."}.`;
   }
 
-  // Fallback for custom roles
+  // Fallback for custom roles (e.g. imported subagents). Includes the full
+  // marker protocol so custom roles can ask questions, hand off, and loop.
   return `Role: ${role}
-${retryNote}
+${retryNote}${instructionsBlock}
 
 Task:
 ${taskText}
@@ -242,6 +246,22 @@ ${taskText}
 User resume directives:
 ${resume}
 
+User answers:
+${answers}
+
+Interactions:
+${interactions}
+
 Prior agent output:
-${prior}`;
+${prior}
+
+If you need user input before continuing, output exactly one line starting with:
+MAESTRO_QUESTION: <your question>
+
+When finished, include exactly one line starting with:
+MAESTRO_HANDOFF: {"summary":"","details":{}}
+
+If this role's workflow transitions define custom events (e.g. "revise"), you
+may route the workflow by adding an "event" field to the handoff JSON, e.g.:
+MAESTRO_HANDOFF: {"event":"revise","summary":"why revision is needed"}`;
 }

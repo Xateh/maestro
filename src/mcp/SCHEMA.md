@@ -55,13 +55,13 @@ All files in one run dir. JSON files returned fully; log files tailed to last 8 
 ---
 
 ## `maestro_create_task`
-Spawns `bin/maestro.mjs <mode> "<prompt>"` via the bundled bin (self-contained, no npm script required). Non-blocking.
+Spawns `bin/maestro.mjs task --mode <mode> -- "<prompt>"` via the bundled bin (self-contained, no npm script required). Non-blocking.
 
 **Input**
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `prompt` | string | — | Task description (required) |
-| `mode` | string | `"task"` | Must be exactly `"task"` or `"plan-only"`. Throws `invalid_mode` otherwise. |
+| `mode` | string | `"task"` | `"task"`, `"plan-only"`, or any custom mode defined in `workflow.json` `modes` (e.g. standalone modes created by `maestro setup import`). Must match `^[a-z0-9_-]+$`. Throws `invalid_mode` otherwise. |
 
 **Output** `{ exitCode, taskId, stdout }` — `taskId` is parsed from CLI output; may be `null` if unparseable.
 
@@ -88,3 +88,16 @@ Current workflow definition.
 **Input** none
 
 **Output** `{ workflow_json: object, workflow_md: string|null }`
+
+---
+
+## `maestro_validate_workflow`
+Validate `.maestro/workflow.json`: structural errors (bad initial, dangling
+transitions, bad modes, invalid `max_visits`/`loop_limits`) and warnings
+(unreachable roles, unknown providers, **cycles without termination
+clauses** — each warning includes the recommended fix). Read-only.
+
+**Input** none
+
+**Output** `{ ok: boolean, errors: Array<{code, message}>, warnings: Array<{code, message}> }`
+- Returns `{ ok: false, errors: [{code: "missing_workflow", ...}] }` when no readable workflow.json exists.

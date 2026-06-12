@@ -16,6 +16,7 @@ import { TerminalAgentRunner } from "../agent-runner.mjs";
 import { openStore } from "../db/store.mjs";
 import { buildGraph } from "./graph.mjs";
 import { resolveInitialState, isTerminalAfterState } from "../state-machine.mjs";
+import { findCycles, validateWorkflow } from "../workflow-validate.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
 import { REVIEW_MAX_CONTINUATIONS, skippedReview } from "../markers.mjs";
 
@@ -298,6 +299,12 @@ export async function runLangGraphTask(taskId, {
     taskStore.readConfig(),
   ]);
 
+  // Surface workflow problems (e.g. unterminated cycles) without blocking the run.
+  const validation = validateWorkflow(workflow, { config });
+  for (const problem of [...validation.errors, ...validation.warnings]) {
+    write(stderr, `workflow ${validation.errors.includes(problem) ? "error" : "warning"} [${problem.code}]: ${problem.message}`);
+  }
+
   // ── build runner ──────────────────────────────────────────────────────────
   const agentRunner = runner ?? _getRunner(task.timeout_ms, { db });
 
@@ -314,6 +321,29 @@ export async function runLangGraphTask(taskId, {
     db.deleteHandoffsByRole(taskId, "reviewer");
   }
 
+  // ── loop-limit recovery: the capped cycle must re-run on resume ──────────
+  // A role paused by max_visits/loop_limits already has a handoff from its
+  // last visit; without eviction every cycle role would resume-skip and the
+  // task would falsely complete with zero agent calls. Evict the whole cycle
+  // (not just the capped role) so the fresh round is also re-checked. The
+  // user's answer grants one fresh visit budget and reaches the roles via
+  // question_answers in the prompt.
+  const loopBlocked = (task.blockers ?? []).filter((b) => b.code === "loop_limit_exceeded");
+  if (loopBlocked.length > 0) {
+    const cycles = findCycles(workflow.transitions ?? {});
+    for (const blocker of loopBlocked) {
+      if (!blocker.role) continue;
+      const cycleRoles = new Set([blocker.role]);
+      for (const cycle of cycles) {
+        if (cycle.includes(blocker.role)) for (const role of cycle) cycleRoles.add(role);
+      }
+      for (const role of cycleRoles) db.deleteHandoffsByRole(taskId, role);
+    }
+    task = db.updateTask(taskId, {
+      blockers: (task.blockers ?? []).filter((b) => b.code !== "loop_limit_exceeded"),
+    });
+  }
+
   // ── load prior handoffs from DB (for resume) ─────────────────────────────
   const priorHandoffs = db.getHandoffs(taskId);
 
@@ -321,8 +351,16 @@ export async function runLangGraphTask(taskId, {
 
   // ── build graph (fresh per call — ops are per-call closures) ─────────────
   // Inject markActiveStep so nodes can mirror active_step to legacy store in real-time.
+  // resumeCompletedRoles: roles with a handoff from a previous run of this task
+  // skip on first arrival but re-run on cycle revisits (loop support).
   const graphOps = { ...ops, markActiveStep: _makeMarkActiveStep(taskStore) };
-  const graph = buildGraph(workflow, config, { db, runner: agentRunner, ops: graphOps });
+  const graph = buildGraph(workflow, config, {
+    db,
+    runner: agentRunner,
+    ops: graphOps,
+    entry: resolveInitialState(workflow, { mode: task.mode }),
+    resumeCompletedRoles: new Set(priorHandoffs.map((h) => h.role)),
+  });
 
   // ── run the graph ─────────────────────────────────────────────────────────
   const threadConfig = {

@@ -265,3 +265,219 @@ test("runLangGraphTask: waiting_user leaves the tab open as a trail", async () =
   assert.equal(finalTask.status, "waiting_user");
   assert.deepEqual(closedTabs, [], "tab kept so the user can read the conversation");
 });
+
+// ── loop support: custom events, visit counting, loop limits ──────────────────
+
+const LOOP_WORKFLOW = {
+  version: 1,
+  initial: "worker",
+  roles: {
+    worker:  { label: "Worker",  provider: "codex", prompt_template: "worker",  permission: "write" },
+    checker: { label: "Checker", provider: "codex", prompt_template: "checker", permission: "read" },
+  },
+  transitions: {
+    worker:  { done: "checker", question: "$ask_user", error: "$halt" },
+    checker: { done: "$complete", revise: "worker", question: "$ask_user", error: "$halt" },
+  },
+  modes: { task: { initial: "worker" } },
+};
+
+function makeLoopRunner({ checkerOutputs, workerOutput = 'MAESTRO_HANDOFF: {"summary":"did work"}' }) {
+  const calls = { worker: 0, checker: 0 };
+  return {
+    calls,
+    runStep: async ({ role }) => {
+      calls[role] += 1;
+      const stdout = role === "checker"
+        ? checkerOutputs[Math.min(calls.checker - 1, checkerOutputs.length - 1)]
+        : workerOutput;
+      return { stdout, stderr: "", stdoutPath: null, stderrPath: null };
+    },
+  };
+}
+
+async function runLoopGraph({ workflow = LOOP_WORKFLOW, runner, resumeCompletedRoles = null }) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-loop-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260611-000001-loop-test";
+    db.createTask({ id: taskId, status: "running", prompt: "loop it", cwd: dir, mode: "task", run_dir: null });
+    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, resumeCompletedRoles });
+    const finalState = await graph.invoke(
+      { task: db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
+      { configurable: { thread_id: taskId }, recursionLimit: 50 },
+    );
+    return { finalState, finalTask: db.getTask(taskId) };
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("loop: checker 'revise' event routes back to worker, then completes", async () => {
+  const runner = makeLoopRunner({
+    checkerOutputs: [
+      'MAESTRO_HANDOFF: {"event":"revise","summary":"needs another pass"}',
+      'MAESTRO_HANDOFF: {"summary":"all good"}',
+    ],
+  });
+  const { finalState } = await runLoopGraph({ runner });
+  assert.equal(runner.calls.worker, 2, "worker re-runs after revise");
+  assert.equal(runner.calls.checker, 2);
+  assert.equal(finalState.event, "done");
+  assert.deepEqual(finalState.visits, { worker: 2, checker: 2 });
+  // fresh handoff supersedes the stale one for revisited roles
+  const workerHandoffs = finalState.priorHandoffs.filter((h) => h.role === "worker");
+  assert.equal(workerHandoffs.length, 1);
+});
+
+test("loop: reserved events in handoff payloads are ignored", async () => {
+  const runner = makeLoopRunner({
+    checkerOutputs: ['MAESTRO_HANDOFF: {"summary":"fine"}'],
+    workerOutput: 'MAESTRO_HANDOFF: {"event":"error","summary":"sneaky"}',
+  });
+  const { finalState } = await runLoopGraph({ runner });
+  assert.equal(runner.calls.checker, 1, "worker's reserved event did not halt the flow");
+  assert.equal(finalState.event, "done");
+});
+
+test("loop: undeclared events fall back to done", async () => {
+  const runner = makeLoopRunner({
+    checkerOutputs: ['MAESTRO_HANDOFF: {"event":"undeclared_event","summary":"fine"}'],
+  });
+  const { finalState } = await runLoopGraph({ runner });
+  assert.equal(finalState.event, "done");
+  assert.equal(runner.calls.worker, 1, "undeclared event must not loop");
+});
+
+test("loop: max_visits exceeded pauses task with loop_limit_exceeded question", async () => {
+  const workflow = structuredClone(LOOP_WORKFLOW);
+  workflow.roles.worker.max_visits = 2;
+  const runner = makeLoopRunner({
+    checkerOutputs: ['MAESTRO_HANDOFF: {"event":"revise","summary":"again"}'],
+  });
+  const { finalState, finalTask } = await runLoopGraph({ workflow, runner });
+  assert.equal(runner.calls.worker, 2, "worker capped at max_visits");
+  assert.equal(finalState.event, "question");
+  assert.equal(finalTask.status, "waiting_user");
+  assert.match(String(finalTask.active_question?.question), /Loop limit reached/);
+  assert.ok(finalTask.blockers?.some((b) => b.code === "loop_limit_exceeded"));
+});
+
+test("loop: loop_limits.on_exceeded=halt emits error instead of question", async () => {
+  const workflow = structuredClone(LOOP_WORKFLOW);
+  workflow.loop_limits = { default_max_visits: 1, on_exceeded: "halt" };
+  const runner = makeLoopRunner({
+    checkerOutputs: ['MAESTRO_HANDOFF: {"event":"revise","summary":"again"}'],
+  });
+  const { finalState, finalTask } = await runLoopGraph({ workflow, runner });
+  assert.equal(finalState.event, "error");
+  assert.equal(finalTask.status, "waiting_user");
+  assert.ok(finalTask.blockers?.some((b) => b.code === "loop_limit_exceeded"));
+});
+
+test("loop: resume-skip regression — completed roles skip on first arrival only", async () => {
+  const runner = makeLoopRunner({
+    checkerOutputs: ['MAESTRO_HANDOFF: {"summary":"ok"}'],
+  });
+  const { finalState } = await runLoopGraph({
+    runner,
+    resumeCompletedRoles: new Set(["worker"]),
+  });
+  assert.equal(runner.calls.worker, 0, "previously-completed worker skipped on resume");
+  assert.equal(runner.calls.checker, 1);
+  assert.equal(finalState.event, "done");
+});
+
+test("standalone mode entry: imported role runs alone, default pipeline untouched", async () => {
+  const workflow = structuredClone(DEFAULT_WORKFLOW);
+  workflow.roles.system_evaluator = {
+    label: "system-evaluator",
+    provider: "claude",
+    permission: "read",
+    prompt_template: "system_evaluator",
+    skip: "never",
+    instructions: "Evaluate rigorously. Never modify the system.",
+  };
+  workflow.transitions.system_evaluator = { done: "$complete", question: "$ask_user", error: "$halt" };
+  workflow.modes.system_evaluator = { initial: "system_evaluator", terminal_after: ["system_evaluator"] };
+
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-standalone-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260612-000002-standalone";
+    db.createTask({ id: taskId, status: "running", prompt: "evaluate", cwd: dir, mode: "system_evaluator", run_dir: null });
+    const calls = [];
+    const runner = {
+      runStep: async ({ role, prompt }) => {
+        calls.push({ role, prompt });
+        return { stdout: 'MAESTRO_HANDOFF: {"summary":"ok"}', stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    // graph must compile even though planner/executor/reviewer are not on this run's path
+    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, entry: "system_evaluator" });
+    const final = await graph.invoke(
+      { task: db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
+      { configurable: { thread_id: taskId }, recursionLimit: 50 },
+    );
+    assert.equal(final.event, "done");
+    assert.deepEqual(calls.map((c) => c.role), ["system_evaluator"]);
+    assert.ok(calls[0].prompt.includes("Additional role instructions"), "inline instructions reach the prompt");
+    assert.ok(calls[0].prompt.includes("MAESTRO_HANDOFF"), "custom role gets the marker protocol");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loop recovery: answering the loop-limit question re-runs the capped cycle", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-loop-resume-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const workflow = structuredClone(LOOP_WORKFLOW);
+    workflow.roles.worker.max_visits = 1;
+    await store.writeWorkflow(workflow);
+    const task = await store.createTask({ prompt: "loop it", cwd: dir, mode: "task" });
+
+    const calls = [];
+    let checkerCalls = 0;
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        calls.push(role);
+        if (role === "checker") {
+          checkerCalls += 1;
+          return {
+            stdout: checkerCalls === 1
+              ? 'MAESTRO_HANDOFF: {"event":"revise","summary":"again"}'
+              : 'MAESTRO_HANDOFF: {"summary":"ok"}',
+            stderr: "", stdoutPath: null, stderrPath: null,
+          };
+        }
+        return { stdout: 'MAESTRO_HANDOFF: {"summary":"worked"}', stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+
+    // run 1: worker → checker(revise) → worker capped → ask_user question
+    const run1 = await runLangGraphTask(task.id, {
+      taskStore: store, maestroRoot: store.root, runner: stubRunner, stdout: silent, stderr: silent,
+    });
+    assert.equal(run1.task.status, "waiting_user");
+    assert.match(String(run1.task.active_question?.question ?? ""), /Loop limit reached/);
+    const callsAfterRun1 = calls.length;
+
+    // user answers the loop-limit question
+    await store.answerQuestion(task.id, "yes, one more round please");
+
+    // run 2: the capped cycle re-runs with a fresh budget and completes
+    const run2 = await runLangGraphTask(task.id, {
+      taskStore: store, maestroRoot: store.root, runner: stubRunner, stdout: silent, stderr: silent,
+    });
+    const run2Calls = calls.slice(callsAfterRun1);
+    assert.ok(run2Calls.includes("worker"), "capped role must re-run after the answer");
+    assert.ok(run2Calls.includes("checker"), "the rest of the cycle re-runs too");
+    assert.equal(run2.task.status, "succeeded");
+    assert.ok(!(run2.task.blockers ?? []).some((b) => b.code === "loop_limit_exceeded"), "blocker cleared");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

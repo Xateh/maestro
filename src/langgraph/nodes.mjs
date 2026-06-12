@@ -11,6 +11,7 @@
  *  7. Returns the state slice {priorHandoffs, event, currentState}
  */
 
+import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { buildPromptFromHandoffs } from "./prompt.mjs";
@@ -22,8 +23,44 @@ import {
   isContextWindowFailure,
   skippedReview,
 } from "../markers.mjs";
-import { effectiveSkipForState } from "../state-machine.mjs";
+import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../state-machine.mjs";
+import { resolveProviderEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
+
+const INSTRUCTION_FILE_CAP = 16 * 1024;
+const INSTRUCTION_TOTAL_CAP = 64 * 1024;
+
+function _expandHome(filePath) {
+  if (filePath === "~" || filePath.startsWith("~/")) {
+    return path.join(os.homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
+
+// Inline role instructions plus referenced docs (instruction_paths), capped so
+// imported skill docs cannot blow out the prompt.
+async function _roleInstructions(roleDef) {
+  const parts = [];
+  let total = 0;
+  const inline = String(roleDef.instructions ?? "").trim();
+  if (inline) {
+    parts.push(inline.slice(0, INSTRUCTION_FILE_CAP));
+    total += parts[0].length;
+  }
+  for (const rawPath of roleDef.instruction_paths ?? []) {
+    if (total >= INSTRUCTION_TOTAL_CAP) break;
+    const filePath = path.resolve(_expandHome(String(rawPath)));
+    try {
+      const text = (await fs.readFile(filePath, "utf8")).trim().slice(0, INSTRUCTION_FILE_CAP);
+      const chunk = `--- From ${filePath} ---\n${text}`.slice(0, INSTRUCTION_TOTAL_CAP - total);
+      parts.push(chunk);
+      total += chunk.length;
+    } catch (err) {
+      process.stderr.write(`[maestro] instruction_path_unreadable path=${filePath} err=${err?.message}\n`);
+    }
+  }
+  return parts.join("\n\n");
+}
 
 async function _gitStdout(gitRunner, cwd, args) {
   try {
@@ -91,9 +128,13 @@ export function makeRoleNode(roleDef, {
   providerDef,
   contextRetryLimit = 1,
   workflow = null,
+  stateName = null,
+  resumeCompletedRoles = null,
   ops = {},
 }) {
   const roleKey = roleDef.prompt_template ?? roleDef.label?.toLowerCase() ?? "executor";
+  // Graph state name (transitions key); equals roleKey for default workflows.
+  const transitionKey = stateName ?? roleKey;
   const {
     buildUnblockOptions = () => [],
     canonicalizeActionRequestsForTask = null,
@@ -107,14 +148,57 @@ export function makeRoleNode(roleDef, {
   return async function roleNode(state) {
     const task = state.task;
     const priorHandoffs = state.priorHandoffs ?? [];
+    const visitCount = state.visits?.[roleKey] ?? 0;
+    const isRevisit = visitCount > 0;
 
-    // ── resume skip: role already completed ──────────────────────────────────
-    if (priorHandoffs.some((h) => h.role === roleKey)) {
-      return { event: "done", currentState: roleKey };
+    // ── resume skip: role completed in a PREVIOUS run of this task ───────────
+    // Only first arrivals skip; cycle revisits (visits > 0) must re-run.
+    const completedBefore = resumeCompletedRoles
+      ? resumeCompletedRoles.has(roleKey)
+      : priorHandoffs.some((h) => h.role === roleKey);
+    if (!isRevisit && completedBefore) {
+      return { event: "done", currentState: roleKey, visits: { [roleKey]: 1 } };
     }
 
     // ── load fresh task from DB (captures any resume-time updates) ────────────
     let currentTask = db.getTask(task.id);
+
+    // ── loop limit: bound cycle revisits (max_visits / loop_limits) ──────────
+    const maxVisits = resolveMaxVisits(workflow, transitionKey) ?? resolveMaxVisits(workflow, roleKey);
+    if (maxVisits !== null && visitCount >= maxVisits) {
+      const onExceeded = workflow?.loop_limits?.on_exceeded ?? "ask_user";
+      const blocker = { code: "loop_limit_exceeded", role: roleKey, visits: visitCount, max_visits: maxVisits };
+      if (onExceeded === "halt") {
+        db.updateTask(task.id, {
+          status: "waiting_user",
+          active_step: null,
+          current_state: roleKey,
+          blockers: [blocker, ...(currentTask.blockers ?? [])],
+        });
+        if (markProjectTaskStatus) await markProjectTaskStatus(currentTask, "waiting_user");
+        return { event: "error", currentState: roleKey };
+      }
+      const questionId = `q${(currentTask.question_answers ?? []).length + 1}`;
+      db.updateTask(task.id, {
+        status: "waiting_user",
+        active_step: null,
+        current_state: roleKey,
+        blockers: [blocker, ...(currentTask.blockers ?? [])],
+        active_question: {
+          id: questionId,
+          role: roleKey,
+          provider: roleDef.provider,
+          question: `Loop limit reached: role "${roleKey}" has run ${visitCount} times (max_visits: ${maxVisits}). Reply with guidance to continue another round, or cancel the task.`,
+        },
+      });
+      if (markProjectTaskStatus) await markProjectTaskStatus(currentTask, "waiting_user");
+      return { event: "question", currentState: roleKey };
+    }
+
+    // ── cycle revisit: stale handoff in the DB must not mask the new run ─────
+    if (isRevisit) {
+      db.deleteHandoffsByRole(task.id, roleKey);
+    }
 
     // ── reviewer: synthetic skip when review_enabled === false ───────────────
     if (roleKey === "reviewer" && currentTask.review_enabled === false) {
@@ -124,6 +208,7 @@ export function makeRoleNode(roleDef, {
         priorHandoffs: [{ role: roleKey, provider: roleDef.provider, payload: reviewSkipped, log_path: null }],
         event: "done",
         currentState: roleKey,
+        visits: { [roleKey]: 1 },
       };
     }
 
@@ -135,7 +220,7 @@ export function makeRoleNode(roleDef, {
         mode: currentTask.mode ?? "task",
       });
       if (decision === "skipped") {
-        return { event: "done", currentState: roleKey };
+        return { event: "done", currentState: roleKey, visits: { [roleKey]: 1 } };
       }
     }
 
@@ -143,7 +228,7 @@ export function makeRoleNode(roleDef, {
     if (workflow) {
       const skipValue = effectiveSkipForState(workflow, roleKey, currentTask.role_skips ?? null);
       if (skipValue === "always") {
-        return { event: "done", currentState: roleKey };
+        return { event: "done", currentState: roleKey, visits: { [roleKey]: 1 } };
       }
     }
 
@@ -174,6 +259,7 @@ export function makeRoleNode(roleDef, {
         task: currentTask,
         priorHandoffs,
         handoffMode,
+        roleInstructions: await _roleInstructions(roleDef),
       });
 
       let result;
@@ -187,6 +273,7 @@ export function makeRoleNode(roleDef, {
           options: _stepOptions(roleDef, currentTask),
           providerDef,
           env: _maestroEnv(currentTask, roleKey),
+          providerEnv: resolveProviderEnv(providerDef),
         });
       } catch (err) {
         // ── context-window retry ──────────────────────────────────────────────
@@ -319,6 +406,21 @@ export function makeRoleNode(roleDef, {
         payload = parseAgentHandoff(combined) ?? {};
       }
 
+      // ── custom event passthrough: handoff may route a declared transition ──
+      // Only events explicitly declared in workflow.transitions[state] and not
+      // reserved by the engine are honored; everything else stays "done".
+      let event = "done";
+      const requestedEvent = roleKey === "reviewer"
+        ? parseAgentHandoff(combined)?.event
+        : payload?.event;
+      if (
+        typeof requestedEvent === "string"
+        && !RESERVED_EVENTS.has(requestedEvent)
+        && workflow?.transitions?.[transitionKey]?.[requestedEvent] !== undefined
+      ) {
+        event = requestedEvent;
+      }
+
       // ── write handoff to disk (run-dir compat) ────────────────────────────
       let handoffPath = null;
       if (task.run_dir) {
@@ -388,8 +490,9 @@ export function makeRoleNode(roleDef, {
 
       return {
         priorHandoffs: [{ role: roleKey, provider: roleDef.provider, payload, log_path: result.stdoutPath ?? null }],
-        event: "done",
+        event,
         currentState: roleKey,
+        visits: { [roleKey]: 1 },
       };
     }
   };

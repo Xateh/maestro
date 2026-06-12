@@ -7,6 +7,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { runLangGraphTask } from "../src/langgraph/engine.mjs";
+import { ENV_KEY_DENYLIST } from "../src/agent-runner.mjs";
+import { loadLocalSecrets, runKeysWizard } from "../src/setup/keys.mjs";
+import { runLocalSetup } from "../src/setup/local.mjs";
 import { CodexAgentRunner } from "../src/codex-client.mjs";
 import { startMaestroHttpServer } from "../src/http-server.mjs";
 import { LinearTrackerClient } from "../src/linear-tracker.mjs";
@@ -14,6 +17,7 @@ import { StructuredLogger } from "../src/logger.mjs";
 import { MaestroOrchestrator } from "../src/orchestrator.mjs";
 import { evaluatePlannerDecision } from "../src/router.mjs";
 import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore, slugifyTaskTitle } from "../src/task-store.mjs";
+import { formatValidation, validateWorkflow } from "../src/workflow-validate.mjs";
 import { formatFeedbackReceipt, formatTaskDetails, runMaestroTui } from "../src/tui.mjs";
 import {
   WorkflowStore,
@@ -41,6 +45,10 @@ const LOCAL_COMMANDS = new Set([
   "status",
   "inspect",
   "tui",
+  "workflow",
+  "setup",
+  "export",
+  "import",
 ]);
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -189,11 +197,18 @@ Usage:
   maestro approve <id> | deny <id> "<reason>"
   maestro approve-action <id> <action-id> | deny-action <id> <action-id> "<reason>"
   maestro retry <id> | cancel <id> | mark-done <id> | extend-timeout <id> <ms>
+  maestro task --mode <name> "<prompt>"  run any mode defined in workflow.json (incl. imported roles)
+  maestro setup import [--dry-run]     import skills/subagents/MCP configs into the workflow (credited)
+  maestro setup local                  detect local agent runtimes (ollama/pi/hermes/openclaw) → config.local.json
+  maestro setup keys [--var NAME]      manage optional API keys (secrets.local.json, 0600)
+  maestro workflow validate            check workflow structure + loop termination clauses
+  maestro export [--out <p>] [--single-file]   package workflow as a shareable bundle
+  maestro import <bundle> [--dry-run]  import a bundle (backs up workflow.json)
   maestro project <subcommand>         project (multi-task) commands
   maestro [WORKFLOW.md]                server mode: poll Linear, auto-dispatch issues
 
 Global flags: --state-dir <path>  --workflow-path <path>  --port <n>
-Docs: docs/cli.md
+Docs: docs/cli.md, docs/import-export.md
 `;
 
 async function main() {
@@ -213,6 +228,11 @@ async function main() {
 
   const args = parseCliArgs(process.argv);
   const logger = new StructuredLogger();
+  try {
+    await loadLocalSecrets(path.resolve(process.cwd(), DEFAULT_LOCAL_STATE_DIR));
+  } catch (error) {
+    logger.error("secrets_load_failed", { error: error.message });
+  }
   const service = await startMaestro({ ...args, logger });
   const shutdown = async () => {
     await service.stop();
@@ -244,6 +264,14 @@ function parseTaskArgs(args, cwd) {
     }
     if (arg === "--plan-only") {
       mode = "plan-only";
+      continue;
+    }
+    if (arg === "--mode") {
+      index += 1;
+      mode = args[index] ?? "";
+      if (!/^[a-z0-9_-]+$/.test(mode)) {
+        throw new Error(`invalid_mode: ${mode}`);
+      }
       continue;
     }
     if (arg === "--state-dir") {
@@ -1103,9 +1131,6 @@ function sanitizeReviewString(value, fallback = "") {
   if (value === null || value === undefined) return fallback;
   return trimUtf8Bytes(value, REVIEW_MAX_STRING_BYTES) || fallback;
 }
-
-// Keys that can subvert process execution regardless of intent — see ENV_KEY_DENYLIST for full list
-const ENV_KEY_DENYLIST = /^(LD_|DYLD_|PATH$|IFS$|BASH_ENV$|ENV$|NODE_OPTIONS$|NODE_PATH$|PYTHON(STARTUP|PATH|HOME|BREAKPOINT)$|PERL(5OPT|5LIB|5DB|_UNICODE)$|RUBYOPT$|RUBYLIB$|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|CLASSPATH$|GCONV_PATH$|LOCPATH$|HOSTALIASES$|GIT_SSH|GIT_EXTERNAL_DIFF|GIT_PROXY|GIT_CONFIG)/i;
 
 function sanitizeEnvObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -3117,6 +3142,20 @@ export async function runLocalMaestroCommand({
 } = {}) {
   const command = args[0];
 
+  // Load .maestro/secrets.local.json into the env (real env vars win) so
+  // "$VAR" references in shareable config resolve without exported keys.
+  {
+    const flagIndex = args.indexOf("--state-dir");
+    const secretsStateDir = flagIndex !== -1 && args[flagIndex + 1]
+      ? path.resolve(cwd, args[flagIndex + 1])
+      : path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);
+    try {
+      await loadLocalSecrets(secretsStateDir);
+    } catch (error) {
+      writeLine(stderr, `warning: could not load secrets.local.json: ${error.message}`);
+    }
+  }
+
   if (command === "project") {
     return runProjectCommand({ args, cwd, stdout, store, gitRunner });
   }
@@ -3293,6 +3332,12 @@ export async function runLocalMaestroCommand({
     const parsed = parseTaskArgs(args, cwd);
     const taskStore = makeStore(parsed, store);
     const defaults = await taskStore.readConfig();
+    if (!["task", "plan-only"].includes(parsed.mode)) {
+      const workflow = await taskStore.readWorkflow();
+      if (!workflow.modes?.[parsed.mode]) {
+        throw new Error(`unknown_mode: ${parsed.mode} (defined modes: ${Object.keys(workflow.modes ?? {}).join(", ")})`);
+      }
+    }
     const task = await createLocalTaskFromParsed({ parsed, taskStore, defaults, cwd, gitRunner, stdout });
     if (onTaskCreated) {
       onTaskCreated(task);
@@ -3548,6 +3593,129 @@ export async function runLocalMaestroCommand({
       ? JSON.stringify(task, null, 2)
       : formatTaskDetails(task, { color: parsed.color, sections: true }));
     return { task };
+  }
+
+  if (command === "setup") {
+    const parsed = parseSharedStateArgs(args, cwd);
+    const [action, ...rest] = parsed.positional;
+    if (action === "keys") {
+      await runKeysWizard({ stateDir: parsed.stateDir, args: rest, stdin, stdout });
+      return {};
+    }
+    if (action === "local") {
+      const taskStore = makeStore(parsed, store);
+      return runLocalSetup({ store: taskStore, args: rest, stdin, stdout });
+    }
+    if (action === "import") {
+      const taskStore = makeStore(parsed, store);
+      const { runImportWizard } = await import("../src/setup/import.mjs");
+      return runImportWizard({ store: taskStore, stateDir: parsed.stateDir, args: rest, stdin, stdout, stderr });
+    }
+    throw new Error(`unknown_setup_command: ${action ?? "(missing)"} (expected: keys | local | import)`);
+  }
+
+  if (command === "export") {
+    const parsed = parseSharedStateArgs(args, cwd);
+    const rest = parsed.positional;
+    const { buildBundle, writeBundleDir, writeBundleFile } = await import("../src/setup/export.mjs");
+    const nameIndex = rest.indexOf("--name");
+    const outIndex = rest.indexOf("--out");
+    const bundle = await buildBundle({
+      stateDir: parsed.stateDir,
+      name: nameIndex !== -1 ? rest[nameIndex + 1] : null,
+    });
+    const out = outIndex !== -1 && rest[outIndex + 1]
+      ? path.resolve(cwd, rest[outIndex + 1])
+      : path.resolve(cwd, `${bundle.manifest.name}-bundle`);
+    const written = rest.includes("--single-file")
+      ? await writeBundleFile(bundle, out)
+      : await writeBundleDir(bundle, out);
+    writeLine(stdout, `exported workflow bundle "${bundle.manifest.name}" → ${written}`);
+    writeLine(stdout, `credits: ${bundle.manifest.credits.length}, files: ${Object.keys(bundle.files).length} (local config/secrets excluded)`);
+    return { bundle, written };
+  }
+
+  if (command === "import") {
+    const parsed = parseSharedStateArgs(args, cwd);
+    const [bundlePath, ...rest] = parsed.positional;
+    if (!bundlePath) throw new Error("missing_bundle_path (usage: maestro import <bundle-dir-or-file> [--dry-run] [--force] [--yes])");
+    const { readBundle, importBundle } = await import("../src/setup/export.mjs");
+    const bundle = await readBundle(path.resolve(cwd, bundlePath));
+    const taskStore = makeStore(parsed, store);
+
+    // Surface provider definitions the bundle would install — these execute
+    // commands on later task runs, so they must be visible before import.
+    let incomingProviders;
+    try {
+      incomingProviders = JSON.parse(bundle.files["providers.json"] ?? "{}");
+    } catch (error) {
+      throw new Error(`bundle_providers_malformed: providers.json is not valid JSON (${error.message})`);
+    }
+    const currentProviders = (await taskStore.readConfigRaw())?.providers ?? {};
+    const force = rest.includes("--force");
+    const providerChanges = Object.entries(incomingProviders).filter(([key, def]) => {
+      const existing = currentProviders[key];
+      if (!existing) return true;
+      return force && JSON.stringify(existing) !== JSON.stringify(def);
+    });
+    writeLine(stdout, `bundle "${bundle.manifest.name}": ${Object.keys(bundle.files).length} files, ${bundle.manifest.credits?.length ?? 0} credits`);
+    for (const [key, def] of providerChanges) {
+      const template = def?.custom?.command_template ?? "-";
+      const envKeys = Object.keys(def?.env ?? {});
+      writeLine(stdout, `  provider ${key}: adapter=${def?.adapter ?? "?"} command_template=${template} env_keys=[${envKeys.join(", ")}]`);
+    }
+    if (rest.includes("--dry-run")) {
+      writeLine(stdout, "dry run — nothing written");
+      return { bundle, applied: false };
+    }
+    if (providerChanges.length > 0 && !rest.includes("--yes")) {
+      if (stdin.isTTY !== true) {
+        writeLine(stdout, "non-interactive session and bundle changes providers — re-run with --yes to apply (nothing written)");
+        return { bundle, applied: false };
+      }
+      const readline = await import("node:readline");
+      const rl = readline.createInterface({ input: stdin, output: stdout, terminal: true });
+      const answer = await new Promise((resolve) => rl.question(
+        `bundle installs/changes ${providerChanges.length} provider definition(s) (commands above run on future tasks). Continue? [y/N]: `,
+        resolve,
+      ));
+      rl.close();
+      if (!/^y(es)?$/i.test(String(answer).trim())) {
+        writeLine(stdout, "aborted — nothing written");
+        return { bundle, applied: false };
+      }
+    }
+    const result = await importBundle({
+      bundle,
+      stateDir: parsed.stateDir,
+      store: taskStore,
+      force,
+    });
+    for (const warning of result.validation.warnings) {
+      writeLine(stderr, `workflow warning [${warning.code}]: ${warning.message}`);
+    }
+    writeLine(stdout, `imported bundle "${bundle.manifest.name}" into ${parsed.stateDir} (workflow.json backed up to workflow.json.bak)`);
+    return { bundle, applied: true };
+  }
+
+  if (command === "workflow") {
+    const parsed = parseSharedStateArgs(args, cwd);
+    const [action, ...rest] = parsed.positional;
+    if (action !== "validate") throw new Error(`unknown_workflow_command: ${action ?? "(missing)"}`);
+    const taskStore = makeStore(parsed, store);
+    const [workflow, config] = await Promise.all([
+      taskStore.readWorkflow(),
+      taskStore.readConfig(),
+    ]);
+    const result = validateWorkflow(workflow, { config });
+    writeLine(stdout, rest.includes("--json")
+      ? JSON.stringify(result, null, 2)
+      : formatValidation(result));
+    const strict = rest.includes("--strict");
+    if (!result.ok || (strict && result.warnings.length > 0)) {
+      process.exitCode = 1;
+    }
+    return result;
   }
 
   throw new Error(`unknown_local_command: ${command}`);

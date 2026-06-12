@@ -9,9 +9,11 @@ import {
   assertInsideDir,
   redactConfig,
   VALID_MODES,
+  resolveValidModes,
   createTask,
   showTask,
   showRun,
+  validateWorkflowTool,
 } from "../src/mcp/server.mjs";
 
 import { safeRunnerEnv } from "../src/agent-runner.mjs";
@@ -130,6 +132,20 @@ test("createTask: rejects invalid mode strings", async () => {
   await assert.rejects(() => createTask({ prompt: "x", mode: "exec" }), /invalid_mode/);
   await assert.rejects(() => createTask({ prompt: "x", mode: "" }), /invalid_mode/);
   await assert.rejects(() => createTask({ prompt: "x", mode: "task; rm -rf /" }), /invalid_mode/);
+});
+
+test("resolveValidModes: always includes base modes", async () => {
+  const modes = await resolveValidModes();
+  for (const mode of VALID_MODES) assert.ok(modes.has(mode));
+});
+
+// ── maestro_validate_workflow ─────────────────────────────────────────────────
+
+test("validateWorkflowTool: returns {ok, errors, warnings} shape", async () => {
+  const result = await validateWorkflowTool();
+  assert.equal(typeof result.ok, "boolean");
+  assert.ok(Array.isArray(result.errors));
+  assert.ok(Array.isArray(result.warnings));
 });
 
 // ── showTask / showRun: id validation ─────────────────────────────────────────

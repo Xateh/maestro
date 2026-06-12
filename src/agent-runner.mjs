@@ -22,7 +22,7 @@ async function canExecute(filePath) {
   }
 }
 
-async function directCommandExists(commandName, { cwd, env = process.env } = {}) {
+export async function directCommandExists(commandName, { cwd, env = process.env } = {}) {
   const command = String(commandName ?? "").trim();
   if (!command) return false;
   if (command.includes("/") || command.includes(path.sep)) {
@@ -39,6 +39,10 @@ async function directCommandExists(commandName, { cwd, env = process.env } = {})
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
+
+// Keys that can subvert process execution regardless of intent. Applied to
+// agent-supplied action-request env (bin/maestro.mjs) and provider env maps.
+export const ENV_KEY_DENYLIST = /^(LD_|DYLD_|PATH$|IFS$|BASH_ENV$|ENV$|NODE_OPTIONS$|NODE_PATH$|PYTHON(STARTUP|PATH|HOME|BREAKPOINT)$|PERL(5OPT|5LIB|5DB|_UNICODE)$|RUBYOPT$|RUBYLIB$|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|CLASSPATH$|GCONV_PATH$|LOCPATH$|HOSTALIASES$|GIT_SSH|GIT_EXTERNAL_DIFF|GIT_PROXY|GIT_CONFIG)/i;
 
 export function safeRunnerEnv(env = {}) {
   return Object.fromEntries(
@@ -176,7 +180,7 @@ export class TerminalAgentRunner {
     return this.timeoutMs !== -1;
   }
 
-  async runStep({ provider, role, prompt, cwd, logDir, options = {}, env = {}, providerDef = null }) {
+  async runStep({ provider, role, prompt, cwd, logDir, options = {}, env = {}, providerEnv = {}, providerDef = null }) {
     const commandSpec = await resolveCommandSpec(buildAgentCommand({ provider, role, prompt, cwd, options, providerDef }));
     await fs.mkdir(logDir, { recursive: true });
 
@@ -186,7 +190,10 @@ export class TerminalAgentRunner {
     const stdinBytes = typeof commandSpec.stdin === "string"
       ? Buffer.byteLength(commandSpec.stdin, "utf8")
       : 0;
-    const runnerEnv = safeRunnerEnv(env);
+    // providerEnv bypasses the MAESTRO_* filter deliberately: it carries
+    // provider-declared key refs (config providers.<p>.env). Names are logged
+    // in env_keys; values never are.
+    const runnerEnv = { ...safeRunnerEnv(env), ...providerEnv };
     const envKeys = Object.keys(runnerEnv).sort();
     const streamTailBytes = Number.isInteger(options.streamTailBytes) && options.streamTailBytes > 0
       ? options.streamTailBytes

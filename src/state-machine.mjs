@@ -1,7 +1,22 @@
 export const SINK_STATES = new Set(["$complete", "$halt", "$ask_user", "$pause", "$wait"]);
 
+// Events with engine-defined semantics; handoff payloads may not redefine them.
+export const RESERVED_EVENTS = new Set([
+  "done", "error", "question", "waiting", "needs_review", "pause",
+]);
+
 export function isSink(state) {
   return SINK_STATES.has(state);
+}
+
+// Effective visit cap for a role: per-role max_visits, else the workflow-wide
+// loop_limits default, else null (unbounded).
+export function resolveMaxVisits(workflow, role) {
+  const roleMax = workflow?.roles?.[role]?.max_visits;
+  if (Number.isInteger(roleMax) && roleMax > 0) return roleMax;
+  const defaultMax = workflow?.loop_limits?.default_max_visits;
+  if (Number.isInteger(defaultMax) && defaultMax > 0) return defaultMax;
+  return null;
 }
 
 // Resolve the next state given the current state, event, and workflow transitions.

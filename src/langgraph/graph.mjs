@@ -31,7 +31,7 @@ import { isSink } from "../state-machine.mjs";
  * @param {object}          opts.ops     - injected project-mode helpers (bound per call)
  * @returns {CompiledStateGraph}
  */
-export function buildGraph(workflow, config, { db, runner, ops = {} }) {
+export function buildGraph(workflow, config, { db, runner, ops = {}, entry = null, resumeCompletedRoles = null }) {
   const graph = new StateGraph(MaestroState);
 
   // ── add one node per workflow role ────────────────────────────────────────
@@ -44,6 +44,8 @@ export function buildGraph(workflow, config, { db, runner, ops = {} }) {
       providerDef,
       contextRetryLimit: config.context_retry_limit ?? 1,
       workflow,
+      stateName,
+      resumeCompletedRoles,
       ops,
     });
     graph.addNode(stateName, node);
@@ -65,8 +67,25 @@ export function buildGraph(workflow, config, { db, runner, ops = {} }) {
     graph.addConditionalEdges(stateName, (s) => s.event ?? "done", edgeMap);
   }
 
-  // ── entry edge: START → initial state ────────────────────────────────────
-  graph.addEdge(START, workflow.initial ?? "planner");
+  // ── entry edge: START → mode initial (custom modes) or workflow initial ──
+  // A conditional entry listing every mode initial keeps all pipelines
+  // reachable in LangGraph's validation even when this run enters elsewhere
+  // (e.g. a standalone mode created by `setup import`).
+  const fallback = workflow.initial ?? "planner";
+  const entryState = entry && workflow.roles?.[entry] ? entry : fallback;
+  const entryCandidates = new Set(
+    [fallback, entryState, ...Object.values(workflow.modes ?? {}).map((m) => m?.initial)]
+      .filter((state) => workflow.roles?.[state]),
+  );
+  if (entryCandidates.size <= 1) {
+    graph.addEdge(START, entryState);
+  } else {
+    graph.addConditionalEdges(
+      START,
+      () => entryState,
+      Object.fromEntries([...entryCandidates].map((state) => [state, state])),
+    );
+  }
 
   return graph.compile({ checkpointer: new MemorySaver() });
 }
