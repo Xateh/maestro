@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { TerminalAgentRunner, buildAgentCommand } from "../src/agent-runner.mjs";
-import { buildOllamaCommand, DEFAULT_OLLAMA_MODEL } from "../src/adapters/ollama.mjs";
+import { buildOllamaCommand } from "../src/adapters/ollama.mjs";
+
+const DEFAULT_OLLAMA_MODEL = "llama3.2";
 import { resolveAdapter } from "../src/adapters/registry.mjs";
 import { DEFAULT_PROVIDERS } from "../src/task-store.mjs";
 

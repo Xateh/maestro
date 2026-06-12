@@ -16,7 +16,8 @@ import path from "node:path";
 import process from "node:process";
 
 import { TerminalAgentRunner } from "../src/agent-runner.mjs";
-import { DEFAULT_OLLAMA_MODEL } from "../src/adapters/ollama.mjs";
+
+const DEFAULT_OLLAMA_MODEL = "llama3.2";
 
 const USAGE = `Usage: node scripts/local-agents.mjs <ocr|eval> [args]
 

@@ -16,7 +16,10 @@ curl -fsSL https://ollama.com/install.sh | sh     # Linux
 ollama pull llama3.2            # small, fast text model
 ollama pull llama3.2-vision     # for the OCR agent (multimodal)
 
-# 3. Verify Maestro can dispatch it
+# 3. Let Maestro detect the runtime and your pulled models
+maestro setup local        # writes discovered models to .maestro/config.local.json
+
+# 4. Verify Maestro can dispatch it
 npm run agent:eval
 ```
 
