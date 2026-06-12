@@ -122,6 +122,10 @@ cd maestro && npm install && cd ..
 ## Quick Start
 
 ```bash
+# Initialize .maestro/ in your project (config, workflow, dirs) + optional setup wizard
+cd /path/to/your/project
+maestro init
+
 # Create and run a task (planner → executor → reviewer)
 maestro task "Add a /healthcheck endpoint to the Express app"
 
@@ -151,7 +155,7 @@ the same tab, same context, no encore required.
 |---|---|---|
 | `task` | planner → executor → reviewer | `maestro task "<prompt>"` |
 | `plan-only` | planner only; stops at handoff | `maestro task --plan-only "<prompt>"` |
-| server | polls Linear, auto-dispatches | `maestro [WORKFLOW.md]` |
+| server | polls Linear, auto-dispatches | `maestro serve [WORKFLOW.md]` |
 
 ---
 

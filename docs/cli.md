@@ -16,9 +16,71 @@ npm run maestro <command> [args...]
 
 | Flag | Description |
 |---|---|
-| `--state-dir <path>` | Override the `.maestro/` directory (default: `PACKAGE_ROOT/.maestro`) |
+| `--state-dir <path>` | Override the `.maestro/` directory (default: nearest `.maestro/` at or above the caller's cwd, else `PACKAGE_ROOT/.maestro`) |
 | `--workflow-path <path>` | Override `WORKFLOW.md` / `workflow.json` path |
 | `--port <n>` | HTTP API port (0 = disable) |
+
+---
+
+## Help
+
+`maestro help`, `maestro --help`, and `-h` print the global command list.
+Help is scoped to the longest valid command prefix:
+
+```bash
+maestro help project create     # per-command help
+maestro project --help          # scoped to "project"
+```
+
+Unknown or partial commands exit 1 with help for the deepest matching
+command plus "did you mean" suggestions:
+
+```bash
+$ maestro project creat
+unknown command: maestro project creat
+Did you mean: create?
+...
+```
+
+---
+
+## Init
+
+### `init [--yes] [--dry-run]`
+
+Scaffold a `.maestro/` state directory in the current directory: default
+`config.json` and `workflow.json`, the `tasks/ runs/ projects/ patches/
+logs/` directories, and a `.gitignore` covering the machine-local files.
+Idempotent — existing files are never overwritten.
+
+After scaffolding, it offers to chain the setup wizards (`setup local`,
+`setup keys`, `setup import`). `--yes` skips the prompts and runs runtime
+detection only; `--dry-run` prints the plan without writing.
+
+```bash
+cd /path/to/your/project
+maestro init            # scaffold + optional wizards
+maestro init --yes      # non-interactive (CI)
+```
+
+Once a directory (or any parent) contains `.maestro/`, every local command
+run from there uses it automatically — no `--state-dir` needed.
+
+---
+
+## Server Mode
+
+### `serve [WORKFLOW.md]`
+
+Start server mode: poll Linear and auto-dispatch issues.
+
+```bash
+maestro serve                 # default WORKFLOW.md
+maestro serve ./WORKFLOW.md --port 4100
+```
+
+> `maestro <file.md>` (bare path, no `serve`) still works when the file
+> exists, but is deprecated — a note is printed to stderr.
 
 ---
 

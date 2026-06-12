@@ -6,14 +6,19 @@ Maestro reads and writes all persistent state to a `.maestro/` directory. The lo
 resolved as follows (first match wins):
 
 1. `--state-dir <path>` CLI flag
-2. `PACKAGE_ROOT/.maestro` (default for local commands — `PACKAGE_ROOT` = directory above `bin/maestro.mjs`)
-3. `MAESTRO_ROOT` env var (used by the MCP server to find the runtime project root)
-4. Walk up from `process.cwd()` until a `.maestro/` directory is found (MCP server discovery)
+2. Walk up from the caller's cwd (`MAESTRO_CALLER_CWD` / `INIT_CWD` / `process.cwd()`)
+   until an existing `.maestro/` directory is found — create one with `maestro init`
+3. `PACKAGE_ROOT/.maestro` (fallback for local commands — `PACKAGE_ROOT` = directory above `bin/maestro.mjs`)
+4. `MAESTRO_ROOT` env var (used by the MCP server to find the runtime project root)
+
+`maestro init` scaffolds `.maestro/` in the current directory (default `config.json`,
+`workflow.json`, state subdirectories, and a `.gitignore` for the machine-local files),
+and always targets the caller's directory — never the package checkout.
 
 > **Nested package note:** if you install Maestro as a subpackage (e.g. `workspace/maestro/`),
-> the default state dir for CLI invocations is `workspace/maestro/.maestro`. The workspace's
-> existing `.maestro/` state is unaffected. To target the workspace state, pass
-> `--state-dir /path/to/workspace/.maestro` or set `MAESTRO_ROOT`.
+> run `maestro init` in the workspace (or pass `--state-dir` / set `MAESTRO_ROOT`) to target
+> the workspace's `.maestro/`; without one, CLI invocations fall back to
+> `workspace/maestro/.maestro`.
 
 ---
 
