@@ -10,8 +10,15 @@
 
 import { FullScreenTerminal } from "./term.mjs";
 import {
-  renderScreen, clampScroll, SETTINGS_FIELDS, getConfigValue, settingsPatch, TASK_VIEWS,
+  renderScreen, clampScroll, SETTINGS_FIELDS, PROVIDER_FIELDS, ROLE_FIELDS,
+  getConfigValue, settingsPatch, TASK_VIEWS,
 } from "./screens.mjs";
+import {
+  TRANSITION_EVENTS, addRolePatch, deleteTransitionPatch, newProviderDef,
+  parseStringList, providerFieldPatch, removeProviderPatch, rolePatch,
+  setInitialPatch, setTransitionPatch, transitionTargets,
+} from "./edit-core.mjs";
+import { applyRecentUpdate } from "../tui-pickers.mjs";
 import { buildWorkflowChain } from "./graph.mjs";
 
 const POLL_MS = 2000;
@@ -40,10 +47,16 @@ export function createTuiApp({
     detailScroll: 0,
     actionSel: 0,
     config: null,
+    rawConfig: null,
     workflow: null,
     graphSel: 0,
     graphScroll: 0,
     settingsSel: 0,
+    providersSel: 0,
+    providerKey: null,
+    providerFieldSel: 0,
+    roleKey: null,
+    roleFieldSel: 0,
     input: null,
   };
 
@@ -59,13 +72,17 @@ export function createTuiApp({
   async function refresh() {
     model.now = Date.now();
     try {
-      const [tasks, config, workflow] = await Promise.all([
+      const [tasks, config, workflow, rawConfig] = await Promise.all([
         store.listTasks(),
         store.readConfig(),
         store.readWorkflow(),
+        // raw (non-overlay-merged) config — the write base for provider and
+        // recent edits, so config.local.json values never leak into config.json
+        typeof store.readConfigRaw === "function" ? store.readConfigRaw() : Promise.resolve(null),
       ]);
       model.allTasks = tasks ?? [];
       model.config = config;
+      model.rawConfig = rawConfig;
       model.workflow = workflow;
       applyView();
       if (model.screen === "detail" && model.task) {
@@ -230,16 +247,95 @@ export function createTuiApp({
     }
   }
 
+  // Shared field-edit dispatch for settings / provider / role editors.
+  // `subject` feeds dynamic option lists; `write` persists the new value.
+  async function editField({ field, subject, current, write }) {
+    if (field.type === "toggle") { await write(!(current === true)); return; }
+    if (field.type === "cycle") {
+      const options = typeof field.options === "function" ? field.options(subject, model) : field.options;
+      if (!options || options.length === 0) { flash("no options — press e to type a value"); return; }
+      const idx = options.indexOf(String(current ?? ""));
+      await write(options[(idx + 1) % options.length]);
+      return;
+    }
+    if (field.type === "list") {
+      openInput(`${field.label} (comma-separated):`, async (raw) => {
+        if (raw === "") { flash("unchanged"); return; }
+        await write(parseStringList(raw, current ?? []));
+      }, (current ?? []).join(", "));
+      return;
+    }
+    openInput(`${field.label}:`, async (raw) => {
+      if (raw === "") { flash("unchanged"); return; }
+      if (field.type === "number") {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) { flash("not a number"); return; }
+        await write(n);
+        return;
+      }
+      await write(raw);
+    }, String(current ?? ""));
+  }
+
+  // Free-text override (`e`) for any field type.
+  function typeField({ field, current, write }) {
+    openInput(`${field.label}:`, async (raw) => {
+      if (raw === "") { flash("unchanged"); return; }
+      await write(field.type === "list" ? parseStringList(raw, current ?? []) : raw);
+    }, Array.isArray(current) ? current.join(", ") : String(current ?? ""));
+  }
+
+  // Persist a recent-pick list (classic TUI pickers surface these). Based on
+  // the raw config so overlay-only recents stay out of config.json.
+  async function writeRecent(kind, recentKey, value) {
+    if (!value) return;
+    const updated = applyRecentUpdate(
+      { recent: structuredClone(model.rawConfig?.recent ?? {}) },
+      { kind, key: recentKey, value },
+    );
+    await store.writeConfig({ recent: updated.recent });
+  }
+
   async function handleGraphKey(key) {
     const chain = buildWorkflowChain(model.workflow ?? {}).chain;
+    const selectedKey = chain[Math.min(model.graphSel ?? 0, Math.max(0, chain.length - 1))] ?? null;
     if (key.name === "left") model.graphSel = Math.max(0, model.graphSel - 1);
     else if (key.name === "right") model.graphSel = Math.min(Math.max(0, chain.length - 1), model.graphSel + 1);
     else if (key.name === "up") model.graphScroll = Math.max(0, model.graphScroll - 1);
     else if (key.name === "down") model.graphScroll += 1;
-    else if (key.name === "char") {
+    else if (key.name === "enter") {
+      if (selectedKey) {
+        model.screen = "role-edit";
+        model.roleKey = selectedKey;
+        model.roleFieldSel = 0;
+      }
+    } else if (key.name === "char") {
       if (key.ch === "h") model.graphSel = Math.max(0, model.graphSel - 1);
       else if (key.ch === "l") model.graphSel = Math.min(Math.max(0, chain.length - 1), model.graphSel + 1);
       else if (key.ch === "r") await refresh();
+      else if (key.ch === "a") {
+        openInput("New role key (slug):", async (roleKey) => {
+          if (!/^[a-z0-9_-]+$/.test(roleKey)) { flash("role key must be a slug"); return; }
+          if (model.workflow?.roles?.[roleKey]) { flash(`role "${roleKey}" already exists`); return; }
+          openInput(`Provider for ${roleKey} (${Object.keys(model.config?.providers ?? {}).join("/")}):`, async (provider) => {
+            const providerDef = model.config?.providers?.[provider];
+            if (!providerDef) { flash(`unknown provider "${provider}"`); return; }
+            await act(`add role ${roleKey}`, async () => {
+              await store.writeWorkflow(addRolePatch(model.workflow ?? {}, roleKey, provider, providerDef));
+            });
+            model.screen = "role-edit";
+            model.roleKey = roleKey;
+            model.roleFieldSel = 0;
+          });
+        });
+      } else if (key.ch === "i") {
+        openInput(`Initial role [${model.workflow?.initial ?? "planner"}]:`, async (value) => {
+          if (!value) { flash("unchanged"); return; }
+          const patch = setInitialPatch(model.workflow ?? {}, value);
+          if (!patch) { flash(`unknown role "${value}"`); return; }
+          await act(`initial → ${value}`, () => store.writeWorkflow(patch));
+        });
+      }
     }
   }
 
@@ -258,23 +354,178 @@ export function createTuiApp({
         }
         await refresh();
       };
-      if (field.type === "toggle") await write(!(current === true));
-      else if (field.type === "cycle") {
-        const idx = field.options.indexOf(String(current));
-        await write(field.options[(idx + 1) % field.options.length]);
-      } else {
-        openInput(`${field.label}:`, async (raw) => {
-          if (raw === "") { flash("unchanged"); return; }
-          if (field.type === "number") {
-            const n = Number(raw);
-            if (!Number.isFinite(n)) { flash("not a number"); return; }
-            await write(n);
-          } else {
-            await write(raw);
-          }
-        }, String(current ?? ""));
-      }
+      await editField({ field, subject: model.config ?? {}, current, write });
     } else if (key.name === "char" && key.ch === "r") await refresh();
+  }
+
+  // ── providers screens ──────────────────────────────────────────────────────
+
+  function providerWrite(key, field) {
+    return async (value) => {
+      try {
+        const effective = model.config?.providers?.[key] ?? null;
+        await store.writeConfig(providerFieldPatch(model.rawConfig?.providers, key, field.path, value, effective));
+        if (field.recent) await writeRecent(field.recent, key, value);
+        flash(`${field.label} → ${Array.isArray(value) ? value.join(", ") : value}`);
+      } catch (error) {
+        flash(`save failed: ${error.message}`);
+      }
+      await refresh();
+    };
+  }
+
+  function confirmDeleteProvider(key, afterDelete = null) {
+    openInput(`Delete provider "${key}" — type yes to confirm:`, async (answer) => {
+      if (answer !== "yes") { flash("delete cancelled"); return; }
+      await act(`delete provider ${key}`, async () => {
+        await store.writeConfig(removeProviderPatch(model.rawConfig?.providers, key));
+      });
+      if (afterDelete) afterDelete();
+    });
+  }
+
+  async function handleProvidersKey(key) {
+    const entries = Object.entries(model.config?.providers ?? {});
+    const move = (delta) => {
+      model.providersSel = Math.max(0, Math.min(entries.length - 1, (model.providersSel ?? 0) + delta));
+    };
+    const selectedKey = entries[Math.min(model.providersSel ?? 0, Math.max(0, entries.length - 1))]?.[0] ?? null;
+    if (key.name === "up") move(-1);
+    else if (key.name === "down") move(1);
+    else if (key.name === "enter") {
+      if (selectedKey) {
+        model.screen = "provider-edit";
+        model.providerKey = selectedKey;
+        model.providerFieldSel = 0;
+      }
+    } else if (key.name === "char") {
+      if (key.ch === "j") move(1);
+      else if (key.ch === "k") move(-1);
+      else if (key.ch === "r") await refresh();
+      else if (key.ch === "n") {
+        openInput("New provider key (slug):", async (providerKey) => {
+          if (!/^[a-z0-9_-]+$/.test(providerKey)) { flash("provider key must be a slug"); return; }
+          if (model.config?.providers?.[providerKey]) { flash(`provider "${providerKey}" already exists`); return; }
+          await act(`add provider ${providerKey}`, async () => {
+            const def = newProviderDef({
+              key: providerKey,
+              adapter: "custom",
+              custom: { command_template: "{alias}", prompt_via: "stdin" },
+            });
+            await store.writeConfig(providerFieldPatch(model.rawConfig?.providers, providerKey, ["label"], def.label, def));
+          });
+          model.screen = "provider-edit";
+          model.providerKey = providerKey;
+          model.providerFieldSel = 0;
+        });
+      } else if (key.ch === "D") {
+        if (selectedKey) confirmDeleteProvider(selectedKey);
+        else flash("no provider selected");
+      }
+    }
+  }
+
+  async function handleProviderEditKey(key) {
+    const providerKey = model.providerKey;
+    const def = model.config?.providers?.[providerKey];
+    if (key.name === "escape" || key.name === "left") {
+      model.screen = "providers";
+      model.providerKey = null;
+      return;
+    }
+    if (!def) return;
+    const field = PROVIDER_FIELDS[Math.min(model.providerFieldSel ?? 0, PROVIDER_FIELDS.length - 1)];
+    const current = getConfigValue(def, field.path);
+    if (key.name === "up") model.providerFieldSel = Math.max(0, (model.providerFieldSel ?? 0) - 1);
+    else if (key.name === "down") model.providerFieldSel = Math.min(PROVIDER_FIELDS.length - 1, (model.providerFieldSel ?? 0) + 1);
+    else if (key.name === "enter") {
+      await editField({ field, subject: def, current, write: providerWrite(providerKey, field) });
+    } else if (key.name === "char") {
+      if (key.ch === "j") model.providerFieldSel = Math.min(PROVIDER_FIELDS.length - 1, (model.providerFieldSel ?? 0) + 1);
+      else if (key.ch === "k") model.providerFieldSel = Math.max(0, (model.providerFieldSel ?? 0) - 1);
+      else if (key.ch === "r") await refresh();
+      else if (key.ch === "e") typeField({ field, current, write: providerWrite(providerKey, field) });
+      else if (key.ch === "D") {
+        confirmDeleteProvider(providerKey, () => {
+          model.screen = "providers";
+          model.providerKey = null;
+        });
+      }
+    }
+  }
+
+  // ── role editor (reached from the Workflow screen) ─────────────────────────
+
+  function roleWrite(roleKey, field) {
+    return async (value) => {
+      try {
+        await store.writeWorkflow(rolePatch(model.workflow ?? {}, roleKey, { [field.path[0]]: value }));
+        if (field.recent) {
+          const role = model.workflow?.roles?.[roleKey] ?? {};
+          const recentKey = field.recent === "providers_by_role" ? roleKey : (role.provider ?? roleKey);
+          await writeRecent(field.recent, recentKey, value);
+        }
+        flash(`${field.label} → ${value || "(default)"}`);
+      } catch (error) {
+        flash(`save failed: ${error.message}`);
+      }
+      await refresh();
+    };
+  }
+
+  async function handleRoleEditKey(key) {
+    const roleKey = model.roleKey;
+    const role = model.workflow?.roles?.[roleKey];
+    if (key.name === "escape" || key.name === "left") {
+      model.screen = "graph";
+      model.roleKey = null;
+      return;
+    }
+    if (!role) return;
+    const transitions = Object.entries(model.workflow?.transitions?.[roleKey] ?? {});
+    const itemCount = ROLE_FIELDS.length + transitions.length;
+    const move = (delta) => {
+      model.roleFieldSel = Math.max(0, Math.min(itemCount - 1, (model.roleFieldSel ?? 0) + delta));
+    };
+    const sel = Math.min(model.roleFieldSel ?? 0, itemCount - 1);
+    if (key.name === "up") move(-1);
+    else if (key.name === "down") move(1);
+    else if (key.name === "enter") {
+      if (sel < ROLE_FIELDS.length) {
+        const field = ROLE_FIELDS[sel];
+        await editField({ field, subject: role, current: getConfigValue(role, field.path), write: roleWrite(roleKey, field) });
+      } else {
+        // cycle the selected transition's target
+        const [event, target] = transitions[sel - ROLE_FIELDS.length];
+        const targets = transitionTargets(model.workflow ?? {});
+        const next = targets[(targets.indexOf(target) + 1) % targets.length];
+        await act(`${event} → ${next}`, () => store.writeWorkflow(setTransitionPatch(model.workflow ?? {}, roleKey, event, next)));
+      }
+    } else if (key.name === "char") {
+      if (key.ch === "j") move(1);
+      else if (key.ch === "k") move(-1);
+      else if (key.ch === "r") await refresh();
+      else if (key.ch === "e" && sel < ROLE_FIELDS.length) {
+        const field = ROLE_FIELDS[sel];
+        typeField({ field, current: getConfigValue(role, field.path), write: roleWrite(roleKey, field) });
+      } else if (key.ch === "a") {
+        openInput(`Transition event (${TRANSITION_EVENTS.join("/")}):`, async (event) => {
+          if (!TRANSITION_EVENTS.includes(event)) { flash(`unknown event "${event}"`); return; }
+          const targets = transitionTargets(model.workflow ?? {});
+          openInput(`Target for ${event} (${targets.join("/")}):`, async (target) => {
+            if (!targets.includes(target)) { flash(`unknown target "${target}"`); return; }
+            await act(`${event} → ${target}`, () => store.writeWorkflow(setTransitionPatch(model.workflow ?? {}, roleKey, event, target)));
+          });
+        });
+      } else if (key.ch === "D") {
+        if (sel >= ROLE_FIELDS.length) {
+          const [event] = transitions[sel - ROLE_FIELDS.length];
+          await act(`delete transition ${event}`, () => store.writeWorkflow(deleteTransitionPatch(model.workflow ?? {}, roleKey, event)));
+        } else {
+          flash("select a transition to delete");
+        }
+      }
+    }
   }
 
   // ── public surface ─────────────────────────────────────────────────────────
@@ -285,14 +536,15 @@ export function createTuiApp({
     if (model.input) { await handleInputKey(key); return undefined; }
     flash(null);
 
-    // global navigation
+    // global navigation (disabled inside sub-screens, where keys are local)
+    const subScreen = ["detail", "provider-edit", "role-edit"].includes(model.screen);
     if (key.name === "char" && key.ch === "q") { quitRequested = true; return "quit"; }
-    if (key.name === "char" && ["1", "2", "3"].includes(key.ch) && model.screen !== "detail") {
-      model.screen = { 1: "tasks", 2: "graph", 3: "settings" }[key.ch];
+    if (key.name === "char" && ["1", "2", "3", "4"].includes(key.ch) && !subScreen) {
+      model.screen = { 1: "tasks", 2: "graph", 3: "settings", 4: "providers" }[key.ch];
       return undefined;
     }
-    if (key.name === "tab" && model.screen !== "detail") {
-      const order = ["tasks", "graph", "settings"];
+    if (key.name === "tab" && !subScreen) {
+      const order = ["tasks", "graph", "settings", "providers"];
       model.screen = order[(order.indexOf(model.screen) + 1) % order.length];
       return undefined;
     }
@@ -302,6 +554,9 @@ export function createTuiApp({
       case "detail": await handleDetailKey(key); break;
       case "graph": await handleGraphKey(key); break;
       case "settings": await handleSettingsKey(key); break;
+      case "providers": await handleProvidersKey(key); break;
+      case "provider-edit": await handleProviderEditKey(key); break;
+      case "role-edit": await handleRoleEditKey(key); break;
       default: break;
     }
     return quitRequested ? "quit" : undefined;

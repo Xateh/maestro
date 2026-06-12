@@ -255,6 +255,8 @@ test("app: screen switching via number keys and tab", async () => {
   assert.equal(app.model.screen, "graph");
   await app.handleKey(key("char", "3"));
   assert.equal(app.model.screen, "settings");
+  await app.handleKey(key("char", "4"));
+  assert.equal(app.model.screen, "providers");
   await app.handleKey(key("tab"));
   assert.equal(app.model.screen, "tasks");
   const result = await app.handleKey(key("char", "q"));
@@ -382,4 +384,196 @@ test("app: view cycling filters tasks", async () => {
   // cycle until "all"
   while (app.model.view !== "all") await app.handleKey(key("char", "v"));
   assert.equal(app.model.tasks.length, 2);
+});
+
+// ── edit-core + full-screen editors ──────────────────────────────────────────
+
+test("edit-core: patch builders are pure and overlay-safe", async () => {
+  const {
+    providerFieldPatch, removeProviderPatch, rolePatch, addRolePatch,
+    setTransitionPatch, deleteTransitionPatch, setInitialPatch, transitionTargets,
+  } = await import("../src/tui/edit-core.mjs");
+
+  // raw config lacks the overlay-only model list — patch must derive from raw
+  const raw = { zed: { label: "Zed", adapter: "custom", aliases: ["zed"], default_alias: "zed", models: [] } };
+  const effective = { ...raw.zed, models: ["overlay-model"] };
+  const patched = providerFieldPatch(raw, "zed", ["label"], "Zed II", effective);
+  assert.equal(patched.providers.zed.label, "Zed II");
+  assert.deepEqual(patched.providers.zed.models, [], "overlay model leaked into shareable patch");
+  assert.equal(raw.zed.label, "Zed", "input mutated");
+
+  // nested custom path merges over the raw base
+  const nested = providerFieldPatch(raw, "zed", ["custom", "prompt_via"], "arg", effective);
+  assert.equal(nested.providers.zed.custom.prompt_via, "arg");
+
+  // unknown key in raw falls back to DEFAULT_PROVIDERS / effective def
+  const fromDefault = providerFieldPatch(raw, "claude", ["label"], "C", null);
+  assert.equal(fromDefault.providers.claude.label, "C");
+  assert.equal(fromDefault.providers.claude.adapter, "built-in:claude");
+
+  const removed = removeProviderPatch(raw, "zed");
+  assert.equal(removed.providers.zed, undefined);
+
+  const wf = structuredClone(DEFAULT_WORKFLOW);
+  assert.equal(rolePatch(wf, "planner", { permission: "read" }).roles.planner.permission, "read");
+  const added = addRolePatch(wf, "tester", "codex", { default_alias: "codex" });
+  assert.equal(added.roles.tester.alias, "codex");
+  assert.deepEqual(added.transitions.tester, { done: "$complete", error: "$halt", question: "$ask_user" });
+  assert.equal(setTransitionPatch(wf, "planner", "pause", "$pause").transitions.planner.pause, "$pause");
+  assert.equal(deleteTransitionPatch(wf, "planner", "done").transitions.planner.done, undefined);
+  assert.equal(setInitialPatch(wf, "executor").initial, "executor");
+  assert.equal(setInitialPatch(wf, "nope"), null);
+  assert.ok(transitionTargets(wf).includes("$halt"));
+  assert.ok(transitionTargets(wf).includes("reviewer"));
+});
+
+function makeEditStore({ rawProviders, effectiveProviders, workflow = structuredClone(DEFAULT_WORKFLOW) } = {}) {
+  const configWrites = [];
+  const workflowWrites = [];
+  let wf = workflow;
+  return {
+    root: "/tmp/.maestro",
+    configWrites,
+    workflowWrites,
+    listTasks: async () => [],
+    readConfig: async () => ({ providers: structuredClone(effectiveProviders), timeout_ms: 1000 }),
+    readConfigRaw: async () => ({ providers: structuredClone(rawProviders) }),
+    readWorkflow: async () => structuredClone(wf),
+    readTask: async () => null,
+    writeConfig: async (patch) => { configWrites.push(structuredClone(patch)); },
+    writeWorkflow: async (patch) => { workflowWrites.push(structuredClone(patch)); wf = { ...wf, ...patch }; },
+  };
+}
+
+const EDIT_PROVIDERS = {
+  raw: {
+    zed: { label: "Zed", adapter: "custom", default_alias: "zed", aliases: ["zed"], models: [], efforts: [] },
+  },
+  effective: {
+    zed: { label: "Zed", adapter: "custom", default_alias: "zed", aliases: ["zed", "zed-local"], models: ["m-overlay"], efforts: [] },
+  },
+};
+
+test("app: providers screen lists, edits via raw base, deletes", async () => {
+  const store = makeEditStore({ rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+
+  await app.handleKey(key("char", "4"));
+  assert.equal(app.model.screen, "providers");
+  const listing = stripAnsi(app.renderLines({ cols: 80, rows: 24 }).join("\n"));
+  assert.match(listing, /zed/);
+  assert.match(listing, /custom/);
+
+  // open editor, edit label through the input overlay
+  await app.handleKey(key("enter"));
+  assert.equal(app.model.screen, "provider-edit");
+  assert.equal(app.model.providerKey, "zed");
+  await app.handleKey(key("enter"));            // label field → input overlay
+  assert.ok(app.model.input, "input overlay expected");
+  for (const ch of " II") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  const write = store.configWrites.at(-1);
+  assert.equal(write.providers.zed.label, "Zed II");
+  assert.deepEqual(write.providers.zed.models, [], "overlay models leaked into config.json write");
+  assert.deepEqual(write.providers.zed.aliases, ["zed"], "overlay aliases leaked into config.json write");
+
+  // delete with confirmation
+  await app.handleKey(key("char", "D"));
+  for (const ch of "yes") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  assert.equal(store.configWrites.at(-1).providers.zed, undefined);
+  assert.equal(app.model.screen, "providers");
+});
+
+test("app: add provider creates a custom def and opens the editor", async () => {
+  const store = makeEditStore({ rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+  await app.handleKey(key("char", "4"));
+  await app.handleKey(key("char", "n"));
+  for (const ch of "myllm") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  const write = store.configWrites.at(-1);
+  assert.equal(write.providers.myllm.adapter, "custom");
+  assert.equal(write.providers.myllm.custom.command_template, "{alias}");
+  assert.deepEqual(write.providers.myllm.aliases, ["myllm"]);
+  assert.equal(app.model.screen, "provider-edit");
+  assert.equal(app.model.providerKey, "myllm");
+});
+
+test("app: role editor edits fields, transitions, and add role from graph", async () => {
+  const store = makeEditStore({ rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+
+  // graph → enter opens role editor on the first chain role (planner)
+  await app.handleKey(key("char", "2"));
+  await app.handleKey(key("enter"));
+  assert.equal(app.model.screen, "role-edit");
+  assert.equal(app.model.roleKey, "planner");
+  const rendered = stripAnsi(app.renderLines({ cols: 80, rows: 24 }).join("\n"));
+  assert.match(rendered, /Permission/);
+  assert.match(rendered, /Transitions/);
+
+  // cycle permission: plan → read (PERMISSIONS order: plan, read, write, default)
+  const { ROLE_FIELDS } = await import("../src/tui/screens.mjs");
+  const permIdx = ROLE_FIELDS.findIndex((f) => f.path[0] === "permission");
+  for (let i = 0; i < permIdx; i += 1) await app.handleKey(key("down"));
+  await app.handleKey(key("enter"));
+  assert.equal(store.workflowWrites.at(-1).roles.planner.permission, "read");
+
+  // add transition via chained inputs: pause → $pause
+  await app.handleKey(key("char", "a"));
+  for (const ch of "pause") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  assert.ok(app.model.input, "second (target) input expected");
+  for (const ch of "$pause") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  assert.equal(store.workflowWrites.at(-1).transitions.planner.pause, "$pause");
+
+  // delete the selected transition (move selection onto the first transition)
+  const transStart = ROLE_FIELDS.length;
+  while (app.model.roleFieldSel < transStart) await app.handleKey(key("down"));
+  await app.handleKey(key("char", "D"));
+  const afterDelete = store.workflowWrites.at(-1).transitions.planner;
+  assert.equal(Object.keys(afterDelete).length, 3, "one transition removed (planner starts with 3 + 1 added)");
+
+  // esc returns to graph; add a role via chained inputs
+  await app.handleKey(key("escape"));
+  assert.equal(app.model.screen, "graph");
+  await app.handleKey(key("char", "a"));
+  for (const ch of "tester") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  for (const ch of "zed") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  const addWrite = store.workflowWrites.at(-1);
+  assert.equal(addWrite.roles.tester.provider, "zed");
+  assert.equal(app.model.screen, "role-edit");
+  assert.equal(app.model.roleKey, "tester");
+
+  // initial-state change with validation
+  await app.handleKey(key("escape"));
+  await app.handleKey(key("char", "i"));
+  for (const ch of "executor") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  assert.equal(store.workflowWrites.at(-1).initial, "executor");
+});
+
+test("screens: new editor screens render exact row counts", async () => {
+  const store = makeEditStore({ rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+  for (const screen of ["providers", "provider-edit", "role-edit"]) {
+    app.model.screen = screen;
+    app.model.providerKey = "zed";
+    app.model.roleKey = "planner";
+    for (const size of [{ cols: 80, rows: 24 }, { cols: 40, rows: 12 }]) {
+      const lines = app.renderLines(size);
+      assert.equal(lines.length, size.rows, `${screen} at ${size.cols}x${size.rows}`);
+      for (const line of lines) {
+        assert.ok(stripAnsi(line).length <= size.cols, `${screen} line overflows ${size.cols} cols`);
+      }
+    }
+  }
 });

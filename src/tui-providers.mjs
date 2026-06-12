@@ -1,14 +1,6 @@
 import { DEFAULT_PROVIDERS } from "./task-store.mjs";
+import { BUILTIN_ADAPTERS, shareableDef } from "./tui/edit-core.mjs";
 import { pickFromList, applyRecentUpdate } from "./tui-pickers.mjs";
-
-const BUILTIN_ADAPTERS = [
-  "built-in:claude",
-  "built-in:codex",
-  "built-in:copilot",
-  "built-in:gemini",
-  "built-in:antigravity",
-  "built-in:ollama",
-];
 
 // Provider edits persist into the shareable config.json, so the write base
 // must be the RAW config — writing the effective (overlay-merged) view would
@@ -16,10 +8,6 @@ const BUILTIN_ADAPTERS = [
 async function shareableProviders(store) {
   const raw = typeof store.readConfigRaw === "function" ? await store.readConfigRaw() : null;
   return structuredClone(raw?.providers ?? DEFAULT_PROVIDERS);
-}
-
-function shareableDef(providers, key, effectiveDef) {
-  return providers[key] ?? structuredClone(DEFAULT_PROVIDERS[key] ?? effectiveDef);
 }
 
 function providerSummary(key, def) {

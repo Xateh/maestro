@@ -1,10 +1,12 @@
+import {
+  PERMISSIONS,
+  PROMPT_TEMPLATES,
+  SKIP_VALUES,
+  TRANSITION_EVENTS,
+  TRANSITION_TARGETS_BUILTIN,
+  addRolePatch,
+} from "./tui/edit-core.mjs";
 import { pickFromList, applyRecentUpdate } from "./tui-pickers.mjs";
-
-const PROMPT_TEMPLATES = ["planner", "executor", "reviewer", "generic"];
-const PERMISSIONS = ["plan", "read", "write", "default"];
-const SKIP_VALUES = ["auto", "always", "never"];
-const TRANSITION_EVENTS = ["done", "error", "question", "pause", "waiting"];
-const TRANSITION_TARGETS_BUILTIN = ["$complete", "$halt", "$ask_user", "$pause", "$wait"];
 
 function roleOneLiner(roleKey, role) {
   const alias = role.alias ? `/${role.alias}` : "";
@@ -257,19 +259,7 @@ export async function runWorkflowMenu({ ask, output, store }) {
       const provider = String(await ask("Provider: ") ?? "").trim();
       if (!provider) continue;
       const providerDef = config.providers?.[provider];
-      const newRole = {
-        label: key.charAt(0).toUpperCase() + key.slice(1),
-        provider,
-        alias: providerDef?.default_alias ?? provider,
-        model: "",
-        effort: "",
-        permission: "default",
-        prompt_template: "generic",
-        skip: "auto",
-      };
-      const updatedRoles = { ...workflow.roles, [key]: newRole };
-      const updatedTransitions = { ...workflow.transitions, [key]: { done: "$complete", error: "$halt", question: "$ask_user" } };
-      await store.writeWorkflow({ roles: updatedRoles, transitions: updatedTransitions });
+      await store.writeWorkflow(addRolePatch(workflow, key, provider, providerDef));
       output.write(`Role "${key}" added.\n`);
       continue;
     }
