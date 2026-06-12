@@ -40,7 +40,20 @@ function maestroPaths() {
   return _paths;
 }
 
+// Modes always accepted; workflow.json may define additional custom modes
+// (e.g. imported standalone roles) which are validated at call time.
 const VALID_MODES = new Set(["task", "plan-only"]);
+const MODE_NAME_RE = /^[a-z0-9_-]+$/;
+
+async function resolveValidModes() {
+  const { MAESTRO_DIR } = maestroPaths();
+  const workflow = await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
+  const modes = new Set(VALID_MODES);
+  for (const name of Object.keys(workflow?.modes ?? {})) {
+    if (MODE_NAME_RE.test(name)) modes.add(name);
+  }
+  return modes;
+}
 
 // Open SQLite store only if the DB file exists (LangGraph engine was used)
 function tryOpenStore() {
@@ -209,7 +222,9 @@ async function showRun({ id } = {}) {
 
 async function createTask({ prompt, mode = "task" } = {}) {
   if (!prompt) throw new Error("prompt required");
-  if (!VALID_MODES.has(mode)) throw new Error(`invalid_mode: ${mode}`);
+  if (!MODE_NAME_RE.test(mode) || !(await resolveValidModes()).has(mode)) {
+    throw new Error(`invalid_mode: ${mode}`);
+  }
   const { ROOT } = maestroPaths();
   return new Promise((resolve, reject) => {
     // Invoke the bundled bin directly so this package is self-contained
@@ -221,7 +236,7 @@ async function createTask({ prompt, mode = "task" } = {}) {
     // see the same tasks the server does (critical when installed as a dependency).
     const proc = spawn(
       process.execPath,
-      [binPath, mode, "--", prompt],
+      [binPath, "task", "--mode", mode, "--", prompt],
       { cwd: ROOT, env: { ...process.env, MAESTRO_CALLER_CWD: ROOT }, stdio: ["ignore", "pipe", "pipe"] },
     );
     let stdout = "";
@@ -299,6 +314,15 @@ async function readWorkflow() {
   return { workflow_json: workflow, workflow_md: wfMd };
 }
 
+async function validateWorkflowTool() {
+  const { MAESTRO_DIR } = maestroPaths();
+  const workflow = await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
+  if (!workflow) return { ok: false, errors: [{ code: "missing_workflow", message: "no readable .maestro/workflow.json" }], warnings: [] };
+  const config = await readJSON(path.join(MAESTRO_DIR, "config.json")).catch(() => null);
+  const { validateWorkflow } = await import("../workflow-validate.mjs");
+  return validateWorkflow(workflow, { config });
+}
+
 // ── MCP server wiring ─────────────────────────────────────────────────────────
 
 const TOOLS = [
@@ -361,6 +385,11 @@ const TOOLS = [
     description: "Return the current .maestro/workflow.json and WORKFLOW.md template (if present).",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "maestro_validate_workflow",
+    description: "Validate .maestro/workflow.json: structural errors (bad initial/transitions/modes) and warnings (unreachable roles, unknown providers, cycles without termination clauses). Returns {ok, errors, warnings}.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 const HANDLERS = {
@@ -371,6 +400,7 @@ const HANDLERS = {
   maestro_create_task: createTask,
   maestro_get_state: getState,
   maestro_read_workflow: readWorkflow,
+  maestro_validate_workflow: validateWorkflowTool,
 };
 
 const server = new Server(
@@ -389,7 +419,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // Export helpers for testing without starting the server.
-export { isValidId, assertInsideDir, redactConfig, VALID_MODES, createTask, getState, showTask, showRun, listTasks };
+export { isValidId, assertInsideDir, redactConfig, VALID_MODES, resolveValidModes, createTask, getState, showTask, showRun, listTasks, validateWorkflowTool };
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {

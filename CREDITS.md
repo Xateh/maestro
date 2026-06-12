@@ -83,3 +83,29 @@ Maestro dispatches agent steps to whichever CLI is configured as a provider:
 
 Each CLI must be installed separately and available on `PATH` (or configured via
 `.maestro/config.json` aliases).
+
+### Local Agent Runtimes
+Maestro ships provider entries for locally hosted agents (see
+`docs/import-export.md` and `maestro setup local`):
+
+- **[Ollama](https://ollama.com)** — local model server; Maestro drives it via
+  `ollama run <model>` with the prompt on stdin.
+- **[Pi](https://pi.dev)** (Mario Zechner / earendil-works, MIT) — open-source
+  BYOK coding-agent CLI; driven via its print mode (`pi --model <m> -p`).
+- **[Hermes Agent](https://hermes-agent.nousresearch.com)** (Nous Research) —
+  self-improving agent runtime with Ollama/OpenAI-compatible backends.
+- **[OpenClaw](https://docs.openclaw.ai)** — self-hosted personal AI assistant;
+  driven via `openclaw agent --message`.
+
+The onboarding wizards of these projects (`openclaw onboard`, `hermes setup`)
+inspired Maestro's `setup local` / `setup keys` flow.
+
+---
+
+## Imported User Setups
+
+`maestro setup import` records every imported artifact (skills, subagents,
+instruction files, MCP configs) with source paths and credit lines in
+`.maestro/import-manifest.json`, and those credits travel with exported
+workflow bundles. Credit for imported content belongs to its original
+authors.

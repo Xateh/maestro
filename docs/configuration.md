@@ -21,11 +21,17 @@ resolved as follows (first match wins):
 
 ```
 .maestro/
-  config.json       # v2 — runtime provider and behaviour config
-  workflow.json     # v1 — roles, transitions, prompt templates
-  maestro.db       # SQLite — tasks, handoffs (LangGraph engine)
-  tasks/            # legacy per-task JSON files (pre-LangGraph)
-  runs/             # per-run artifact directories
+  config.json            # v2 — runtime provider and behaviour config (shareable)
+  config.local.json      # machine-local overlay — personal aliases, detected models (never share)
+  secrets.local.json     # API keys, mode 0600 (never share)
+  workflow.json          # v1 — roles, transitions, prompt templates
+  import-manifest.json   # imported sources + credits (see docs/import-export.md)
+  imported/              # snapshots of sources imported with --copy
+  prompts/               # instruction docs materialized from imported bundles
+  .gitignore             # written by the importer; covers the local-only files
+  maestro.db             # SQLite — tasks, handoffs (LangGraph engine)
+  tasks/                 # legacy per-task JSON files (pre-LangGraph)
+  runs/                  # per-run artifact directories
     <task-id>/
       planner.stdout.log
       planner.stderr.log
@@ -35,8 +41,8 @@ resolved as follows (first match wins):
       handoff.planner.json
       executor.stdout.log
       ...
-  projects/         # project state JSON files
-  patches/          # stored patch files
+  projects/              # project state JSON files
+  patches/               # stored patch files
 ```
 
 ---
@@ -84,6 +90,17 @@ Key fields:
       "efforts": ["low", "medium", "high"]
     }
     // ...copilot, gemini, antigravity
+    // local agent runtimes (run `maestro setup local` to populate models):
+    // ollama (built-in:ollama — `ollama run <model>`, prompt on stdin),
+    // pi / hermes / openclaw (experimental custom command templates)
+    "hermes": {
+      "adapter": "custom",
+      "custom": { "command_template": "{alias} --model {model}", "prompt_via": "stdin" },
+      // optional per-provider env injected into the agent process at spawn
+      // time; values are "$VAR" references resolved from the environment
+      // (and .maestro/secrets.local.json) — never literals
+      "env": { "OPENAI_API_KEY": "$OPENAI_API_KEY" }
+    }
   },
 
   // Herdr terminal integration
@@ -115,6 +132,26 @@ Tabs are **never** closed while a task is `waiting_user`, `waiting_approval`,
 or `needs_review` — the conversation stays visible until the task resumes,
 and the resume lands in the same tab (verified via `herdr tab get`; recreated
 if the tab was closed manually).
+
+### Local Config Overlay — `config.local.json`
+
+Machine-specific values (personal CLI aliases, locally detected models,
+custom command-template tweaks) belong in `.maestro/config.local.json`. It
+has the same shape as `config.json` (partial is fine) and is deep-merged
+over it at read time: **objects merge, arrays and scalars replace**.
+
+Writes to the shared config never persist overlay values back into
+`config.json`, and export bundles always exclude the overlay — personal
+aliases cannot leak into a repository or a shared bundle.
+
+### Secrets — `secrets.local.json`
+
+`maestro setup keys` stores key/value env pairs in
+`.maestro/secrets.local.json` (chmod 0600). At startup they are loaded into
+the process env with real environment variables taking precedence. Shareable
+files reference them as `"$VAR"` strings (e.g. `tracker.api_key:
+"$LINEAR_API_KEY"`, `providers.<p>.env`). The MCP server redacts
+secret-shaped values (`*_key`, `*_token`, `*_secret`, …) on read.
 
 ### Planner Policy
 
@@ -173,15 +210,37 @@ Defines the role graph loaded by LangGraph:
     },
     "reviewer": {
       "done": "$complete",
+      "revise": "executor",        // custom event — agents route it via
+                                   // MAESTRO_HANDOFF: {"event":"revise",...}
       "halt": "$halt",
       "ask_user": "$ask_user"
     }
+  },
+  // loop safety: cycles (like reviewer → executor above) should be bounded
+  "loop_limits": {
+    "default_max_visits": 3,       // applies to roles without their own max_visits
+    "on_exceeded": "ask_user"      // "ask_user" (pause + question) | "halt"
   }
 }
 ```
 
 The workflow can also be accompanied by a `WORKFLOW.md` file at the same path, which defines
 per-role Liquid prompt templates in human-readable Markdown.
+
+### Role fields for imported/custom roles
+
+| Field | Description |
+|---|---|
+| `max_visits` | Per-role visit cap per run (loops re-run roles) |
+| `instructions` | Inline role instructions appended to the prompt |
+| `instruction_paths` | Doc paths read at prompt time (16 KB/file, 64 KB total cap) |
+| `source` | Attribution written by `setup import` (`kind`, `path`, `hash`, `imported_at`) |
+
+Reserved events that handoff payloads may not redefine: `done`, `error`,
+`question`, `waiting`, `needs_review`, `pause`. Custom events must be
+declared in `transitions[role]` to be honored. Validate with
+`maestro workflow validate` — unterminated cycles produce a warning with a
+recommended termination clause. See [import-export.md](import-export.md).
 
 ---
 

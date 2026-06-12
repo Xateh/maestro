@@ -3,6 +3,7 @@ import { buildCodexCommand } from "./codex.mjs";
 import { buildCopilotCommand } from "./copilot.mjs";
 import { buildGeminiCommand } from "./gemini.mjs";
 import { buildAntigravityCommand } from "./antigravity.mjs";
+import { buildOllamaCommand } from "./ollama.mjs";
 
 const BUILTIN_ADAPTERS = {
   "built-in:claude": buildClaudeCommand,
@@ -10,6 +11,7 @@ const BUILTIN_ADAPTERS = {
   "built-in:copilot": buildCopilotCommand,
   "built-in:gemini": buildGeminiCommand,
   "built-in:antigravity": buildAntigravityCommand,
+  "built-in:ollama": buildOllamaCommand,
 };
 
 // Tokenize a custom command template: "{alias} --model {model}" etc.

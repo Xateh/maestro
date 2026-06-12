@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { deepMergeConfig } from "./config-local.mjs";
+
 export const DEFAULT_LOCAL_STATE_DIR = ".maestro";
 
 export const DEFAULT_PROVIDERS = {
@@ -43,6 +45,49 @@ export const DEFAULT_PROVIDERS = {
     aliases: ["antigravity"],
     models: ["antigravity-pro", "antigravity-flash"],
     efforts: ["low", "medium", "high"],
+  },
+  // Local agent runtimes. Models/aliases are machine-specific: run
+  // `maestro setup local` to detect installed runtimes and write the
+  // discovered values into .maestro/config.local.json.
+  ollama: {
+    label: "Ollama (local)",
+    adapter: "built-in:ollama",
+    default_alias: "ollama",
+    aliases: ["ollama"],
+    models: [],
+    efforts: [],
+  },
+  // The CLI surfaces below are experimental defaults — verify with
+  // `maestro setup local`, which probes the installed binary and lets you
+  // correct the command template in config.local.json.
+  pi: {
+    label: "Pi (experimental)",
+    adapter: "custom",
+    // pi print mode: pi --model <m> -p "<prompt>" (https://pi.dev/docs)
+    custom: { command_template: "{alias} --model {model} -p", prompt_via: "arg" },
+    default_alias: "pi",
+    aliases: ["pi"],
+    models: [],
+    efforts: [],
+  },
+  hermes: {
+    label: "Hermes (experimental)",
+    adapter: "custom",
+    custom: { command_template: "{alias} --model {model}", prompt_via: "stdin" },
+    default_alias: "hermes",
+    aliases: ["hermes"],
+    models: [],
+    efforts: [],
+  },
+  openclaw: {
+    label: "OpenClaw (experimental)",
+    adapter: "custom",
+    // one-shot agent message: openclaw agent --message "<prompt>" --json
+    custom: { command_template: "{alias} agent --message", prompt_via: "arg" },
+    default_alias: "openclaw",
+    aliases: ["openclaw"],
+    models: [],
+    efforts: [],
   },
 };
 
@@ -297,6 +342,14 @@ export class LocalTaskStore {
     return path.join(this.root, "workflow.json");
   }
 
+  get localConfigPath() {
+    return path.join(this.root, "config.local.json");
+  }
+
+  get secretsPath() {
+    return path.join(this.root, "secrets.local.json");
+  }
+
   get migrationLockPath() {
     return path.join(this.root, ".migrating.lock");
   }
@@ -438,7 +491,10 @@ export class LocalTaskStore {
     return this.writeProject(project);
   }
 
-  async readConfig() {
+  // Parsed config.json contents only (post-migration) — no defaults, no local
+  // overlay. writeConfig builds from this so config.local.json values never
+  // leak into config.json.
+  async _readConfigRaw() {
     await this.init();
 
     let parsed = null;
@@ -465,19 +521,61 @@ export class LocalTaskStore {
       }
     }
 
+    return parsed !== null && parsed.version === 2 ? parsed : null;
+  }
+
+  // Public raw view (config.json only, post-migration, no defaults/overlay).
+  // Use as the write base whenever a full map (e.g. providers) is persisted
+  // back to config.json, so config.local.json values never leak into it.
+  async readConfigRaw() {
+    return this._readConfigRaw();
+  }
+
+  async readLocalConfig() {
+    try {
+      const text = await fs.readFile(this.localConfigPath, "utf8");
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (error) {
+      if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+      return {};
+    }
+  }
+
+  async writeLocalConfig(patch) {
+    await this.init();
+    // Refuse to clobber a malformed file: the lenient read would return {}
+    // and the merge would silently erase the user's local config.
+    try {
+      await fs.readFile(this.localConfigPath, "utf8").then(JSON.parse);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error(`config_local_malformed: fix or remove ${this.localConfigPath} before writing to it (${error.message})`);
+      }
+      if (error.code !== "ENOENT") throw error;
+    }
+    const next = deepMergeConfig(await this.readLocalConfig(), patch);
+    await writeJsonAtomic(this.localConfigPath, next);
+    return next;
+  }
+
+  async readConfig() {
+    const parsed = await this._readConfigRaw();
+    const local = await this.readLocalConfig();
+
     const base = {
       ...DEFAULT_LOCAL_CONFIG_V2,
       cwd: path.dirname(this.root),
     };
 
-    if (parsed !== null && parsed.version === 2) {
-      const config = { ...base, ...parsed };
+    if (parsed !== null) {
+      const config = deepMergeConfig({ ...base, ...parsed }, local);
       const workflow = await this.readWorkflow();
       return shimLegacyKeys(config, workflow);
     }
 
-    // No config file or unreadable — return defaults with legacy shim
-    return shimLegacyKeys(base, DEFAULT_WORKFLOW);
+    // No config file or unreadable — return defaults (plus local overlay) with legacy shim
+    return shimLegacyKeys(deepMergeConfig(base, local), DEFAULT_WORKFLOW);
   }
 
   async readWorkflow() {
@@ -501,7 +599,14 @@ export class LocalTaskStore {
 
   async writeConfig(config) {
     await this.init();
-    const current = await this.readConfig();
+    // Build from config.json contents only — local overlay values must never
+    // be persisted into the shareable config.json.
+    const parsed = await this._readConfigRaw();
+    const current = {
+      ...DEFAULT_LOCAL_CONFIG_V2,
+      cwd: path.dirname(this.root),
+      ...(parsed ?? {}),
+    };
     const workflow = await this.readWorkflow();
 
     // Handle legacy key writes by updating the workflow roles
@@ -553,7 +658,8 @@ export class LocalTaskStore {
       await this.writeWorkflow(workflowPatch);
     }
 
-    return shimLegacyKeys(toWrite, await this.readWorkflow());
+    // Effective view (includes local overlay) for callers.
+    return this.readConfig();
   }
 
   async readTask(id) {

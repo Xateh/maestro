@@ -53,7 +53,7 @@ function listOfStrings(value, fallback) {
   return value.filter((item) => typeof item === "string");
 }
 
-function resolveDollarValue(value, env) {
+export function resolveDollarValue(value, env) {
   if (typeof value !== "string") return value;
   if (!value.startsWith("$") || value.length === 1) return value;
   const resolved = env[value.slice(1)] ?? "";
