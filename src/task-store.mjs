@@ -188,7 +188,7 @@ async function pathExists(filePath) {
   }
 }
 
-async function writeJsonAtomic(filePath, value) {
+export async function writeJsonAtomic(filePath, value) {
   const directory = path.dirname(filePath);
   await fs.mkdir(directory, { recursive: true });
   const tempPath = path.join(

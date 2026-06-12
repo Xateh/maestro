@@ -6596,3 +6596,24 @@ test("S2: canonicalizeActionRequestsForTask strips LD_PRELOAD, PATH, and GIT_SSH
   // Safe key should pass through
   assert.equal(storedEnv.SAFE_VAR, "allowed");
 });
+
+test("CLI: unknown subcommand rejects with cli_usage and scoped help", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cli-usage-"));
+  try {
+    await assert.rejects(
+      runLocalMaestroCommand({ args: ["project", "creat", "--state-dir", dir], cwd: dir }),
+      (error) => {
+        assert.equal(error.code, "cli_usage");
+        assert.match(error.cliHelp, /Did you mean: create\?/);
+        assert.match(error.cliHelp, /Usage: maestro project <subcommand>/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      runLocalMaestroCommand({ args: ["setup", "--state-dir", dir], cwd: dir }),
+      (error) => error.code === "cli_usage" && /missing subcommand/.test(error.cliHelp),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

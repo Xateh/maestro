@@ -283,7 +283,7 @@ export function planImport({
 
 const GITIGNORE_ENTRIES = ["config.local.json", "secrets.local.json", "imported/"];
 
-async function ensureStateGitignore(stateDir) {
+export async function ensureStateGitignore(stateDir) {
   const gitignorePath = path.join(stateDir, ".gitignore");
   let current = "";
   try {

@@ -2,9 +2,12 @@
 
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+
+import { LOCAL_COMMAND_NAMES, routeCli, usageError } from "../src/cli/registry.mjs";
 
 import { runLangGraphTask } from "../src/langgraph/engine.mjs";
 import { ENV_KEY_DENYLIST } from "../src/agent-runner.mjs";
@@ -27,44 +30,41 @@ import {
 import { WorkspaceManager } from "../src/workspace.mjs";
 export { parseReviewerOutput } from "../src/markers.mjs";
 
-const LOCAL_COMMANDS = new Set([
-  "project",
-  "task",
-  "run-task",
-  "message",
-  "retry",
-  "extend-timeout",
-  "mark-done",
-  "run-action",
-  "edit-action",
-  "approve-action",
-  "deny-action",
-  "cancel",
-  "approve",
-  "deny",
-  "status",
-  "inspect",
-  "tui",
-  "workflow",
-  "setup",
-  "export",
-  "import",
-]);
+const LOCAL_COMMANDS = new Set(LOCAL_COMMAND_NAMES);
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function hasStateDir(args) {
   return args.includes("--state-dir");
 }
 
+// Commands that always operate on the caller's directory — never the package
+// checkout's state. `init` scaffolds .maestro/ where the user is standing.
+const CALLER_STATE_DIR_COMMANDS = new Set(["init"]);
+
+function findStateDirUpwards(startDir, exists) {
+  let dir = path.resolve(startDir);
+  for (;;) {
+    const candidate = path.join(dir, DEFAULT_LOCAL_STATE_DIR);
+    if (exists(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 export function resolveWorkspaceLocalInvocation({
   args = process.argv.slice(2),
   env = process.env,
   processCwd = process.cwd(),
+  exists = existsSync,
 } = {}) {
   const callerCwd = env.MAESTRO_CALLER_CWD || env.INIT_CWD || processCwd;
   const nextArgs = [...args];
-  if (LOCAL_COMMANDS.has(nextArgs[0]) && !hasStateDir(nextArgs)) {
-    nextArgs.push("--state-dir", path.join(PACKAGE_ROOT, DEFAULT_LOCAL_STATE_DIR));
+  if (LOCAL_COMMANDS.has(nextArgs[0]) && !hasStateDir(nextArgs) && !CALLER_STATE_DIR_COMMANDS.has(nextArgs[0])) {
+    // Prefer an initialized .maestro/ in (or above) the caller's directory;
+    // fall back to the package checkout's state dir (historical default).
+    const discovered = findStateDirUpwards(callerCwd, exists);
+    nextArgs.push("--state-dir", discovered ?? path.join(PACKAGE_ROOT, DEFAULT_LOCAL_STATE_DIR));
   }
   return {
     args: nextArgs,
@@ -184,49 +184,32 @@ export async function startMaestro({ workflowPath, port = null, env = process.en
   };
 }
 
-const USAGE = `maestro — multi-agent plan → execute → review orchestrator
-
-Usage:
-  maestro task "<prompt>"              create + run a task (planner → executor → reviewer)
-  maestro task --plan-only "<prompt>"  planner only; stops at the plan handoff
-  maestro run-task <id>                re-run or continue an existing task
-  maestro status                       list tasks
-  maestro inspect <id>                 dump full JSON state for a task
-  maestro tui                          interactive terminal UI
-  maestro message <id> "<text>"        answer a waiting task
-  maestro approve <id> | deny <id> "<reason>"
-  maestro approve-action <id> <action-id> | deny-action <id> <action-id> "<reason>"
-  maestro retry <id> | cancel <id> | mark-done <id> | extend-timeout <id> <ms>
-  maestro task --mode <name> "<prompt>"  run any mode defined in workflow.json (incl. imported roles)
-  maestro setup import [--dry-run]     import skills/subagents/MCP configs into the workflow (credited)
-  maestro setup local                  detect local agent runtimes (ollama/pi/hermes/openclaw) → config.local.json
-  maestro setup keys [--var NAME]      manage optional API keys (secrets.local.json, 0600)
-  maestro workflow validate            check workflow structure + loop termination clauses
-  maestro export [--out <p>] [--single-file]   package workflow as a shareable bundle
-  maestro import <bundle> [--dry-run]  import a bundle (backs up workflow.json)
-  maestro project <subcommand>         project (multi-task) commands
-  maestro [WORKFLOW.md]                server mode: poll Linear, auto-dispatch issues
-
-Global flags: --state-dir <path>  --workflow-path <path>  --port <n>
-Docs: docs/cli.md, docs/import-export.md
-`;
-
 async function main() {
   const rawArgs = process.argv.slice(2);
-  // --help anywhere before a "--" separator prints usage; after "--" it is
-  // literal prompt text.
-  const preDashDash = rawArgs.includes("--") ? rawArgs.slice(0, rawArgs.indexOf("--")) : rawArgs;
-  if (rawArgs[0] === "help" || preDashDash.includes("--help") || preDashDash.includes("-h")) {
-    process.stdout.write(USAGE);
+  const route = routeCli(rawArgs, {
+    fileExists: (candidate) => existsSync(path.resolve(process.cwd(), candidate)),
+  });
+  if (route.kind === "help") {
+    process.stdout.write(route.text);
     return;
   }
-  if (LOCAL_COMMANDS.has(rawArgs[0])) {
+  if (route.kind === "error") {
+    process.stderr.write(route.text);
+    process.exitCode = route.exitCode;
+    return;
+  }
+  if (route.kind === "local") {
     const invocation = resolveWorkspaceLocalInvocation({ args: rawArgs });
     await runLocalMaestroCommand(invocation);
     return;
   }
-
-  const args = parseCliArgs(process.argv);
+  if (route.kind === "server-deprecated") {
+    process.stderr.write(`note: "maestro <file.md>" is deprecated; use: maestro serve ${route.workflowPath}\n`);
+  }
+  const serverArgv = route.kind === "serve"
+    ? [process.argv[0], process.argv[1], ...route.serverArgs]
+    : process.argv;
+  const args = parseCliArgs(serverArgv);
   const logger = new StructuredLogger();
   try {
     await loadLocalSecrets(path.resolve(process.cwd(), DEFAULT_LOCAL_STATE_DIR));
@@ -3120,7 +3103,7 @@ async function runProjectCommand({ args, cwd, stdout, store, gitRunner }) {
     if (!projectId) throw new Error("missing_project_id");
     return cleanupProject({ taskStore, id: projectId, cwd, stdout, gitRunner });
   }
-  throw new Error(`unknown_project_command: ${parsed.action}`);
+  throw usageError(["project", parsed.action]);
 }
 
 function makeStore(parsed, store) {
@@ -3595,6 +3578,20 @@ export async function runLocalMaestroCommand({
     return { task };
   }
 
+  if (command === "init") {
+    const parsed = parseSharedStateArgs(args, cwd);
+    const { runInitWizard } = await import("../src/setup/init.mjs");
+    return runInitWizard({
+      stateDir: parsed.stateDir,
+      cwd,
+      args: parsed.positional,
+      stdin,
+      stdout,
+      stderr,
+      store,
+    });
+  }
+
   if (command === "setup") {
     const parsed = parseSharedStateArgs(args, cwd);
     const [action, ...rest] = parsed.positional;
@@ -3611,7 +3608,7 @@ export async function runLocalMaestroCommand({
       const { runImportWizard } = await import("../src/setup/import.mjs");
       return runImportWizard({ store: taskStore, stateDir: parsed.stateDir, args: rest, stdin, stdout, stderr });
     }
-    throw new Error(`unknown_setup_command: ${action ?? "(missing)"} (expected: keys | local | import)`);
+    throw usageError(["setup", action]);
   }
 
   if (command === "export") {
@@ -3701,7 +3698,7 @@ export async function runLocalMaestroCommand({
   if (command === "workflow") {
     const parsed = parseSharedStateArgs(args, cwd);
     const [action, ...rest] = parsed.positional;
-    if (action !== "validate") throw new Error(`unknown_workflow_command: ${action ?? "(missing)"}`);
+    if (action !== "validate") throw usageError(["workflow", action]);
     const taskStore = makeStore(parsed, store);
     const [workflow, config] = await Promise.all([
       taskStore.readWorkflow(),
@@ -3718,7 +3715,7 @@ export async function runLocalMaestroCommand({
     return result;
   }
 
-  throw new Error(`unknown_local_command: ${command}`);
+  throw usageError([command]);
 }
 
 // argv[1] may be a symlink (npm link / global install); compare real paths.
@@ -3733,7 +3730,11 @@ const invokedAsMain = await (async () => {
 
 if (invokedAsMain) {
   main().catch((error) => {
-    process.stderr.write(`maestro_failed ${error.stack ?? error.message}\n`);
+    if (error?.code === "cli_usage") {
+      process.stderr.write(error.cliHelp);
+    } else {
+      process.stderr.write(`maestro_failed ${error.stack ?? error.message}\n`);
+    }
     process.exitCode = 1;
   });
 }
