@@ -6,6 +6,7 @@ const BUILTIN_ADAPTERS = [
   "built-in:copilot",
   "built-in:gemini",
   "built-in:antigravity",
+  "built-in:ollama",
 ];
 
 function providerSummary(key, def) {

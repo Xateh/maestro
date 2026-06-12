@@ -44,6 +44,14 @@ export const DEFAULT_PROVIDERS = {
     models: ["antigravity-pro", "antigravity-flash"],
     efforts: ["low", "medium", "high"],
   },
+  ollama: {
+    label: "Ollama (local)",
+    adapter: "built-in:ollama",
+    default_alias: "ollama",
+    aliases: ["ollama"],
+    models: ["llama3.2", "qwen3", "llama3.2-vision"],
+    efforts: [],
+  },
 };
 
 export const DEFAULT_WORKFLOW = {

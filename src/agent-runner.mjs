@@ -7,6 +7,7 @@ import { buildCodexCommand } from "./adapters/codex.mjs";
 import { buildCopilotCommand } from "./adapters/copilot.mjs";
 import { buildClaudeCommand } from "./adapters/claude.mjs";
 import { buildAntigravityCommand } from "./adapters/antigravity.mjs";
+import { buildOllamaCommand } from "./adapters/ollama.mjs";
 import { resolveAdapter } from "./adapters/registry.mjs";
 import { nullLogger } from "./logger.mjs";
 
@@ -143,6 +144,14 @@ export function buildAgentCommand({ provider, prompt, cwd, role, options = {}, p
       model: options.model,
       effort: options.antigravityEffort ?? options.effort,
       commandName: options.antigravityCommand || "antigravity",
+    });
+  }
+  if (provider === "ollama") {
+    return buildOllamaCommand({
+      prompt,
+      cwd,
+      alias: options.ollamaCommand || "ollama",
+      model: options.model,
     });
   }
   const error = new Error(`unknown_agent_provider: ${provider}`);

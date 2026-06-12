@@ -34,7 +34,8 @@ only the instruments change.
 ## Features
 
 - **CLI agents, no API keys** — Maestro runs the coding CLIs already on your
-  machine (`claude`, `codex`, `gemini`, `copilot`, `antigravity`). No new
+  machine (`claude`, `codex`, `gemini`, `copilot`, `antigravity`, `ollama`
+  for fully local models). No new
   credentials to provision, no per-token billing to route through your own
   code, no API wrapper to maintain. If you can run `claude --version`, you're
   ready.
@@ -81,7 +82,7 @@ only the instruments change.
 |---|---|
 | **Node.js ≥ 22.13** | Uses the built-in `node:sqlite` (`DatabaseSync`). Check with `node --version`. |
 | **herdr** (optional) | Default terminal-pane backend. Install separately; set `MAESTRO_BACKEND=terminal` to bypass. |
-| **Provider CLIs** | At least one of `claude`, `codex`, `copilot`, `gemini`, `antigravity` — whichever you already have installed and authenticated. No API keys needed beyond what those CLIs already use. The default workflow uses `claude` (planner) and `codex` (executor + reviewer). |
+| **Provider CLIs** | At least one of `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `ollama` — whichever you already have installed and authenticated. No API keys needed beyond what those CLIs already use. The default workflow uses `claude` (planner) and `codex` (executor + reviewer). |
 
 ---
 
@@ -169,6 +170,7 @@ Default mapping: **planner = claude**, **executor = codex**, **reviewer = codex*
 | `gemini` | `gemini` | Research-heavy planning — large context window, web-grounded tasks |
 | `copilot` | `copilot` | Optional; good for teams already in the GitHub ecosystem |
 | `antigravity` | `antigravity` | Optional; bring-your-own CLI |
+| `ollama` | `ollama` | Fully local, offline-capable models — privacy-sensitive or air-gapped work. See [docs/local-llm.md](docs/local-llm.md) |
 
 ### Example: multi-provider setup
 
@@ -283,7 +285,8 @@ bin/maestro.mjs (CLI entry)
 │   ├─ codex.mjs
 │   ├─ copilot.mjs
 │   ├─ gemini.mjs
-│   └─ antigravity.mjs
+│   ├─ antigravity.mjs
+│   └─ ollama.mjs
 │
 ├─ src/db/store.mjs        SqliteTaskStore (node:sqlite)
 ├─ src/herdr-client.mjs    JSON-RPC wrapper around herdr binary

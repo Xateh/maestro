@@ -200,6 +200,24 @@ custom adapter:
 
 Supported `{placeholders}`: `alias`, `model`, `effort`, `role`, `permission`, `prompt`.
 
+### Local LLMs (Ollama)
+
+The `built-in:ollama` adapter dispatches a fully local model — no API key, no
+network. It runs `ollama run <model>` with the prompt on stdin:
+
+```jsonc
+"ollama": {
+  "label": "Ollama (local)",
+  "adapter": "built-in:ollama",
+  "default_alias": "ollama",
+  "models": ["llama3.2", "qwen3", "llama3.2-vision"]
+}
+```
+
+Assign it to any role (e.g. `reviewer`) in `workflow.json` or the TUI. Other
+local runtimes (LM Studio, llama.cpp) work through the `custom` adapter.
+Full guide: [local-llm.md](local-llm.md).
+
 ---
 
 ## Custom Workflow Templates
