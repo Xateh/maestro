@@ -3721,7 +3721,17 @@ export async function runLocalMaestroCommand({
   throw new Error(`unknown_local_command: ${command}`);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// argv[1] may be a symlink (npm link / global install); compare real paths.
+const invokedAsMain = await (async () => {
+  if (!process.argv[1]) return false;
+  try {
+    return (await fs.realpath(process.argv[1])) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedAsMain) {
   main().catch((error) => {
     process.stderr.write(`maestro_failed ${error.stack ?? error.message}\n`);
     process.exitCode = 1;
