@@ -46,9 +46,14 @@ const VALID_MODES = new Set(["task", "plan-only"]);
 const MODE_NAME_RE = /^[a-z0-9_-]+$/;
 
 async function resolveValidModes() {
-  const { MAESTRO_DIR } = maestroPaths();
-  const workflow = await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
   const modes = new Set(VALID_MODES);
+  let workflow = null;
+  try {
+    const { MAESTRO_DIR } = maestroPaths();
+    workflow = await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
+  } catch {
+    // no .maestro root discoverable — base modes only
+  }
   for (const name of Object.keys(workflow?.modes ?? {})) {
     if (MODE_NAME_RE.test(name)) modes.add(name);
   }
@@ -315,7 +320,12 @@ async function readWorkflow() {
 }
 
 async function validateWorkflowTool() {
-  const { MAESTRO_DIR } = maestroPaths();
+  let MAESTRO_DIR;
+  try {
+    ({ MAESTRO_DIR } = maestroPaths());
+  } catch (error) {
+    return { ok: false, errors: [{ code: "missing_workflow", message: error.message }], warnings: [] };
+  }
   const workflow = await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
   if (!workflow) return { ok: false, errors: [{ code: "missing_workflow", message: "no readable .maestro/workflow.json" }], warnings: [] };
   const config = await readJSON(path.join(MAESTRO_DIR, "config.json")).catch(() => null);
