@@ -3963,6 +3963,51 @@ test("local task CLI creates a task, runs planner/executor/reviewer, and records
     ]);
     assert.match(calls[1].prompt, /planner output/);
     assert.match(stdoutLines.join(""), /task 20260513-123456-improve-berth-eta-tests succeeded/);
+    assert.match(stdoutLines.join(""), /run summary: 20260513-123456-improve-berth-eta-tests succeeded/);
+  });
+});
+
+test("local task --plan-only fails on workflows without a plan-only mode", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    const { SOLO_WORKFLOW } = await import("../src/setup/workflow-templates.mjs");
+    await writeFile(
+      path.join(store.root, "workflow.json"),
+      JSON.stringify(SOLO_WORKFLOW, null, 2),
+    );
+    await assert.rejects(
+      runLocalMaestroCommand({
+        args: ["task", "--plan-only", "--state-dir", store.root, "--cwd", dir, "do thing"],
+        cwd: dir,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+        store,
+      }),
+      /unknown_mode: plan-only \(defined modes: task\)/,
+    );
+  });
+});
+
+test("workflow use switches templates via the CLI and backs up the old file", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    const stdoutLines = [];
+    await runLocalMaestroCommand({
+      args: ["workflow", "use", "solo", "--state-dir", store.root],
+      cwd: dir,
+      stdout: { write: (text) => stdoutLines.push(text) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const output = stdoutLines.join("");
+    assert.match(output, /workflow\.json now uses template "solo": executor\(codex\)/);
+    assert.match(output, /modes: task/);
+    const workflow = JSON.parse(
+      await readFile(path.join(store.root, "workflow.json"), "utf8"),
+    );
+    assert.deepEqual(Object.keys(workflow.roles), ["executor"]);
   });
 });
 

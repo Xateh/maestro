@@ -170,7 +170,19 @@ secret-shaped values (`*_key`, `*_token`, `*_secret`, …) on read.
 
 ## `workflow.json` (v1)
 
-Defines the role graph loaded by LangGraph:
+Defines the role graph loaded by LangGraph. `maestro init --workflow <name>`
+(or `maestro workflow use <name>` after init) writes a built-in template:
+
+| Template | Pipeline |
+|---|---|
+| `default` | planner → executor → reviewer |
+| `extended` | `default` + a read-only `system_evaluator` role the reviewer can escalate to, plus an `evaluate` mode that runs the evaluator standalone |
+| `local` | `default` with every role on `ollama` (the executor keeps write permission) |
+| `solo` | executor only; defines only the `task` mode, so `--plan-only` errors with `unknown_mode` |
+
+Both `maestro import` and `maestro workflow use` back up the previous file to
+`workflow.json.bak` before writing (`workflow use` fully replaces the file;
+`import` merges).
 
 ```jsonc
 {

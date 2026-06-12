@@ -832,3 +832,121 @@ test("readManifest throws loudly on malformed manifest", async () => {
     await assert.rejects(() => runImport({ stateDir, store, plan }), /import_manifest_malformed/);
   });
 });
+
+// ── maestro doctor ───────────────────────────────────────────────────────────
+
+test("runDoctor reports pass for a healthy state dir", async () => {
+  const { runDoctor } = await import("../src/setup/doctor.mjs");
+  const { DEFAULT_WORKFLOW: workflow } = await import("../src/task-store.mjs");
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    const store = new LocalTaskStore({ root: stateDir });
+    await store.init();
+    await writeFile(path.join(stateDir, "config.json"), JSON.stringify({ version: 2 }));
+    await writeFile(path.join(stateDir, "workflow.json"), JSON.stringify(workflow));
+
+    const result = await runDoctor({
+      stateDir,
+      commandExists: async () => true,
+      exec: async () => ({ stdout: "1.2.3\n" }),
+      openDb: async () => ({ close() {} }),
+    });
+    assert.equal(result.ok, true);
+    const byId = Object.fromEntries(result.checks.map((c) => [c.id, c]));
+    assert.equal(byId.node.status, "pass");
+    assert.equal(byId["provider:claude"].status, "pass");
+    assert.equal(byId["provider:claude"].detail, "1.2.3");
+    assert.equal(byId.herdr.status, "pass");
+    assert.equal(byId.state.status, "pass");
+    assert.equal(byId.config.status, "pass");
+    assert.equal(byId.workflow.status, "pass");
+    assert.equal(byId.db.status, "pass");
+  });
+});
+
+test("runDoctor degrades to skip outside a project", async () => {
+  const { runDoctor } = await import("../src/setup/doctor.mjs");
+  await withTempDir(async (dir) => {
+    const result = await runDoctor({
+      stateDir: path.join(dir, "does-not-exist", ".maestro"),
+      commandExists: async () => false,
+      openDb: async () => { throw new Error("must not open db"); },
+    });
+    assert.equal(result.ok, true);
+    const byId = Object.fromEntries(result.checks.map((c) => [c.id, c]));
+    for (const id of ["state", "config", "workflow", "db", "secrets"]) {
+      assert.equal(byId[id].status, "skip", `${id} should skip`);
+    }
+    assert.equal(byId["provider:codex"].status, "skip");
+    assert.equal(byId.herdr.status, "skip");
+  });
+});
+
+test("runDoctor fails on malformed config and open secrets mode", async () => {
+  const { runDoctor } = await import("../src/setup/doctor.mjs");
+  const { chmod } = await import("node:fs/promises");
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    const store = new LocalTaskStore({ root: stateDir });
+    await store.init();
+    await writeFile(path.join(stateDir, "config.json"), "{ nope");
+    const secrets = path.join(stateDir, "secrets.local.json");
+    await writeFile(secrets, JSON.stringify({ version: 1, env: { MY_KEY: "x" } }));
+    await chmod(secrets, 0o644);
+
+    const result = await runDoctor({
+      stateDir,
+      commandExists: async () => false,
+      openDb: async () => ({ close() {} }),
+    });
+    assert.equal(result.ok, false);
+    const byId = Object.fromEntries(result.checks.map((c) => [c.id, c]));
+    assert.equal(byId.config.status, "fail");
+    assert.equal(byId.secrets.status, "fail");
+    assert.match(byId.secrets.detail, /chmod 600/);
+    assert.ok(!byId.secrets.detail.includes("MY_KEY"), "fail detail must not echo key names");
+  });
+});
+
+test("runDoctor flags workflow validation errors", async () => {
+  const { runDoctor } = await import("../src/setup/doctor.mjs");
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    const store = new LocalTaskStore({ root: stateDir });
+    await store.init();
+    await writeFile(path.join(stateDir, "workflow.json"), JSON.stringify({ version: 1, initial: "ghost", roles: {} }));
+
+    const result = await runDoctor({
+      stateDir,
+      commandExists: async () => false,
+      openDb: async () => ({ close() {} }),
+    });
+    const byId = Object.fromEntries(result.checks.map((c) => [c.id, c]));
+    assert.equal(byId.workflow.status, "fail");
+    assert.match(byId.workflow.detail, /bad_initial/);
+  });
+});
+
+test("versionAtLeast compares numeric segments", async () => {
+  const { versionAtLeast } = await import("../src/setup/doctor.mjs");
+  assert.equal(versionAtLeast("22.13.0", ">=22.13"), true);
+  assert.equal(versionAtLeast("22.12.9", "22.13"), false);
+  assert.equal(versionAtLeast("23.0.0", "22.13"), true);
+  assert.equal(versionAtLeast("22.13", "22.13"), true);
+});
+
+test("formatDoctorReport renders pass/fail/skip glyph lines", async () => {
+  const { formatDoctorReport } = await import("../src/setup/doctor.mjs");
+  const report = formatDoctorReport({
+    ok: false,
+    checks: [
+      { id: "node", label: "node", status: "pass", detail: "v22.14.0" },
+      { id: "config", label: "config.json", status: "fail", detail: "malformed" },
+      { id: "herdr", label: "herdr", status: "skip", detail: "not installed" },
+    ],
+  });
+  assert.match(report, /✓ node/);
+  assert.match(report, /✗ config\.json/);
+  assert.match(report, /– herdr/);
+  assert.match(report, /problems found/);
+});

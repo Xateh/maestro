@@ -8,13 +8,13 @@ import readline from "node:readline";
 
 import {
   DEFAULT_LOCAL_CONFIG_V2,
-  DEFAULT_WORKFLOW,
   LocalTaskStore,
   writeJsonAtomic,
 } from "../task-store.mjs";
 import { ensureStateGitignore } from "./import.mjs";
 import { runKeysWizard } from "./keys.mjs";
 import { runLocalSetup } from "./local.mjs";
+import { resolveWorkflowTemplate } from "./workflow-templates.mjs";
 
 const SCAFFOLD_DIRS = ["tasks", "runs", "projects", "patches", "logs"];
 
@@ -56,6 +56,13 @@ function isYes(answer) {
   return /^y(es)?$/i.test(String(answer ?? "").trim());
 }
 
+// One-line context printed (dim on TTYs) before each wizard question, so a
+// first-time user knows what saying yes does before committing to it.
+function explain(stdout, text) {
+  const line = `\n${text}`;
+  stdout.write(stdout.isTTY === true ? `\u001b[2m${line}\u001b[0m\n` : `${line}\n`);
+}
+
 export async function runInitWizard({
   stateDir,
   cwd = process.cwd(),
@@ -70,6 +77,9 @@ export async function runInitWizard({
   const root = path.resolve(stateDir ?? path.join(cwd, ".maestro"));
   const yes = args.includes("--yes");
   const dryRun = args.includes("--dry-run");
+  const workflowFlag = args.indexOf("--workflow");
+  const templateName = workflowFlag === -1 ? "default" : String(args[workflowFlag + 1] ?? "");
+  const workflowTemplate = resolveWorkflowTemplate(templateName);
   const plan = await buildInitPlan(root);
 
   stdout.write(`Initializing Maestro state in ${root}\n`);
@@ -99,7 +109,7 @@ export async function runInitWizard({
       config.cwd = path.dirname(root);
       await writeJsonAtomic(file.path, config);
     } else {
-      await writeJsonAtomic(file.path, structuredClone(DEFAULT_WORKFLOW));
+      await writeJsonAtomic(file.path, workflowTemplate);
     }
     created.push(file.name);
   }
@@ -119,15 +129,18 @@ export async function runInitWizard({
     wizards.local = true;
     stdout.write("skipped keys/import wizards (interactive) — run `maestro setup keys` / `maestro setup import`\n");
   } else if (askFn) {
+    explain(stdout, "Looks for agent CLIs on your PATH and saves discovered models to .maestro/config.local.json (machine-local, never exported).");
     if (isYes(await askFn("Detect local agent runtimes (ollama/pi/hermes/openclaw)? [y/N]: "))) {
       const detectArgs = detect === undefined ? {} : { detect };
       await runLocalSetup({ store: taskStore, args: ["--yes"], stdin, stdout, ...detectArgs });
       wizards.local = true;
     }
+    explain(stdout, "Optional — most provider CLIs handle their own auth. Keys go to .maestro/secrets.local.json (0600), for trackers or API-based local agents.");
     if (isYes(await askFn("Configure API keys now? [y/N]: "))) {
       await runKeysWizard({ stateDir: root, stdin, stdout });
       wizards.keys = true;
     }
+    explain(stdout, "Scans ~/.claude, ~/.codex and friends for skills, subagents, and MCP configs, and merges them into workflow.json with credits.");
     if (isYes(await askFn("Import existing skills/subagents/MCP configs? [y/N]: "))) {
       const { runImportWizard } = await import("./import.mjs");
       await runImportWizard({ store: taskStore, stateDir: root, args: [], stdin, stdout, stderr });

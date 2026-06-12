@@ -15,6 +15,7 @@ import path from "node:path";
 import { DEFAULT_PROVIDERS } from "../task-store.mjs";
 import { validateWorkflow, formatValidation } from "../workflow-validate.mjs";
 import { readManifest, upsertManifest, manifestPath } from "./import.mjs";
+import { backupWorkflowFile } from "./workflow-templates.mjs";
 
 export const BUNDLE_VERSION = 1;
 const BUNDLE_FILE_SUFFIX = ".maestro-bundle.json";
@@ -248,12 +249,7 @@ export async function importBundle({ bundle, stateDir, store, force = false, now
   }
 
   // backup + write workflow
-  const workflowPath = path.join(stateDir, "workflow.json");
-  try {
-    await fs.copyFile(workflowPath, `${workflowPath}.bak`);
-  } catch {
-    // no existing workflow — nothing to back up
-  }
+  await backupWorkflowFile(stateDir);
   await store.writeWorkflow(workflow);
 
   // merge providers into config.json (existing keys preserved unless force).

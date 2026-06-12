@@ -262,6 +262,7 @@ export function makeRoleNode(roleDef, {
         roleInstructions: await _roleInstructions(roleDef),
       });
 
+      const stepStartedAt = new Date().toISOString();
       let result;
       try {
         result = await runner.runStep({
@@ -284,6 +285,7 @@ export function makeRoleNode(roleDef, {
             role: roleKey,
             provider: roleDef.provider,
             status: "retried",
+            started_at: stepStartedAt,
             error: err.message,
             recovery: "auto_compact_retry",
             stdout_path: err.stdoutPath ?? null,
@@ -303,6 +305,7 @@ export function makeRoleNode(roleDef, {
           role: roleKey,
           provider: roleDef.provider,
           status: "failed",
+          started_at: stepStartedAt,
           error: err.message,
           stdout_path: err.stdoutPath ?? null,
           stderr_path: err.stderrPath ?? null,
@@ -337,6 +340,7 @@ export function makeRoleNode(roleDef, {
           role: roleKey,
           provider: roleDef.provider,
           status: "waiting",
+          started_at: stepStartedAt,
           stdout_path: result.stdoutPath,
           stderr_path: result.stderrPath,
         });
@@ -375,6 +379,7 @@ export function makeRoleNode(roleDef, {
           role: roleKey,
           provider: roleDef.provider,
           status: "waiting",
+          started_at: stepStartedAt,
           stdout_path: result.stdoutPath,
           stderr_path: result.stderrPath,
         });
@@ -442,6 +447,7 @@ export function makeRoleNode(roleDef, {
         role: roleKey,
         provider: roleDef.provider,
         status: "succeeded",
+        started_at: stepStartedAt,
         stdout_path: result.stdoutPath,
         stderr_path: result.stderrPath,
         handoff_path: handoffPath,

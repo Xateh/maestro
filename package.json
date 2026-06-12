@@ -2,6 +2,23 @@
   "name": "maestro-orchestrator",
   "version": "0.1.0",
   "description": "Multi-agent plan→execute→review orchestrator built on LangGraph",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xateh/maestro.git"
+  },
+  "license": "MIT",
+  "author": "Xateh",
+  "keywords": [
+    "agents",
+    "multi-agent",
+    "orchestrator",
+    "langgraph",
+    "claude",
+    "codex",
+    "cli",
+    "workflow",
+    "mcp"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -29,6 +46,7 @@
     "agent:eval": "node scripts/local-agents.mjs eval",
     "test:enterprise": "npm run test:package && npm run test:maestro && npm run test:mcp",
     "lint": "biome lint .",
+    "prepublishOnly": "npm run lint && npm test",
     "test:coverage": "c8 --reporter=text --reporter=lcov npm test",
     "headroom:setup": "bash scripts/headroom-setup.sh"
   },

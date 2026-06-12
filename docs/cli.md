@@ -46,12 +46,24 @@ Did you mean: create?
 
 ## Init
 
-### `init [--yes] [--dry-run]`
+### `init [--yes] [--dry-run] [--workflow <name>]`
 
 Scaffold a `.maestro/` state directory in the current directory: default
 `config.json` and `workflow.json`, the `tasks/ runs/ projects/ patches/
 logs/` directories, and a `.gitignore` covering the machine-local files.
 Idempotent — existing files are never overwritten.
+
+`--workflow <name>` picks the workflow template:
+
+- `default` — planner → executor → reviewer.
+- `extended` — `default` plus a read-only **System Evaluator** role: the
+  reviewer can escalate hard cases to a principal-level audit
+  (`MAESTRO_HANDOFF: {"event":"escalate",...}`), and an `evaluate` mode runs
+  the evaluator standalone (`maestro task --mode evaluate "audit X"`).
+- `local` — the default pipeline with every role on `ollama` (zero cloud;
+  the executor keeps write permission).
+- `solo` — executor only, the fastest loop. Defines only the `task` mode, so
+  `maestro task --plan-only` errors with `unknown_mode` on this template.
 
 After scaffolding, it offers to chain the setup wizards (`setup local`,
 `setup keys`, `setup import`). `--yes` skips the prompts and runs runtime
@@ -59,12 +71,29 @@ detection only; `--dry-run` prints the plan without writing.
 
 ```bash
 cd /path/to/your/project
-maestro init            # scaffold + optional wizards
-maestro init --yes      # non-interactive (CI)
+maestro init                       # scaffold + optional wizards
+maestro init --yes                 # non-interactive (CI)
+maestro init --workflow extended   # reviewer→system-evaluator escalation
 ```
 
 Once a directory (or any parent) contains `.maestro/`, every local command
 run from there uses it automatically — no `--state-dir` needed.
+
+### `doctor [--json]`
+
+Preflight checks, no mutations: node version against `engines.node`, each
+provider CLI's presence + `--version` line, the herdr binary (with the
+backend that will be used), and — when a `.maestro/` state dir is found —
+`config.json` parseability, `workflow.json` validation, database openability,
+and `secrets.local.json` file mode (key names are listed, values never
+printed). Checks that don't apply show as `–` and never fail the run; any
+`✗` sets exit code 1. Works outside a project too (state checks degrade to
+skip).
+
+```bash
+maestro doctor            # human-readable table
+maestro doctor --json     # machine-readable result
+```
 
 ---
 
@@ -93,6 +122,19 @@ Create and run a full pipeline: **planner → executor → reviewer**.
 ```bash
 maestro task "Add a /healthcheck endpoint"
 maestro task "Refactor auth module" --state-dir /path/to/project/.maestro
+```
+
+Every run ends with a per-role summary table — role, provider, status,
+duration, and stdout size — plus the run directory. It also prints when a
+task pauses (`waiting_user` / `waiting_approval`), showing what ran before
+the pause:
+
+```
+run summary: 20260612-103000-add-healthcheck succeeded
+  planner    claude   succeeded     12s  4.1KB
+  executor   codex    succeeded   3m02s  18.0KB
+  reviewer   codex    succeeded     41s  2.2KB
+  run dir: .maestro/runs/20260612-103000-add-healthcheck
 ```
 
 ### `task --plan-only "<prompt>"`
@@ -272,6 +314,18 @@ Validate `workflow.json`: structural errors (bad initial/transitions/modes,
 invalid limits) and warnings (unreachable roles, unknown providers, cycles
 without termination clauses). Exit 1 on errors, or on warnings with
 `--strict`.
+
+### `workflow use <name>`
+
+Switch `workflow.json` to a built-in template (`default | extended | local |
+solo`). Prompt-free: the previous file is always backed up to
+`workflow.json.bak` first, then fully replaced (not merged — keys from the
+old workflow do not survive the switch).
+
+```bash
+maestro workflow use solo
+maestro workflow validate
+```
 
 ### `export [--out <path>] [--single-file] [--name <n>]`
 

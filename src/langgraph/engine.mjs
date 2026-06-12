@@ -12,7 +12,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { HerdrAgentRunner } from "../herdr-agent-runner.mjs";
-import { TerminalAgentRunner } from "../agent-runner.mjs";
+import { TerminalAgentRunner, directCommandExists } from "../agent-runner.mjs";
 import { openStore } from "../db/store.mjs";
 import { buildGraph } from "./graph.mjs";
 import { resolveInitialState, isTerminalAfterState } from "../state-machine.mjs";
@@ -25,8 +25,40 @@ function _dbPath(maestroRoot) {
   return path.join(maestroRoot, "maestro.db");
 }
 
-function _getRunner(timeoutMs, { db = null } = {}) {
-  if (process.env.MAESTRO_BACKEND === "terminal") {
+// Cache the herdr PATH probe per process: one scan, not one per task run.
+let _herdrProbe = null;
+let _fallbackNoticeShown = false;
+
+/**
+ * Pick the agent runner backend. MAESTRO_BACKEND=terminal forces the terminal
+ * runner; any other value (or none) auto-selects herdr when its binary exists
+ * and falls back to the terminal runner (with a one-line notice) when it does
+ * not. Exported for tests; passing commandExists bypasses the process cache.
+ */
+export async function resolveAgentRunner(timeoutMs, {
+  db = null,
+  env = process.env,
+  stderr = process.stderr,
+  commandExists = null,
+} = {}) {
+  if (env.MAESTRO_BACKEND === "terminal") {
+    return new TerminalAgentRunner({ timeoutMs });
+  }
+  const herdrBin = env.HERDR_BIN ?? "herdr";
+  let available;
+  if (commandExists) {
+    available = await commandExists(herdrBin, { cwd: process.cwd(), env });
+  } else {
+    if (_herdrProbe === null) _herdrProbe = directCommandExists(herdrBin, { cwd: process.cwd() });
+    available = await _herdrProbe;
+  }
+  if (!available) {
+    if (!_fallbackNoticeShown || commandExists) {
+      _fallbackNoticeShown = true;
+      try {
+        stderr.write("herdr not found — using terminal backend (set MAESTRO_BACKEND=terminal to silence)\n");
+      } catch { /* best effort */ }
+    }
     return new TerminalAgentRunner({ timeoutMs });
   }
   // tabStore persists herdr tab ids across runner instances so resumed tasks
@@ -306,7 +338,7 @@ export async function runLangGraphTask(taskId, {
   }
 
   // ── build runner ──────────────────────────────────────────────────────────
-  const agentRunner = runner ?? _getRunner(task.timeout_ms, { db });
+  const agentRunner = runner ?? await resolveAgentRunner(task.timeout_ms, { db, stderr });
 
   // ── determine initial state for this run ─────────────────────────────────
   const initialState = task.current_state ?? resolveInitialState(workflow, { mode: task.mode });

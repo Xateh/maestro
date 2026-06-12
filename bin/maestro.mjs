@@ -21,6 +21,7 @@ import { MaestroOrchestrator } from "../src/orchestrator.mjs";
 import { evaluatePlannerDecision } from "../src/router.mjs";
 import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore, slugifyTaskTitle } from "../src/task-store.mjs";
 import { formatValidation, validateWorkflow } from "../src/workflow-validate.mjs";
+import { buildRunSummary, formatRunSummary } from "../src/run-summary.mjs";
 import { formatFeedbackReceipt, formatTaskDetails, runMaestroTui } from "../src/tui.mjs";
 import {
   WorkflowStore,
@@ -2264,7 +2265,7 @@ async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, run
     return { task: currentTask };
   }
   currentTask = await taskStore.updateTask(taskId, { status: "running" });
-  return runLangGraphTask(taskId, {
+  const result = await runLangGraphTask(taskId, {
     taskStore,
     maestroRoot: taskStore.root,
     runner,
@@ -2281,6 +2282,10 @@ async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, run
       gitRunner,
     },
   });
+  if ((result.task?.steps ?? []).length > 0) {
+    writeLine(stdout, formatRunSummary(await buildRunSummary(result.task), { color: stdout.isTTY === true }));
+  }
+  return result;
 }
 
 async function startDetachedLocalTask({
@@ -3315,7 +3320,7 @@ export async function runLocalMaestroCommand({
     const parsed = parseTaskArgs(args, cwd);
     const taskStore = makeStore(parsed, store);
     const defaults = await taskStore.readConfig();
-    if (!["task", "plan-only"].includes(parsed.mode)) {
+    if (parsed.mode !== "task") {
       const workflow = await taskStore.readWorkflow();
       if (!workflow.modes?.[parsed.mode]) {
         throw new Error(`unknown_mode: ${parsed.mode} (defined modes: ${Object.keys(workflow.modes ?? {}).join(", ")})`);
@@ -3592,6 +3597,17 @@ export async function runLocalMaestroCommand({
     });
   }
 
+  if (command === "doctor") {
+    const parsed = parseSharedStateArgs(args, cwd);
+    const { runDoctor, formatDoctorReport } = await import("../src/setup/doctor.mjs");
+    const result = await runDoctor({ stateDir: parsed.stateDir, cwd });
+    writeLine(stdout, parsed.positional.includes("--json")
+      ? JSON.stringify(result, null, 2)
+      : formatDoctorReport(result, { color: stdout.isTTY === true }));
+    if (!result.ok) process.exitCode = 1;
+    return result;
+  }
+
   if (command === "setup") {
     const parsed = parseSharedStateArgs(args, cwd);
     const [action, ...rest] = parsed.positional;
@@ -3698,21 +3714,38 @@ export async function runLocalMaestroCommand({
   if (command === "workflow") {
     const parsed = parseSharedStateArgs(args, cwd);
     const [action, ...rest] = parsed.positional;
-    if (action !== "validate") throw usageError(["workflow", action]);
-    const taskStore = makeStore(parsed, store);
-    const [workflow, config] = await Promise.all([
-      taskStore.readWorkflow(),
-      taskStore.readConfig(),
-    ]);
-    const result = validateWorkflow(workflow, { config });
-    writeLine(stdout, rest.includes("--json")
-      ? JSON.stringify(result, null, 2)
-      : formatValidation(result));
-    const strict = rest.includes("--strict");
-    if (!result.ok || (strict && result.warnings.length > 0)) {
-      process.exitCode = 1;
+    if (action === "validate") {
+      const taskStore = makeStore(parsed, store);
+      const [workflow, config] = await Promise.all([
+        taskStore.readWorkflow(),
+        taskStore.readConfig(),
+      ]);
+      const result = validateWorkflow(workflow, { config });
+      writeLine(stdout, rest.includes("--json")
+        ? JSON.stringify(result, null, 2)
+        : formatValidation(result));
+      const strict = rest.includes("--strict");
+      if (!result.ok || (strict && result.warnings.length > 0)) {
+        process.exitCode = 1;
+      }
+      return result;
     }
-    return result;
+    if (action === "use") {
+      const name = rest.find((arg) => !arg.startsWith("-"));
+      if (!name) throw usageError(["workflow", "use"]);
+      const { applyWorkflowTemplate } = await import("../src/setup/workflow-templates.mjs");
+      const result = await applyWorkflowTemplate({ name, stateDir: parsed.stateDir });
+      if (result.backupPath) {
+        writeLine(stdout, `backed up previous workflow → ${result.backupPath}`);
+      }
+      const roles = Object.entries(result.workflow.roles)
+        .map(([role, def]) => `${role}(${def.provider})`)
+        .join(" → ");
+      writeLine(stdout, `workflow.json now uses template "${name}": ${roles}`);
+      writeLine(stdout, `modes: ${Object.keys(result.workflow.modes ?? {}).join(", ")}`);
+      return result;
+    }
+    throw usageError(["workflow", action]);
   }
 
   throw usageError([command]);

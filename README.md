@@ -67,6 +67,9 @@ only the instruments change.
   roles, handoff arrows, and every event transition as a grid (and reflows to
   a vertical stack on narrow terminals). Pipes and scripts get the classic
   prompt-driven TUI automatically.
+- **Preflight + receipts** — `maestro doctor` checks node, provider CLIs,
+  herdr, and your `.maestro` state before anything runs; every task run ends
+  with a per-role summary (duration, output size, outcome).
 - **Security model** — host commands are off by default, network binaries are
   hard-denied even when allowlisted, secrets are stripped from subprocess env,
   and MCP file access is path-traversal-guarded. Trust the players, frisk the
@@ -126,6 +129,14 @@ cd maestro && npm install && cd ..
 cd /path/to/your/project
 maestro init
 
+# Or pick a workflow template: extended (adds a read-only System Evaluator the
+# reviewer can escalate to, plus an `evaluate` audit mode), local (all roles
+# on ollama, zero cloud), or solo (executor only, fastest loop)
+maestro init --workflow extended
+
+# Preflight: node version, provider CLIs, herdr, state dir, workflow, db
+maestro doctor
+
 # Create and run a task (planner → executor → reviewer)
 maestro task "Add a /healthcheck endpoint to the Express app"
 
@@ -155,6 +166,7 @@ the same tab, same context, no encore required.
 |---|---|---|
 | `task` | planner → executor → reviewer | `maestro task "<prompt>"` |
 | `plan-only` | planner only; stops at handoff | `maestro task --plan-only "<prompt>"` |
+| `evaluate` | system evaluator only (extended template) | `maestro task --mode evaluate "<prompt>"` |
 | server | polls Linear, auto-dispatches | `maestro serve [WORKFLOW.md]` |
 
 ---
@@ -197,7 +209,10 @@ Override per role in `.maestro/workflow.json`, or live in `maestro tui`.
 MAESTRO_BACKEND=terminal maestro task "..."
 ```
 
-Bypasses herdr and runs agents via direct `child_process.spawn` (no visible panes).
+Bypasses herdr and runs agents via direct `child_process.spawn` (no visible
+panes). When herdr isn't installed at all, Maestro falls back to the terminal
+backend automatically (with a one-line notice) — set
+`MAESTRO_BACKEND=terminal` to silence it.
 
 ---
 
@@ -317,7 +332,7 @@ Full architecture documentation: [docs/architecture.md](docs/architecture.md)
 
 | Variable | Default | Description |
 |---|---|---|
-| `MAESTRO_BACKEND` | `"herdr"` | `"terminal"` to bypass herdr panes |
+| `MAESTRO_BACKEND` | auto (herdr when installed) | `"terminal"` to bypass herdr panes; without herdr on PATH, terminal is used automatically |
 | `MAESTRO_ROOT` | cwd walk | Override runtime root (where `.maestro/` lives) |
 | `HERDR_BIN` | `"herdr"` | Path to the herdr binary |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr daemon socket |

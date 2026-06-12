@@ -133,7 +133,7 @@ export function formatPageHeader(title, { color = false, accent = ANSI.cyan } = 
   return color ? `${accent}${ANSI.bold}${text}${ANSI.reset}` : text;
 }
 
-function createTheme({ color = false } = {}) {
+export function createTheme({ color = false } = {}) {
   const paint = (code) => (text) => color ? `${code}${text}${ANSI.reset}` : text;
   return {
     heading: paint(ANSI.bold),

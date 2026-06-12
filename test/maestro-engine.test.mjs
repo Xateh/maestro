@@ -481,3 +481,129 @@ test("loop recovery: answering the loop-limit question re-runs the capped cycle"
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── resolveAgentRunner: herdr → terminal auto-fallback ──────────────────────────
+
+test("resolveAgentRunner: falls back to terminal with a notice when herdr is missing", async () => {
+  const { resolveAgentRunner } = await import("../src/langgraph/engine.mjs");
+  const { TerminalAgentRunner } = await import("../src/agent-runner.mjs");
+  let notice = "";
+  const runner = await resolveAgentRunner(1_000, {
+    env: {},
+    stderr: { write: (text) => { notice += text; } },
+    commandExists: async () => false,
+  });
+  assert.ok(runner instanceof TerminalAgentRunner);
+  assert.match(notice, /herdr not found — using terminal backend/);
+});
+
+test("resolveAgentRunner: uses herdr when the binary exists", async () => {
+  const { resolveAgentRunner } = await import("../src/langgraph/engine.mjs");
+  const { HerdrAgentRunner } = await import("../src/herdr-agent-runner.mjs");
+  let notice = "";
+  const runner = await resolveAgentRunner(1_000, {
+    env: {},
+    stderr: { write: (text) => { notice += text; } },
+    commandExists: async () => true,
+  });
+  assert.ok(runner instanceof HerdrAgentRunner);
+  assert.equal(notice, "");
+});
+
+test("resolveAgentRunner: MAESTRO_BACKEND=terminal short-circuits without probing", async () => {
+  const { resolveAgentRunner } = await import("../src/langgraph/engine.mjs");
+  const { TerminalAgentRunner } = await import("../src/agent-runner.mjs");
+  const runner = await resolveAgentRunner(1_000, {
+    env: { MAESTRO_BACKEND: "terminal" },
+    stderr: { write: () => { throw new Error("no notice expected"); } },
+    commandExists: async () => { throw new Error("must not probe"); },
+  });
+  assert.ok(runner instanceof TerminalAgentRunner);
+});
+
+test("resolveAgentRunner: honors HERDR_BIN for the probe", async () => {
+  const { resolveAgentRunner } = await import("../src/langgraph/engine.mjs");
+  const probed = [];
+  await resolveAgentRunner(1_000, {
+    env: { HERDR_BIN: "/opt/custom/herdr" },
+    stderr: { write: () => {} },
+    commandExists: async (name) => { probed.push(name); return true; },
+  });
+  assert.deepEqual(probed, ["/opt/custom/herdr"]);
+});
+
+// ── started_at + run summary ─────────────────────────────────────────────────────
+
+test("steps record started_at alongside completed_at", async () => {
+  const { finalTask } = await runTaskWithPolicy();
+  assert.ok(finalTask.steps.length > 0);
+  for (const step of finalTask.steps) {
+    assert.equal(typeof step.started_at, "string", `step ${step.role} missing started_at`);
+    assert.ok(
+      Date.parse(step.started_at) <= Date.parse(step.completed_at),
+      `step ${step.role} started after it completed`,
+    );
+  }
+});
+
+test("buildRunSummary computes durations and tolerates missing logs", async () => {
+  const { buildRunSummary } = await import("../src/run-summary.mjs");
+  const summary = await buildRunSummary({
+    id: "t-1",
+    status: "succeeded",
+    run_dir: "/tmp/run",
+    steps: [
+      {
+        role: "executor",
+        provider: "codex",
+        status: "succeeded",
+        started_at: "2026-06-12T00:00:00.000Z",
+        completed_at: "2026-06-12T00:00:12.000Z",
+        stdout_path: "/tmp/run/executor.stdout.log",
+      },
+      { role: "reviewer", provider: "codex", status: "waiting" },
+    ],
+  }, { stat: async () => ({ size: 2_048 }) });
+  assert.equal(summary.task_id, "t-1");
+  assert.equal(summary.rows.length, 2);
+  assert.equal(summary.rows[0].duration_ms, 12_000);
+  assert.equal(summary.rows[0].stdout_bytes, 2_048);
+  assert.equal(summary.rows[1].duration_ms, null);
+  assert.equal(summary.rows[1].stdout_bytes, null);
+});
+
+test("formatRunSummary renders the role table and run dir", async () => {
+  const { buildRunSummary, formatRunSummary } = await import("../src/run-summary.mjs");
+  const summary = await buildRunSummary({
+    id: "t-2",
+    status: "succeeded",
+    run_dir: "/tmp/run",
+    steps: [{
+      role: "executor",
+      provider: "codex",
+      status: "succeeded",
+      started_at: "2026-06-12T00:00:00.000Z",
+      completed_at: "2026-06-12T00:00:12.000Z",
+      stdout_path: "/x",
+    }],
+  }, { stat: async () => ({ size: 2_048 }) });
+  const text = formatRunSummary(summary);
+  assert.match(text, /run summary: t-2 succeeded/);
+  assert.match(text, /executor/);
+  assert.match(text, /12s/);
+  assert.match(text, /2\.0KB/);
+  assert.match(text, /run dir: \/tmp\/run/);
+});
+
+test("formatDurationMs and formatBytes edge cases", async () => {
+  const { formatDurationMs, formatBytes } = await import("../src/run-summary.mjs");
+  assert.equal(formatDurationMs(null), "-");
+  assert.equal(formatDurationMs(500), "<1s");
+  assert.equal(formatDurationMs(12_000), "12s");
+  assert.equal(formatDurationMs(182_000), "3m02s");
+  assert.equal(formatDurationMs(3_840_000), "1h04m");
+  assert.equal(formatBytes(null), "-");
+  assert.equal(formatBytes(812), "812B");
+  assert.equal(formatBytes(18_432), "18.0KB");
+  assert.equal(formatBytes(2_097_152), "2.0MB");
+});

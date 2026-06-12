@@ -71,11 +71,22 @@ export const COMMAND_TREE = {
     {
       name: "init",
       kind: "local",
-      synopsis: "maestro init [--yes] [--dry-run]",
+      synopsis: "maestro init [--yes] [--dry-run] [--workflow <name>]",
       summary: "scaffold .maestro/ (config, workflow, dirs) in the current directory",
       flags: [
         { flag: "--yes", desc: "non-interactive: scaffold + detect local runtimes, skip wizards" },
         { flag: "--dry-run", desc: "show what would be created without writing" },
+        { flag: "--workflow <name>", desc: "workflow template: default | extended | local | solo" },
+        STATE_DIR_FLAG,
+      ],
+    },
+    {
+      name: "doctor",
+      kind: "local",
+      synopsis: "maestro doctor [--json]",
+      summary: "preflight checks: node version, provider CLIs, herdr, .maestro state",
+      flags: [
+        { flag: "--json", desc: "JSON output" },
         STATE_DIR_FLAG,
       ],
     },
@@ -248,6 +259,12 @@ export const COMMAND_TREE = {
             { flag: "--strict", desc: "warnings fail the check" },
             STATE_DIR_FLAG,
           ],
+        },
+        {
+          name: "use",
+          synopsis: "maestro workflow use <name>",
+          summary: "switch workflow.json to a built-in template (backs up the old file)",
+          flags: [STATE_DIR_FLAG],
         },
       ],
     },

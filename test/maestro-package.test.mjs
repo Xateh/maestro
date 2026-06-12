@@ -28,6 +28,16 @@ test("package.json declares Maestro runtime dependencies", async () => {
   assert.equal(pkg.dependencies.liquidjs, "^10.25.7");
 });
 
+test("package.json carries publish metadata", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+  assert.equal(pkg.repository.url, "git+https://github.com/Xateh/maestro.git");
+  assert.equal(pkg.license, "MIT");
+  assert.equal(pkg.author, "Xateh");
+  assert.ok(Array.isArray(pkg.keywords) && pkg.keywords.length > 0);
+  assert.ok(pkg.scripts.prepublishOnly.includes("lint"));
+});
+
 test("Maestro modules load from package paths", () => {
   const parsed = parseCliArgs(["node", "bin/maestro.mjs", "ops/WORKFLOW.md", "--port", "0"]);
 
