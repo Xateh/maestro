@@ -127,6 +127,29 @@ export async function runDoctor({
       : check("workflow", "workflow.json", "fail", `malformed: ${error.message}`));
   }
 
+  // Server/dispatch mode (`maestro serve`) is configured in config.json's
+  // `dispatch` block + LINEAR_API_KEY. Informational: local mode needs none of it.
+  {
+    const dispatch = config?.dispatch ?? {};
+    const slug = dispatch.tracker?.project_slug;
+    let keyEnv = {};
+    try {
+      keyEnv = await readLocalSecrets(stateDir);
+    } catch {
+      keyEnv = {};
+    }
+    const hasKey = Boolean(env.LINEAR_API_KEY || keyEnv.LINEAR_API_KEY);
+    if (!dispatch.enabled && !slug) {
+      checks.push(check("server", "server mode", "skip", "not configured — local mode only"));
+    } else if (!slug) {
+      checks.push(check("server", "server mode", "fail", "dispatch.tracker.project_slug missing"));
+    } else if (!hasKey) {
+      checks.push(check("server", "server mode", "fail", "LINEAR_API_KEY not set (env or secrets.local.json)"));
+    } else {
+      checks.push(check("server", "server mode", "pass", `linear project: ${slug}`));
+    }
+  }
+
   try {
     const db = await openDb(path.join(stateDir, "maestro.db"));
     db.close();

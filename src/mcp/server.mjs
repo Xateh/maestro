@@ -312,13 +312,10 @@ async function getState() {
 }
 
 async function readWorkflow() {
-  const { MAESTRO_DIR, ROOT } = maestroPaths();
+  const { MAESTRO_DIR } = maestroPaths();
   const workflowPath = path.join(MAESTRO_DIR, "workflow.json");
   const workflow = await readJSON(workflowPath).catch(() => null);
-  // WORKFLOW.md lives in .maestro/; fall back to the legacy repo-root location.
-  const wfMd = await fs.readFile(path.join(MAESTRO_DIR, "WORKFLOW.md"), "utf8").catch(() => null)
-    ?? await fs.readFile(path.join(ROOT, "WORKFLOW.md"), "utf8").catch(() => null);
-  return { workflow_json: workflow, workflow_md: wfMd };
+  return { workflow_json: workflow };
 }
 
 async function validateWorkflowTool() {
@@ -394,7 +391,7 @@ const TOOLS = [
   },
   {
     name: "maestro_read_workflow",
-    description: "Return the current .maestro/workflow.json and WORKFLOW.md template (if present).",
+    description: "Return the current .maestro/workflow.json.",
     inputSchema: { type: "object", properties: {} },
   },
   {

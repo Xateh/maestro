@@ -283,14 +283,17 @@ test("local commands discover a caller-side .maestro by walking up", async () =>
     });
     assert.deepEqual(found.args, ["status", "--state-dir", stateDir]);
 
-    // no caller-side state → historical package-root default
+    // no caller-side state → caller-local .maestro + stateDirMissing flag,
+    // never the package checkout's state dir.
     const fallback = resolveWorkspaceLocalInvocation({
       args: ["status"],
       env: {},
       processCwd: nested,
       exists: () => false,
     });
-    assert.equal(fallback.args[2].endsWith(path.join("maestro", ".maestro")), true);
+    assert.deepEqual(fallback.args, ["status", "--state-dir", path.join(nested, ".maestro")]);
+    assert.equal(fallback.stateDirMissing, true);
+    assert.equal(fallback.args[2].endsWith(path.join("maestro", ".maestro")), false);
 
     // explicit flag wins; init never gets a default injected
     const explicit = resolveWorkspaceLocalInvocation({

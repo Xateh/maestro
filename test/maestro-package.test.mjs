@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 import { resolveWorkspaceLocalInvocation } from "../bin/maestro.mjs";
-import { parseCliArgs } from "../src/workflow.mjs";
+import { parseServeArgs } from "../src/cli/runtime.mjs";
 
 // PACKAGE_ROOT is bin/../ == the maestro repo root
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,10 +17,10 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 test("package contains the standalone Maestro implementation", async () => {
   const entry = await readFile(new URL("../bin/maestro.mjs", import.meta.url), "utf8");
 
-  assert.match(entry, /from "\.\.\/src\/workflow\.mjs"/);
+  assert.match(entry, /from "\.\.\/src\/cli\/main\.mjs"/);
   assert.doesNotMatch(entry, /digital-twin-research/);
   assert.doesNotMatch(entry, /from "\.\/maestro\//); // no old-layout imports
-  await access(new URL("../src/workflow.mjs", import.meta.url));
+  await access(new URL("../src/cli/main.mjs", import.meta.url));
   await access(new URL("../src/tui.mjs", import.meta.url));
 });
 
@@ -42,41 +42,47 @@ test("package.json carries publish metadata", async () => {
   assert.ok(pkg.scripts.prepublishOnly.includes("lint"));
 });
 
-test("Maestro modules load from package paths", () => {
-  const parsed = parseCliArgs(["node", "bin/maestro.mjs", "ops/WORKFLOW.md", "--port", "0"]);
-
-  assert.equal(parsed.workflowPath, path.resolve("ops/WORKFLOW.md"));
-  assert.equal(parsed.port, 0);
+test("parseServeArgs reads --port and --state-dir, rejects legacy args", () => {
+  assert.deepEqual(parseServeArgs(["--port", "0"]), { port: 0, stateDir: null });
+  assert.deepEqual(parseServeArgs(["--state-dir", "/x", "--port", "4100"]), { port: 4100, stateDir: "/x" });
+  assert.deepEqual(parseServeArgs([]), { port: null, stateDir: null });
+  // WORKFLOW.md / --workflow-path no longer exist
+  assert.throws(() => parseServeArgs(["--workflow-path", "x"]), /unknown_cli_arg/);
+  assert.throws(() => parseServeArgs(["ops/WORKFLOW.md"]), /unknown_cli_arg/);
 });
 
-test("local commands keep central state and use caller cwd", () => {
+test("local commands resolve caller-local state, never the package checkout", () => {
   const invocation = resolveWorkspaceLocalInvocation({
     args: ["tui"],
     env: { INIT_CWD: "/tmp/caller" },
     processCwd: PACKAGE_ROOT,
+    exists: () => false,
   });
 
   assert.equal(invocation.cwd, "/tmp/caller");
   assert.deepEqual(invocation.args, [
     "tui",
     "--state-dir",
-    path.join(PACKAGE_ROOT, ".maestro"),
+    path.join("/tmp/caller", ".maestro"),
   ]);
+  assert.equal(invocation.stateDirMissing, true);
 });
 
-test("unblock commands also use central Maestro state", () => {
+test("unblock commands resolve caller-local state with a missing flag", () => {
   for (const command of ["message", "retry", "mark-done", "approve-action", "deny-action", "cancel"]) {
     const invocation = resolveWorkspaceLocalInvocation({
       args: [command, "task-1"],
       env: { INIT_CWD: "/tmp/caller" },
       processCwd: PACKAGE_ROOT,
+      exists: () => false,
     });
 
     assert.equal(invocation.cwd, "/tmp/caller");
     assert.deepEqual(invocation.args.slice(-2), [
       "--state-dir",
-      path.join(PACKAGE_ROOT, ".maestro"),
+      path.join("/tmp/caller", ".maestro"),
     ]);
+    assert.equal(invocation.stateDirMissing, true);
   }
 });
 

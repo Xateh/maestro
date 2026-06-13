@@ -91,12 +91,13 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// `config` is the resolved dispatch config (see src/dispatch/config.mjs).
 function coerceConfig(config) {
   return {
     activeStates: config.tracker.activeStates,
     terminalStates: config.tracker.terminalStates,
-    maxConcurrentAgents: config.agent.maxConcurrentAgents,
-    maxConcurrentAgentsByState: config.agent.maxConcurrentAgentsByState,
+    maxConcurrentAgents: config.maxConcurrent,
+    maxConcurrentAgentsByState: config.maxConcurrentByState,
   };
 }
 
@@ -105,14 +106,12 @@ export class MaestroOrchestrator {
     config,
     tracker,
     runner,
-    workspaceManager,
     logger = nullLogger(),
     timers = { setTimeout, clearTimeout },
   }) {
     this.config = config;
     this.tracker = tracker;
     this.runner = runner;
-    this.workspaceManager = workspaceManager;
     this.logger = logger;
     this.timers = timers;
     this.runtime = createRuntimeState(coerceConfig(config));
@@ -125,8 +124,8 @@ export class MaestroOrchestrator {
     this.config = config;
     this.runtime.activeStates = config.tracker.activeStates.map(stateKey);
     this.runtime.terminalStates = config.tracker.terminalStates.map(stateKey);
-    this.runtime.maxConcurrentAgents = config.agent.maxConcurrentAgents;
-    this.runtime.maxConcurrentAgentsByState = config.agent.maxConcurrentAgentsByState;
+    this.runtime.maxConcurrentAgents = config.maxConcurrent;
+    this.runtime.maxConcurrentAgentsByState = config.maxConcurrentByState;
   }
 
   async tick() {
@@ -164,17 +163,19 @@ export class MaestroOrchestrator {
     try {
       const result = await this.runner.run({ issue, attempt, continuation, onActivity });
       this.addMetrics(result?.metrics, Date.now() - startedAtMs);
+      // The unified engine runs each issue's task to a terminal/blocked state in
+      // one pass. Record the outcome and leave the issue *claimed* so it is not
+      // re-dispatched. Human-blocked tasks (waiting_user/waiting_approval) are
+      // answered out-of-band via `maestro message`/`approve` against the same
+      // .maestro state; the server must not busy-retry them. External terminal
+      // moves are reconciled in reconcileRunningIssues().
       this.runtime.completed.set(issue.id, {
         issue,
         issue_identifier: issue.identifier,
         status: result?.status ?? "succeeded",
+        task_id: result?.task_id ?? null,
         completed_at: nowIso(),
       });
-      // Re-dispatch at the polling interval (not 1 s) so we don't hammer
-      // fetchIssueStatesByIds on every active run. The timer fires even on
-      // "succeeded" so the tracker can detect external state changes (R4).
-      const continuationDelayMs = this.config.polling?.intervalMs ?? 30_000;
-      this.scheduleRetry(issue, { attempt: attempt + 1, continuation: true, continuationDelayMs, reason: "continuation_check" });
     } catch (error) {
       this.lastError = error.message;
       this.logger.error("issue_run_failed", {
@@ -192,7 +193,7 @@ export class MaestroOrchestrator {
       attempt,
       continuation,
       continuationDelayMs,
-      maxRetryBackoffMs: this.config.agent.maxRetryBackoffMs,
+      maxRetryBackoffMs: this.config.maxRetryBackoffMs,
     });
     const retryEntry = {
       issue,
@@ -262,7 +263,6 @@ export class MaestroOrchestrator {
         this.runtime.retrying.delete(issueId);
       }
       this.runtime.claimed.delete(issueId);
-      await this.workspaceManager.removeForIssue(latestIssue.identifier);
       this.runtime.completed.set(issueId, {
         issue: latestIssue,
         issue_identifier: latestIssue.identifier,
@@ -273,20 +273,6 @@ export class MaestroOrchestrator {
         issue_identifier: latestIssue.identifier,
         state: latestIssue.state,
       });
-    }
-
-    const stallTimeoutMs = Number(this.config.codex.stallTimeoutMs);
-    if (Number.isFinite(stallTimeoutMs) && stallTimeoutMs > 0) {
-      for (const [issueId, running] of this.runtime.running.entries()) {
-        if (Date.now() - running.last_event_at_ms <= stallTimeoutMs) continue;
-        this.runner.cancel?.(issueId);
-        this.runtime.running.delete(issueId);
-        this.scheduleRetry(running.issue, {
-          attempt: running.attempt + 1,
-          continuation: false,
-          reason: "stall_timeout",
-        });
-      }
     }
   }
 
@@ -316,6 +302,7 @@ export class MaestroOrchestrator {
         state: entry.issue.state,
         attempt: entry.attempt,
         started_at: entry.started_at,
+        task_id: entry.task_id ?? null,
       })),
       retrying: [...this.runtime.retrying.values()].map((entry) => ({
         issue_identifier: entry.issue_identifier,
@@ -328,9 +315,10 @@ export class MaestroOrchestrator {
       completed: [...this.runtime.completed.values()].map((entry) => ({
         issue_identifier: entry.issue_identifier,
         status: entry.status,
+        task_id: entry.task_id ?? null,
         completed_at: entry.completed_at,
       })),
-      codex_totals: this.runtime.totals,
+      dispatch_totals: this.runtime.totals,
       rate_limits: this.runtime.rateLimits,
     };
   }

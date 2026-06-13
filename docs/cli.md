@@ -16,9 +16,8 @@ npm run maestro <command> [args...]
 
 | Flag | Description |
 |---|---|
-| `--state-dir <path>` | Override the `.maestro/` directory (default: nearest `.maestro/` at or above the caller's cwd, else `PACKAGE_ROOT/.maestro`) |
-| `--workflow-path <path>` | Override `WORKFLOW.md` / `workflow.json` path |
-| `--port <n>` | HTTP API port (0 = disable) |
+| `--state-dir <path>` | Override the `.maestro/` directory (default: nearest `.maestro/` at or above the caller's cwd; if none is found, local commands print "no .maestro/ found here — run `maestro init`") |
+| `--port <n>` | HTTP dashboard port for `maestro serve` (overrides `dispatch.server.port`) |
 
 ---
 
@@ -99,22 +98,25 @@ maestro doctor --json     # machine-readable result
 
 ## Server Mode
 
-### `serve [WORKFLOW.md]`
+### `serve [--port <n>] [--state-dir <path>]`
 
-Start server mode: poll Linear and auto-dispatch issues. Also starts the
-HTTP server, which serves the **interactive web dashboard** at `/` and a
-JSON API at `/api/v1/*`.
+Start server mode: poll Linear and dispatch each eligible issue through the
+**same `workflow.json` engine** `maestro task` uses (planner → executor →
+reviewer). Also starts the HTTP server, which serves the **interactive web
+dashboard** at `/` and a JSON API at `/api/v1/*`.
 
 ```bash
-maestro serve                       # default .maestro/WORKFLOW.md (legacy ./WORKFLOW.md still honored)
-maestro serve ./ops/WORKFLOW.md --port 4100
-maestro serve --workflow-path .maestro/WORKFLOW.md
-maestro serve --state-dir ./alt     # reads <state-dir>/WORKFLOW.md
+maestro serve                       # reads .maestro/config.json + workflow.json
+maestro serve --port 4100           # override dispatch.server.port
+maestro serve --state-dir ./alt     # use ./alt/.maestro
 ```
 
-The server-mode workflow file lives in the `.maestro/` state directory
-(`.maestro/WORKFLOW.md`). For backward compatibility a `WORKFLOW.md` at the
-repo root is still used when no `.maestro/WORKFLOW.md` is present.
+There is no `WORKFLOW.md` — the server reads the same `.maestro/workflow.json`
+and `.maestro/config.json` as the CLI/TUI. Configure polling, the Linear
+tracker, concurrency, and the dashboard port in the `dispatch` block of
+`config.json` (see [configuration.md](configuration.md#dispatch-server-mode)).
+Set `LINEAR_API_KEY` in the environment or `.maestro/secrets.local.json`
+(`maestro setup keys`) — it is never stored in `config.json`.
 
 **Dashboard** (`http://localhost:<port>/`): Linear-inspired browser UI with
 live task polling (5 s when tasks are active, 30 s when idle), filter tabs

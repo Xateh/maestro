@@ -152,7 +152,7 @@ multiple workers share a database, or for persisting state outside the project
 directory.
 
 ```bash
-DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve workflow.json
+DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve
 ```
 
 The schema is created automatically on first connection. Both backends expose
@@ -261,10 +261,11 @@ Both `maestro import` and `maestro workflow use` back up the previous file to
 }
 ```
 
-The workflow can also be accompanied by a `WORKFLOW.md` file in the same
-`.maestro/` directory (`.maestro/WORKFLOW.md`), which defines per-role Liquid
-prompt templates in human-readable Markdown. A legacy `WORKFLOW.md` at the repo
-root is still read when no `.maestro/WORKFLOW.md` exists.
+> **Note:** earlier versions used a separate server-only `WORKFLOW.md` file for
+> `maestro serve`. That fork has been removed — the server now runs the same
+> `workflow.json` engine as the CLI/TUI. Server polling/tracker settings live in
+> the `dispatch` block of `config.json` (below). Per-role prompt customization
+> uses the role `instructions` / `instruction_paths` fields.
 
 ### Role fields for imported/custom roles
 
@@ -280,6 +281,60 @@ Reserved events that handoff payloads may not redefine: `done`, `error`,
 declared in `transitions[role]` to be honored. Validate with
 `maestro workflow validate` — unterminated cycles produce a warning with a
 recommended termination clause. See [import-export.md](import-export.md).
+
+---
+
+## Dispatch (server mode)
+
+`maestro serve` reads the **same** `.maestro/workflow.json` + `.maestro/config.json`
+as the CLI/TUI. The `dispatch` block in `config.json` holds the Linear-polling and
+concurrency settings; each eligible issue is run through the workflow.json engine
+(planner → executor → reviewer), exactly like `maestro task`.
+
+```jsonc
+{
+  "dispatch": {
+    "enabled": false,                 // gate; doctor reports "configured" when true or a slug is set
+    "tracker": {
+      "kind": "linear",
+      "endpoint": "https://api.linear.app/graphql",
+      "project_slug": null,           // REQUIRED to serve
+      "active_states": ["Todo", "In Progress"],
+      "terminal_states": ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+      "done_state": null,             // set (e.g. "Done") to auto-move succeeded issues; null = humans move the card
+      "blocked_state": null           // optional target for waiting_user/waiting_approval tasks
+    },
+    "polling": { "interval_ms": 30000 },
+    "max_concurrent": 1,              // raise together with worktree_mode for isolation
+    "max_concurrent_by_state": {},
+    "max_retry_backoff_ms": 300000,
+    "worktree_mode": "current-cwd",   // or "new-project" for a per-issue git worktree
+    "prompt_template": null,          // Liquid template seeded with { issue }; null = issue title + description
+    "server": { "port": null }        // HTTP dashboard port; --port overrides
+  }
+}
+```
+
+The Linear API key is **never** stored in `config.json` — set `LINEAR_API_KEY`
+in the environment or `.maestro/secrets.local.json` (`maestro setup keys`).
+
+When `done_state` is set the server writes the issue's state back to Linear on
+success; left `null`, the issue is left for a human to move (the work is still
+done). Tasks that reach `waiting_user`/`waiting_approval` are **not** re-run by
+the server — answer them with `maestro message`/`maestro approve` against the
+same `.maestro/` state and the task resumes.
+
+### What config lives where
+
+| Concern | File |
+|---|---|
+| Provider definitions, global policies (timeouts, worktrees, herdr) | `config.json` |
+| Linear tracker, polling, dispatch concurrency, dashboard port | `config.json` → `dispatch` |
+| Role graph (roles, transitions, modes, loop limits) | `workflow.json` |
+| Per-role prompt instructions | `workflow.json` → role `instructions` / `instruction_paths` |
+| Secrets (`LINEAR_API_KEY`, etc.) | `.maestro/secrets.local.json` |
+
+Both `maestro task` and `maestro serve` read `config.json` + `workflow.json`.
 
 ---
 
@@ -320,9 +375,10 @@ Full guide: [local-llm.md](local-llm.md).
 
 ## Custom Workflow Templates
 
-Override the default prompt for any role by editing `workflow.json` `roles.<role>.prompt_template`
-or by defining a `## <Role>` section in `WORKFLOW.md`. Templates are rendered with
-[LiquidJS](https://liquidjs.com) and receive context variables:
+Customize a role's prompt by editing its `workflow.json` `roles.<role>` entry —
+set `prompt_template` to a built-in template name, or add inline `instructions` /
+`instruction_paths` (see the role-fields table above). Built-in templates are
+rendered with [LiquidJS](https://liquidjs.com) and receive context variables:
 
 | Variable | Description |
 |---|---|

@@ -745,6 +745,19 @@ test("readBundle rejects path traversal, unlisted files, and wrong versions", as
   });
 });
 
+test("readBundle throws a typed bundle_not_found on a missing path", async () => {
+  await withTempDir(async (dir) => {
+    await assert.rejects(
+      () => readBundle(path.join(dir, "no", "such", "bundle")),
+      (error) => {
+        assert.equal(error.code, "bundle_not_found");
+        assert.match(error.message, /^bundle_not_found:/);
+        return true;
+      },
+    );
+  });
+});
+
 test("importBundle drops non-bundled instruction_paths (no local-file laundering)", async () => {
   await withTempDir(async (dir) => {
     const stateA = path.join(dir, "a", ".maestro");
@@ -847,6 +860,7 @@ test("runDoctor reports pass for a healthy state dir", async () => {
 
     const result = await runDoctor({
       stateDir,
+      cwd: dir,
       commandExists: async () => true,
       exec: async () => ({ stdout: "1.2.3\n" }),
       openDb: async () => ({ close() {} }),
@@ -861,6 +875,45 @@ test("runDoctor reports pass for a healthy state dir", async () => {
     assert.equal(byId.config.status, "pass");
     assert.equal(byId.workflow.status, "pass");
     assert.equal(byId.db.status, "pass");
+    // server mode is not configured (no dispatch block) → informational skip
+    assert.equal(byId.server.status, "skip");
+    assert.match(byId.server.detail, /local mode only/i);
+  });
+});
+
+test("runDoctor reports server mode ready when dispatch is configured", async () => {
+  const { runDoctor } = await import("../src/setup/doctor.mjs");
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    const store = new LocalTaskStore({ root: stateDir });
+    await store.init();
+    await writeFile(
+      path.join(stateDir, "config.json"),
+      JSON.stringify({ version: 2, dispatch: { enabled: true, tracker: { project_slug: "ops" } } }),
+    );
+
+    const result = await runDoctor({
+      stateDir,
+      cwd: dir,
+      env: { LINEAR_API_KEY: "lin_test" },
+      commandExists: async () => false,
+      openDb: async () => ({ close() {} }),
+    });
+    const byId = Object.fromEntries(result.checks.map((c) => [c.id, c]));
+    assert.equal(byId.server.status, "pass");
+    assert.match(byId.server.detail, /ops/);
+
+    // configured but missing the API key → fail with an actionable hint
+    const noKey = await runDoctor({
+      stateDir,
+      cwd: dir,
+      env: {},
+      commandExists: async () => false,
+      openDb: async () => ({ close() {} }),
+    });
+    const noKeyById = Object.fromEntries(noKey.checks.map((c) => [c.id, c]));
+    assert.equal(noKeyById.server.status, "fail");
+    assert.match(noKeyById.server.detail, /LINEAR_API_KEY/);
   });
 });
 

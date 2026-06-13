@@ -481,8 +481,9 @@ falling back to bounded stdout excerpts.
 
 - The local task command runs steps sequentially inside one task. Parallel
   safety is enforced at project path-lease boundaries.
-- Linear-backed polling mode still exists as the original `WORKFLOW.md` service
-  path.
+- Linear-backed polling mode (`maestro serve`) runs each issue through the same
+  `workflow.json` engine as `maestro task`; configure it in the `config.json`
+  `dispatch` block.
 - Copilot is present only as a disabled adapter.
 - Local file sync profiles are configuration placeholders. `.env` requires
   explicit future approval before copying.

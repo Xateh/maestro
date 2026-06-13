@@ -1,8 +1,8 @@
 // Export a Maestro workflow as a portable bundle another instance can import.
 //
 // Bundle contents: workflow.json (instruction_paths rewritten to bundled
-// copies under prompts/), providers from config.json, WORKFLOW.md if present,
-// credits from the import manifest, and sha256 hashes for every file.
+// copies under prompts/), providers from config.json, credits from the import
+// manifest, and sha256 hashes for every file.
 //
 // Never exported: config.local.json, secrets.local.json, tasks/runs/db.
 // Provider definitions get a defensive redaction pass on secret-shaped keys.
@@ -122,12 +122,6 @@ export async function buildBundle({ stateDir, name = null, now = () => new Date(
     roleDef.instruction_paths = rewritten;
   }
 
-  // WORKFLOW.md (server/dispatch mode) lives in the state dir; fall back to the
-  // legacy repo-root location for bundles created before the move.
-  const workflowMd = await fs.readFile(path.join(stateDir, "WORKFLOW.md"), "utf8").catch(() => null)
-    ?? await fs.readFile(path.join(stateDir, "..", "WORKFLOW.md"), "utf8").catch(() => null);
-  if (workflowMd) files["WORKFLOW.md"] = workflowMd;
-
   files["workflow.json"] = `${JSON.stringify(workflow, null, 2)}\n`;
   // No materialized config.json → export the built-in defaults so bundles
   // are deterministic regardless of whether the source dir wrote one.
@@ -173,7 +167,17 @@ export async function writeBundleFile(bundle, outFile) {
 
 export async function readBundle(bundlePath) {
   const resolved = path.resolve(bundlePath);
-  const info = await fs.stat(resolved);
+  let info;
+  try {
+    info = await fs.stat(resolved);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      const notFound = new Error(`bundle_not_found: ${resolved}`);
+      notFound.code = "bundle_not_found";
+      throw notFound;
+    }
+    throw error;
+  }
   let bundle;
   if (info.isDirectory()) {
     const manifest = await readJsonIfExists(path.join(resolved, "manifest.json"));
@@ -281,10 +285,6 @@ export async function importBundle({ bundle, stateDir, store, force = false, now
   manifest.credits = [...new Set([...manifest.credits, ...(bundle.manifest.credits ?? [])])];
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(manifestPath(stateDir), `${JSON.stringify(manifest, null, 2)}\n`);
-
-  if (bundle.files["WORKFLOW.md"]) {
-    await fs.writeFile(path.join(stateDir, "WORKFLOW.md"), bundle.files["WORKFLOW.md"]).catch(() => {});
-  }
 
   return { workflow, validation, manifest };
 }

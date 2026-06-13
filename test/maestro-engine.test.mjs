@@ -607,3 +607,32 @@ test("formatDurationMs and formatBytes edge cases", async () => {
   assert.equal(formatBytes(18_432), "18.0KB");
   assert.equal(formatBytes(2_097_152), "2.0MB");
 });
+
+// ── LocalTaskStore: friendly not-found errors ────────────────────────────────
+
+test("readTask/readProject throw typed not-found errors on ENOENT", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-store-nf-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+
+    await assert.rejects(
+      () => store.readTask("nope"),
+      (error) => {
+        assert.equal(error.code, "task_not_found");
+        assert.match(error.message, /^task_not_found: nope/);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => store.readProject("nope"),
+      (error) => {
+        assert.equal(error.code, "project_not_found");
+        assert.match(error.message, /^project_not_found: nope/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

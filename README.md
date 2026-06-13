@@ -209,7 +209,7 @@ the same tab, same context.
 | `task` | planner → executor → reviewer | `maestro task "<prompt>"` |
 | `plan-only` | planner only; stops at handoff | `maestro task --plan-only "<prompt>"` |
 | `evaluate` | system evaluator only (extended template) | `maestro task --mode evaluate "<prompt>"` |
-| server | polls Linear, auto-dispatches | `maestro serve [WORKFLOW.md]` |
+| server | polls Linear, dispatches issues through the workflow.json engine | `maestro serve` |
 
 ### CLI Commands
 
@@ -227,7 +227,7 @@ the same tab, same context.
 | `maestro setup <subcommand>` | Configure providers, keys, and imports |
 | `maestro workflow <subcommand>` | Workflow file commands |
 | `maestro export` / `maestro import <bundle>` | Share workflows as bundles |
-| `maestro serve [WORKFLOW.md]` | Server mode (Linear polling) |
+| `maestro serve` | Server mode: Linear polling → workflow.json engine |
 
 Run `maestro help <command>` for flags and details, or see
 [docs/cli.md](docs/cli.md) for the full reference.
@@ -318,7 +318,7 @@ Add to your `.mcp.json`:
 | `maestro_show_run` | All files in one run |
 | `maestro_create_task` | Spawn a new task by prompt |
 | `maestro_get_state` | Runtime state snapshot (HTTP → file fallback) |
-| `maestro_read_workflow` | Current `workflow.json` + `WORKFLOW.md` |
+| `maestro_read_workflow` | Current `workflow.json` |
 | `maestro_validate_workflow` | Validate a workflow definition before use |
 
 Full schema: [src/mcp/SCHEMA.md](src/mcp/SCHEMA.md) ·
@@ -378,7 +378,7 @@ It is a **no-op** (zero overhead, zero imports) when the variable is absent.
 
 ```bash
 # Export to a local Jaeger or Grafana Tempo collector
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 maestro serve workflow.json
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 maestro serve
 ```
 
 Auto-instrumented: `http`, `pg` (when using the PostgreSQL backend), `dns`.
@@ -426,7 +426,8 @@ bin/maestro.mjs (CLI entry)
 ├─ src/router.mjs          buildStepPrompt, evaluatePlannerDecision
 ├─ src/state-machine.mjs   Pure transition(state, event) → nextState
 ├─ src/task-store.mjs      LocalTaskStore + DEFAULT_WORKFLOW
-├─ src/workflow.mjs        WorkflowStore, parseCliArgs, renderPrompt
+├─ src/workflow.mjs        renderPrompt + shared constants
+├─ src/dispatch/           resolveDispatchConfig, DispatchRunner (server mode)
 ├─ src/workflow-validate.mjs  Workflow schema validation
 ├─ src/workspace.mjs       WorkspaceManager (git worktrees)
 ├─ src/markers.mjs         Pure parsers: HANDOFF/QUESTION/REVIEW/ACTION_REQUEST

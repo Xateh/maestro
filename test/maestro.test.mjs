@@ -17,11 +17,9 @@ import { buildStepPrompt, evaluatePlannerDecision, resolveAgentFlow } from "../s
 import { LocalTaskStore, DEFAULT_WORKFLOW } from "../src/task-store.mjs";
 import { collectNewTaskForm, defaultCommandExists, filterTasksForView, formatPageHeader, formatProjectDetails, formatProjectList, formatSettingsList, formatTaskDetails, formatTaskDraft, formatTaskList, resolveTaskSelection, runMaestroTui } from "../src/tui.mjs";
 
-import {
-  loadEffectiveWorkflow,
-  parseCliArgs,
-  renderPrompt,
-} from "../src/workflow.mjs";
+import { renderPrompt } from "../src/workflow.mjs";
+import { resolveDispatchConfig } from "../src/dispatch/config.mjs";
+import { parseServeArgs } from "../src/cli/runtime.mjs";
 import {
   LinearTrackerClient,
   normalizeLinearIssue,
@@ -172,138 +170,69 @@ function issue(overrides = {}) {
   };
 }
 
-test("workflow loading parses front matter, resolves env-backed config, and applies defaults", async () => {
-  await withTempDir(async (dir) => {
-    const workflowPath = path.join(dir, "WORKFLOW.md");
-    await writeFile(workflowPath, `---
-tracker:
-  kind: linear
-  api_key: "$LINEAR_TEST_KEY"
-  project_slug: twin-ops
-polling:
-  interval_ms: 77
-workspace:
-  root: ./agent workspaces
-agent:
-  max_concurrent_agents: 3
-  max_concurrent_agents_by_state:
-    Todo: 1
-    Bad: 0
-codex:
-  command: codex app-server --listen stdio://
-server:
-  port: 0
----
-Implement {{ issue.identifier }} with attempt {{ attempt }}.
-`);
-
-    const loaded = await loadEffectiveWorkflow(workflowPath, {
-      env: { LINEAR_TEST_KEY: "linear-token" },
-    });
-
-    assert.equal(loaded.workflow.promptTemplate, "Implement {{ issue.identifier }} with attempt {{ attempt }}.");
-    assert.equal(loaded.config.tracker.kind, "linear");
-    assert.equal(loaded.config.tracker.apiKey, "linear-token");
-    assert.equal(loaded.config.tracker.projectSlug, "twin-ops");
-    assert.equal(loaded.config.polling.intervalMs, 77);
-    assert.equal(loaded.config.workspace.root, path.join(dir, "agent workspaces"));
-    assert.equal(loaded.config.agent.maxConcurrentAgents, 3);
-    assert.deepEqual(loaded.config.agent.maxConcurrentAgentsByState, { todo: 1 });
-    assert.equal(loaded.config.agent.maxTurns, 20);
-    assert.equal(loaded.config.agent.maxRetryBackoffMs, 300_000);
-    assert.equal(loaded.config.codex.command, "codex app-server --listen stdio://");
-    assert.equal(loaded.config.codex.approvalPolicy, "never");
-    assert.deepEqual(loaded.config.codex.turnSandboxPolicy, {
-      type: "workspaceWrite",
-      networkAccess: false,
-      writableRoots: [path.join(dir, "agent workspaces")],
-    });
-    assert.equal(loaded.config.server.port, 0);
-  });
+test("resolveDispatchConfig reads the config.json dispatch block + env API key", () => {
+  const config = {
+    dispatch: {
+      enabled: true,
+      tracker: {
+        kind: "linear",
+        project_slug: "twin-ops",
+        active_states: ["Todo", "In Progress"],
+        done_state: "Done",
+      },
+      polling: { interval_ms: 77 },
+      max_concurrent: 3,
+      max_concurrent_by_state: { Todo: 1 },
+      worktree_mode: "new-project",
+    },
+  };
+  const resolved = resolveDispatchConfig(config, { env: { LINEAR_API_KEY: "linear-token" } });
+  assert.equal(resolved.enabled, true);
+  assert.equal(resolved.tracker.apiKey, "linear-token");
+  assert.equal(resolved.tracker.projectSlug, "twin-ops");
+  assert.equal(resolved.tracker.doneState, "Done");
+  assert.deepEqual(resolved.tracker.activeStates, ["Todo", "In Progress"]);
+  assert.equal(resolved.polling.intervalMs, 77);
+  assert.equal(resolved.maxConcurrent, 3);
+  assert.deepEqual(resolved.maxConcurrentByState, { Todo: 1 });
+  assert.equal(resolved.worktreeMode, "new-project");
 });
 
-test("workflow loading returns typed errors for bad files and strict prompt rendering fails unknown variables", async () => {
-  await withTempDir(async (dir) => {
-    const missing = path.join(dir, "missing-WORKFLOW.md");
-    await assert.rejects(
-      () => loadEffectiveWorkflow(missing, { env: {} }),
-      /missing_workflow_file/,
-    );
-
-    const badYaml = path.join(dir, "WORKFLOW.md");
-    await writeFile(badYaml, "---\n- not-a-map\n---\nBody");
-    await assert.rejects(
-      () => loadEffectiveWorkflow(badYaml, { env: {} }),
-      /workflow_front_matter_not_a_map/,
-    );
-
-    const rendered = await renderPrompt("Issue {{ issue.identifier }} labels {{ issue.labels | join: ',' }}", {
-      issue: issue({ labels: ["ops", "safety"] }),
-      attempt: null,
-    });
-    assert.equal(rendered, "Issue OPS-1 labels ops,safety");
-
-    await assert.rejects(
-      () => renderPrompt("Bad {{ issue.missing }}", { issue: issue(), attempt: 2 }),
-      /template_render_error/,
-    );
-  });
-});
-
-test("CLI parser supports default workflow path, explicit path, and --port override", () => {
-  // With no WORKFLOW.md on disk the default resolves to the .maestro/ location.
-  assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs"]), {
-    workflowPath: path.resolve(".maestro/WORKFLOW.md"),
-    port: null,
-  });
-  assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs", "ops/WORKFLOW.md", "--port", "0"]), {
-    workflowPath: path.resolve("ops/WORKFLOW.md"),
-    port: 0,
-  });
+test("resolveDispatchConfig throws actionable errors when the tracker is unconfigured", () => {
+  const base = { dispatch: { tracker: { kind: "linear", project_slug: "ops" } } };
   assert.throws(
-    () => parseCliArgs(["node", "scripts/maestro.mjs", "--port", "nope"]),
-    /invalid_port/,
+    () => resolveDispatchConfig(base, { env: {} }),
+    (error) => {
+      assert.equal(error.code, "missing_tracker_api_key");
+      assert.match(error.message, /LINEAR_API_KEY/);
+      return true;
+    },
+  );
+  assert.throws(
+    () => resolveDispatchConfig({ dispatch: { tracker: { kind: "linear" } } }, { env: { LINEAR_API_KEY: "x" } }),
+    /missing_tracker_project_slug/,
   );
 });
 
-test("CLI parser honors --workflow-path and --state-dir flags", () => {
-  assert.equal(
-    parseCliArgs(["node", "maestro", "--workflow-path", "ops/flow.md"]).workflowPath,
-    path.resolve("ops/flow.md"),
-  );
-  assert.equal(
-    parseCliArgs(["node", "maestro", "--state-dir", "custom-state"]).workflowPath,
-    path.resolve("custom-state/WORKFLOW.md"),
-  );
+test("parseServeArgs reads --port/--state-dir and rejects legacy WORKFLOW.md args", () => {
+  assert.deepEqual(parseServeArgs(["--port", "0"]), { port: 0, stateDir: null });
+  assert.deepEqual(parseServeArgs(["--state-dir", "/x"]), { port: null, stateDir: "/x" });
+  assert.throws(() => parseServeArgs(["--port", "nope"]), /invalid_port/);
+  assert.throws(() => parseServeArgs(["ops/WORKFLOW.md"]), /unknown_cli_arg/);
+  assert.throws(() => parseServeArgs(["--workflow-path", "x"]), /unknown_cli_arg/);
 });
 
-test("resolveServerWorkflowPath prefers .maestro/, then legacy root", async () => {
-  const { resolveServerWorkflowPath } = await import("../src/workflow.mjs");
-  await withTempDir(async (dir) => {
-    // Nothing on disk → canonical .maestro/ location.
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, ".maestro", "WORKFLOW.md"),
-    );
-    // Legacy root file present, no .maestro/ copy → fall back to root.
-    await writeFile(path.join(dir, "WORKFLOW.md"), "x");
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, "WORKFLOW.md"),
-    );
-    // .maestro/ copy present → it wins over the legacy root file.
-    await mkdir(path.join(dir, ".maestro"), { recursive: true });
-    await writeFile(path.join(dir, ".maestro", "WORKFLOW.md"), "y");
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, ".maestro", "WORKFLOW.md"),
-    );
-    // Explicit path always wins, resolved against cwd.
-    assert.equal(
-      resolveServerWorkflowPath({ explicit: "a/b.md", cwd: dir }),
-      path.join(dir, "a", "b.md"),
-    );
+test("renderPrompt renders Liquid context and fails strictly on unknown variables", async () => {
+  const rendered = await renderPrompt("Issue {{ issue.identifier }} labels {{ issue.labels | join: ',' }}", {
+    issue: issue({ labels: ["ops", "safety"] }),
+    attempt: null,
   });
+  assert.equal(rendered, "Issue OPS-1 labels ops,safety");
+
+  await assert.rejects(
+    () => renderPrompt("Bad {{ issue.missing }}", { issue: issue(), attempt: 2 }),
+    /template_render_error/,
+  );
 });
 
 test("workspace manager sanitizes identifiers, runs hooks, and enforces root containment", async () => {
@@ -481,7 +410,15 @@ test("orchestrator helpers sort, gate blockers, and compute retry backoff", () =
   assert.equal(computeRetryDelay({ continuation: true, continuationDelayMs: 5_000, maxRetryBackoffMs: 30_000 }), 5_000);
 });
 
-test("orchestrator dispatches eligible issues and schedules continuation retry after normal worker exit", async () => {
+const DISPATCH_CONFIG = {
+  tracker: { activeStates: ["Todo", "In Progress"], terminalStates: ["Done"], kind: "linear" },
+  polling: { intervalMs: 30_000 },
+  maxConcurrent: 2,
+  maxConcurrentByState: {},
+  maxRetryBackoffMs: 300_000,
+};
+
+test("orchestrator dispatches eligible issues once and records the terminal task outcome", async () => {
   const dispatched = [];
   const tracker = {
     fetchIssuesByStates: async () => [],
@@ -494,26 +431,15 @@ test("orchestrator dispatches eligible issues and schedules continuation retry a
   const runner = {
     run: async ({ issue: selected }) => {
       dispatched.push(selected.identifier);
-      return { status: "succeeded", runtimeSeconds: 0.2 };
+      return { status: "succeeded", task_id: "task-OPS-2" };
     },
     cancel: () => {},
   };
 
   const orchestrator = new MaestroOrchestrator({
-    config: {
-      tracker: { activeStates: ["Todo", "In Progress"], terminalStates: ["Done"], kind: "linear" },
-      polling: { intervalMs: 30_000 },
-      agent: {
-        maxConcurrentAgents: 2,
-        maxConcurrentAgentsByState: {},
-        maxRetryBackoffMs: 300_000,
-        maxTurns: 1,
-      },
-      codex: { stallTimeoutMs: 300_000 },
-    },
+    config: DISPATCH_CONFIG,
     tracker,
     runner,
-    workspaceManager: { removeForIssue: async () => {} },
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     timers: { setTimeout: () => ({ fake: true }), clearTimeout: () => {} },
   });
@@ -521,12 +447,48 @@ test("orchestrator dispatches eligible issues and schedules continuation retry a
   await orchestrator.tick();
   await Promise.resolve();
 
+  // Blocked issue is gated; the clear one runs exactly once. The unified engine
+  // runs the task to terminal — no continuation busy-retry is scheduled.
   assert.deepEqual(dispatched, ["OPS-2"]);
   const snapshot = orchestrator.snapshot();
   assert.equal(snapshot.counts.running, 0);
-  assert.equal(snapshot.counts.retrying, 1);
-  assert.equal(snapshot.retrying[0].issue_identifier, "OPS-2");
-  assert.equal(snapshot.retrying[0].attempt, 1);
+  assert.equal(snapshot.counts.retrying, 0);
+  assert.equal(snapshot.counts.completed, 1);
+  assert.equal(snapshot.completed[0].issue_identifier, "OPS-2");
+  assert.equal(snapshot.completed[0].status, "succeeded");
+  assert.equal(snapshot.completed[0].task_id, "task-OPS-2");
+  // Issue stays claimed so it is not re-dispatched on the next tick.
+  assert.equal(orchestrator.runtime.claimed.has("clear"), true);
+});
+
+test("orchestrator does not busy-retry a human-blocked task", async () => {
+  const runs = [];
+  const tracker = {
+    fetchIssueStatesByIds: async () => [],
+    fetchCandidateIssues: async () => [issue({ id: "clear", identifier: "OPS-2", state: "Todo" })],
+  };
+  const runner = {
+    run: async ({ issue: selected }) => {
+      runs.push(selected.identifier);
+      return { status: "waiting_user", task_id: "task-1" };
+    },
+    cancel: () => {},
+  };
+  const orchestrator = new MaestroOrchestrator({
+    config: DISPATCH_CONFIG,
+    tracker,
+    runner,
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    timers: { setTimeout: () => ({ fake: true }), clearTimeout: () => {} },
+  });
+
+  await orchestrator.tick();
+  await Promise.resolve();
+
+  assert.deepEqual(runs, ["OPS-2"]);
+  const snapshot = orchestrator.snapshot();
+  assert.equal(snapshot.counts.retrying, 0);
+  assert.equal(snapshot.completed[0].status, "waiting_user");
 });
 
 test("orchestrator retry timer can relaunch its own claimed issue", async () => {
@@ -548,17 +510,12 @@ test("orchestrator retry timer can relaunch its own claimed issue", async () => 
     config: {
       tracker: { activeStates: ["Todo"], terminalStates: ["Done"], kind: "linear" },
       polling: { intervalMs: 30_000 },
-      agent: {
-        maxConcurrentAgents: 1,
-        maxConcurrentAgentsByState: {},
-        maxRetryBackoffMs: 300_000,
-        maxTurns: 1,
-      },
-      codex: { stallTimeoutMs: 300_000 },
+      maxConcurrent: 1,
+      maxConcurrentByState: {},
+      maxRetryBackoffMs: 300_000,
     },
     tracker,
     runner,
-    workspaceManager: { removeForIssue: async () => {} },
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     timers: {
       setTimeout: (callback) => {
@@ -571,14 +528,16 @@ test("orchestrator retry timer can relaunch its own claimed issue", async () => 
 
   orchestrator.scheduleRetry(issue({ id: "retry-1", identifier: "OPS-RETRY" }), {
     attempt: 1,
-    continuation: true,
-    reason: "continuation_check",
+    continuation: false,
+    reason: "worker_error",
   });
   scheduled();
   await Promise.resolve();
 
+  // The retry timer relaunches its claimed issue; a successful run is terminal,
+  // so nothing new is rescheduled.
   assert.deepEqual(runs, ["OPS-RETRY:1"]);
-  assert.equal(orchestrator.runtime.retrying.size, 1);
+  assert.equal(orchestrator.runtime.retrying.size, 0);
 });
 
 test("HTTP extension serves state, issue details, refresh trigger, and JSON errors", async () => {
@@ -588,7 +547,7 @@ test("HTTP extension serves state, issue details, refresh trigger, and JSON erro
       counts: { running: 1, retrying: 0 },
       running: [{ issue_identifier: "OPS-1" }],
       retrying: [],
-      codex_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0 },
+      dispatch_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0 },
       rate_limits: null,
     }),
     issueDetails: (identifier) => (identifier === "OPS-1" ? { issue_identifier: "OPS-1", status: "running" } : null),

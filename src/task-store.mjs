@@ -171,11 +171,44 @@ export const DEFAULT_LOCAL_CONFIG_V2 = {
     models_by_provider: {},
     efforts_by_provider: {},
   },
+  // Server/dispatch mode (`maestro serve`). The server runs the SAME
+  // workflow.json LangGraph engine the CLI/TUI use — this block only holds the
+  // Linear-polling + concurrency settings. The Linear API key is NOT stored
+  // here; it is read from the LINEAR_API_KEY env / secrets.local.json.
+  dispatch: {
+    enabled: false,
+    tracker: {
+      kind: "linear",
+      endpoint: "https://api.linear.app/graphql",
+      project_slug: null,
+      active_states: ["Todo", "In Progress"],
+      terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+      done_state: null,    // null = don't write issue state back (humans do)
+      blocked_state: null, // optional target state for waiting/blocked tasks
+    },
+    polling: { interval_ms: 30_000 },
+    // Safe default: one task at a time in the server's cwd. Raise this together
+    // with worktree_mode ("new-project") so concurrent issues stay isolated.
+    max_concurrent: 1,
+    max_concurrent_by_state: {},
+    max_retry_backoff_ms: 300_000,
+    worktree_mode: "current-cwd", // or "new-project" for per-issue worktree isolation
+    prompt_template: null, // null = seed task from issue title + description
+    server: { port: null },
+  },
 };
 
 
 function nowIso(clock) {
   return clock().toISOString();
+}
+
+// Build an Error whose .message reads "code: detail" and whose .code is set, so
+// the top-level CLI handler can print it as a clean one-liner.
+function typedError(code, detail = code) {
+  const error = new Error(`${code}: ${detail}`);
+  error.code = code;
+  return error;
 }
 
 async function pathExists(filePath) {
@@ -663,7 +696,15 @@ export class LocalTaskStore {
   }
 
   async readTask(id) {
-    const text = await fs.readFile(this.taskPath(id), "utf8");
+    let text;
+    try {
+      text = await fs.readFile(this.taskPath(id), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        throw typedError("task_not_found", `${id} — run \`maestro status\` to list tasks`);
+      }
+      throw error;
+    }
     return JSON.parse(text);
   }
 
@@ -678,7 +719,15 @@ export class LocalTaskStore {
   }
 
   async readProject(id) {
-    const text = await fs.readFile(this.projectPath(id), "utf8");
+    let text;
+    try {
+      text = await fs.readFile(this.projectPath(id), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        throw typedError("project_not_found", `${id} — run \`maestro project status\` to list projects`);
+      }
+      throw error;
+    }
     return JSON.parse(text);
   }
 

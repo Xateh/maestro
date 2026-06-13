@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 
 import { nullLogger } from "./logger.mjs";
-import { renderPrompt } from "./workflow.mjs";
 
 function codexError(code, message = code, cause = null) {
   const error = new Error(`${code}: ${message}`);
@@ -288,111 +287,5 @@ export class CodexAppServerClient {
       // Already gone.
     }
     this.child = null;
-  }
-}
-
-export class CodexAgentRunner {
-  constructor({
-    workflowStore,
-    workspaceManager,
-    tracker,
-    clientFactory = null,
-    logger = nullLogger(),
-  }) {
-    this.workflowStore = workflowStore;
-    this.workspaceManager = workspaceManager;
-    this.tracker = tracker;
-    this.clientFactory = clientFactory;
-    this.logger = logger;
-    this.activeClients = new Map();
-  }
-
-  makeClient({ command, workspacePath, readTimeoutMs, turnTimeoutMs, onEvent }) {
-    if (this.clientFactory) {
-      return this.clientFactory({ command, workspacePath, readTimeoutMs, turnTimeoutMs, onEvent });
-    }
-    return new CodexAppServerClient({
-      command,
-      cwd: workspacePath,
-      readTimeoutMs,
-      turnTimeoutMs,
-      logger: this.logger,
-      onEvent,
-    });
-  }
-
-  async run({ issue, attempt = 1, onActivity = null }) {
-    const { workflow, config } = this.workflowStore.current;
-    const workspace = await this.workspaceManager.createForIssue(issue.identifier);
-    await this.workspaceManager.runBeforeRun(workspace.path);
-
-    const client = this.makeClient({
-      command: config.codex.command,
-      workspacePath: workspace.path,
-      readTimeoutMs: config.codex.readTimeoutMs,
-      turnTimeoutMs: config.codex.turnTimeoutMs,
-      onEvent: (event) => {
-        this.logger.info("codex_event", {
-          issue_identifier: issue.identifier,
-          event: event.event,
-          turn_id: event.turnId,
-          thread_id: event.threadId,
-        });
-        // Refresh stall-detection timestamp on every agent event so the
-        // orchestrator measures idle time, not wall-clock-since-dispatch (R2).
-        if (onActivity) onActivity();
-      },
-    });
-    this.activeClients.set(issue.id, client);
-
-    try {
-      const prompt = await renderPrompt(workflow.promptTemplate, {
-        issue,
-        attempt,
-      });
-      const session = await client.startSession({
-        approvalPolicy: config.codex.approvalPolicy,
-        threadSandbox: config.codex.threadSandbox,
-        turnSandboxPolicy: config.codex.turnSandboxPolicy,
-      });
-
-      let turns = 0;
-      let lastTurn = null;
-      let nextPrompt = prompt;
-      while (turns < config.agent.maxTurns) {
-        turns += 1;
-        lastTurn = await client.runTurn({
-          threadId: session.threadId,
-          prompt: nextPrompt,
-          approvalPolicy: config.codex.approvalPolicy,
-          turnSandboxPolicy: config.codex.turnSandboxPolicy,
-        });
-        const latest = (await this.tracker.fetchIssueStatesByIds([issue.id]))[0] ?? issue;
-        const state = String(latest.state ?? "").toLowerCase();
-        const activeStates = config.tracker.activeStates.map((item) => item.toLowerCase());
-        if (!activeStates.includes(state)) break;
-        nextPrompt = `Continue working on ${issue.identifier}. Inspect current repository state before changing files.`;
-      }
-
-      await this.workspaceManager.runAfterRun(workspace.path);
-      return {
-        status: "succeeded",
-        turns,
-        lastTurn,
-        workspacePath: workspace.path,
-        metrics: client.metricSnapshot(),
-      };
-    } finally {
-      this.activeClients.delete(issue.id);
-      await client.stop();
-    }
-  }
-
-  cancel(issueId) {
-    const client = this.activeClients.get(issueId);
-    if (!client) return false;
-    void client.stop();
-    this.activeClients.delete(issueId);
-    return true;
   }
 }

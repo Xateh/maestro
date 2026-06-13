@@ -1,13 +1,10 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { LOCAL_COMMAND_NAMES } from "./registry.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
 
 const LOCAL_COMMANDS = new Set(LOCAL_COMMAND_NAMES);
-// This file lives in src/cli/, two levels below the package root.
-export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 function hasStateDir(args) {
   return args.includes("--state-dir");
@@ -36,14 +33,18 @@ export function resolveWorkspaceLocalInvocation({
 } = {}) {
   const callerCwd = env.MAESTRO_CALLER_CWD || env.INIT_CWD || processCwd;
   const nextArgs = [...args];
+  let stateDirMissing = false;
   if (LOCAL_COMMANDS.has(nextArgs[0]) && !hasStateDir(nextArgs) && !CALLER_STATE_DIR_COMMANDS.has(nextArgs[0])) {
-    // Prefer an initialized .maestro/ in (or above) the caller's directory;
-    // fall back to the package checkout's state dir (historical default).
+    // Prefer an initialized .maestro/ in (or above) the caller's directory.
+    // When none exists, resolve to the caller's own .maestro/ (never the package
+    // checkout) and flag it so main() can print a friendly "run init" message.
     const discovered = findStateDirUpwards(callerCwd, exists);
-    nextArgs.push("--state-dir", discovered ?? path.join(PACKAGE_ROOT, DEFAULT_LOCAL_STATE_DIR));
+    stateDirMissing = discovered === null;
+    nextArgs.push("--state-dir", discovered ?? path.join(callerCwd, DEFAULT_LOCAL_STATE_DIR));
   }
   return {
     args: nextArgs,
     cwd: callerCwd,
+    stateDirMissing,
   };
 }

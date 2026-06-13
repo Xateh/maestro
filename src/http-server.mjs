@@ -212,7 +212,7 @@ function buildDashboardHtml(snapshot) {
     document.getElementById('cnt-running').textContent   = c.running   ?? 0;
     document.getElementById('cnt-retrying').textContent  = c.retrying  ?? 0;
     document.getElementById('cnt-completed').textContent = c.completed ?? 0;
-    const tot = s.codex_totals ?? {};
+    const tot = s.dispatch_totals ?? {};
     document.getElementById('cnt-tokens').textContent = (tot.total_tokens  ?? 0).toLocaleString();
     document.getElementById('cnt-input').textContent  = (tot.input_tokens  ?? 0).toLocaleString();
     document.getElementById('cnt-output').textContent = (tot.output_tokens ?? 0).toLocaleString();

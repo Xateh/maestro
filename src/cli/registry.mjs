@@ -12,7 +12,6 @@ export const COMMAND_TREE = {
   synopsis: "maestro <command> [args]",
   flags: [
     STATE_DIR_FLAG,
-    { flag: "--workflow-path <path>", desc: "workflow file (server mode)" },
     { flag: "--port <n>", desc: "HTTP port (server mode)" },
   ],
   subcommands: [
@@ -295,11 +294,11 @@ export const COMMAND_TREE = {
     {
       name: "serve",
       kind: "server",
-      synopsis: "maestro serve [WORKFLOW.md]",
-      summary: "server mode: poll Linear, auto-dispatch issues",
+      synopsis: "maestro serve [--port <n>] [--state-dir <path>]",
+      summary: "server mode: poll Linear, dispatch issues through the workflow.json engine",
       flags: [
-        { flag: "--port <n>", desc: "HTTP port" },
-        { flag: "--workflow-path <path>", desc: "workflow file" },
+        { flag: "--port <n>", desc: "HTTP dashboard port (overrides dispatch.server.port)" },
+        STATE_DIR_FLAG,
       ],
     },
   ],
@@ -435,9 +434,8 @@ function commandTokens(args) {
   return tokens;
 }
 
-// Pure routing decision for main(). `fileExists` is injected so the routing
-// stays testable without touching the filesystem.
-export function routeCli(rawArgs = [], { fileExists = () => false } = {}) {
+// Pure routing decision for main().
+export function routeCli(rawArgs = []) {
   const dashIndex = rawArgs.indexOf("--");
   const preDashDash = dashIndex === -1 ? rawArgs : rawArgs.slice(0, dashIndex);
   const first = rawArgs[0];
@@ -462,11 +460,14 @@ export function routeCli(rawArgs = [], { fileExists = () => false } = {}) {
   if (LOCAL_COMMAND_SET.has(first)) {
     return { kind: "local" };
   }
-  if (first === undefined || first.startsWith("-")) {
-    return { kind: "server" };
+  // Bare `maestro` (no args at all) → global help, git-style, never a server
+  // crash. Explicit server flags (e.g. --port) still route to
+  // server mode.
+  if (first === undefined) {
+    return { kind: "help", text: formatHelp([COMMAND_TREE]), exitCode: 0 };
   }
-  if (first.endsWith(".md") && fileExists(first)) {
-    return { kind: "server-deprecated", workflowPath: first };
+  if (first.startsWith("-")) {
+    return { kind: "server" };
   }
   return { kind: "error", text: usageError([first]).cliHelp, exitCode: 1 };
 }

@@ -108,11 +108,11 @@ Sensitive keys are **redacted** before returning: anything matching
 
 ### `maestro_read_workflow`
 
-Returns the current `workflow.json` and the optional `WORKFLOW.md` content.
+Returns the current `workflow.json`.
 
 **Input** — none
 
-**Output** `{ workflow: object, workflowMd: string|null }`
+**Output** `{ workflow_json: object }`
 
 ---
 

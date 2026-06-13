@@ -1,21 +1,17 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { StructuredLogger } from "../logger.mjs";
 import { loadLocalSecrets } from "../setup/keys.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
-import { parseCliArgs } from "../workflow.mjs";
 
 import { runLocalMaestroCommand } from "./local-command.mjs";
 import { routeCli } from "./registry.mjs";
-import { startMaestro } from "./runtime.mjs";
+import { parseServeArgs, startMaestro } from "./runtime.mjs";
 import { resolveWorkspaceLocalInvocation } from "./workspace-resolve.mjs";
 
 export async function main() {
   const rawArgs = process.argv.slice(2);
-  const route = routeCli(rawArgs, {
-    fileExists: (candidate) => existsSync(path.resolve(process.cwd(), candidate)),
-  });
+  const route = routeCli(rawArgs);
   if (route.kind === "help") {
     process.stdout.write(route.text);
     return;
@@ -27,23 +23,28 @@ export async function main() {
   }
   if (route.kind === "local") {
     const invocation = resolveWorkspaceLocalInvocation({ args: rawArgs });
+    if (invocation.stateDirMissing) {
+      process.stderr.write(
+        "maestro: no .maestro/ found here — run `maestro init` (or pass --state-dir <path>)\n",
+      );
+      process.exitCode = 1;
+      return;
+    }
     await runLocalMaestroCommand(invocation);
     return;
   }
-  if (route.kind === "server-deprecated") {
-    process.stderr.write(`note: "maestro <file.md>" is deprecated; use: maestro serve ${route.workflowPath}\n`);
-  }
-  const serverArgv = route.kind === "serve"
-    ? [process.argv[0], process.argv[1], ...route.serverArgs]
-    : process.argv;
-  const args = parseCliArgs(serverArgv);
+
+  // Server mode: `maestro serve [...]` or bare server flags (e.g. `--port`).
+  const serverArgs = route.kind === "serve" ? route.serverArgs : rawArgs;
+  const { port, stateDir } = parseServeArgs(serverArgs);
+  const resolvedStateDir = path.resolve(process.cwd(), stateDir ?? DEFAULT_LOCAL_STATE_DIR);
   const logger = new StructuredLogger();
   try {
-    await loadLocalSecrets(path.resolve(process.cwd(), DEFAULT_LOCAL_STATE_DIR));
+    await loadLocalSecrets(resolvedStateDir);
   } catch (error) {
     logger.error("secrets_load_failed", { error: error.message });
   }
-  const service = await startMaestro({ ...args, logger });
+  const service = await startMaestro({ stateDir: resolvedStateDir, port, logger });
   const shutdown = async () => {
     await service.stop();
     process.exit(0);
