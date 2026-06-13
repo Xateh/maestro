@@ -556,8 +556,29 @@ export async function runLocalMaestroCommand({
     const parsed = parseSharedStateArgs(args, cwd);
     const [action, ...rest] = parsed.positional;
     if (action === "keys") {
-      warnFlags(findUnknownFlags(rest, new Set(["--var"])), "setup keys", stderr);
-      await runKeysWizard({ stateDir: parsed.stateDir, args: rest, stdin, stdout });
+      warnFlags(findUnknownFlags(rest, new Set(["--var", "--encrypt"])), "setup keys", stderr);
+      await runKeysWizard({ stateDir: parsed.stateDir, args: rest, env: process.env, stdin, stdout });
+      return {};
+    }
+    if (action === "harden") {
+      warnFlags(
+        findUnknownFlags(rest, new Set(["--dry-run", "--global", "--project"])),
+        "setup harden",
+        stderr,
+      );
+      const { applyHarden, defaultGuardScriptPath } = await import("../setup/harden.mjs");
+      const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+      const scope = rest.includes("--project") ? "project" : "global";
+      const settingsPath =
+        scope === "project"
+          ? path.resolve(cwd, ".claude/settings.json")
+          : path.join(home, ".claude", "settings.json");
+      if (rest.includes("--dry-run")) {
+        writeLine(stdout, `would harden ${settingsPath} (guard: ${defaultGuardScriptPath()})`);
+        return {};
+      }
+      const res = await applyHarden({ settingsPath });
+      writeLine(stdout, `hardened ${res.settingsPath} — maestro secret guard installed`);
       return {};
     }
     if (action === "local") {

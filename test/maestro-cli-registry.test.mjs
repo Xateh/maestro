@@ -71,7 +71,7 @@ test("usageError carries cli_usage code and scoped help", () => {
   assert.match(typo.cliHelp, /Usage: maestro project <subcommand>/);
 
   const missing = usageError(["setup", undefined]);
-  assert.match(missing.cliHelp, /missing subcommand \(expected: keys \| local \| import\)/);
+  assert.match(missing.cliHelp, /missing subcommand \(expected: keys \| harden \| local \| import\)/);
 });
 
 test("routeCli matrix", () => {
