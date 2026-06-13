@@ -27,7 +27,7 @@ model="\${2:-}"
 prompt="$(cat)"
 echo "stub-model=\${model}"
 echo "stub-prompt-bytes=\${#prompt}"
-if printf '%s' "\${prompt}" | grep -q "OCR agent"; then
+if printf '%s' "\${prompt}" | grep -q "Read the image below"; then
   echo "MAESTRO LOCAL LLM RECEIPT #042"
   echo "TOTAL: 13.37"
 fi
