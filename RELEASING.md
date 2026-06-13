@@ -1,7 +1,7 @@
 # Releasing
 
-How to publish `maestro-orchestrator` to npm. Manual process — there is no
-publish CI on purpose.
+How to release `maestro-orchestrator`. GitHub Releases are automated from
+tags; **npm publish stays manual on purpose** — there is no publish CI.
 
 > **⚠️ Read before every publish:** the GitHub repository is currently
 > **private**. `npm publish` puts the full source (everything in `bin/` and
@@ -45,11 +45,19 @@ publish CI on purpose.
    npm publish --access public
    ```
 
-7. **Tag and release:**
+7. **Tag to cut the GitHub Release:**
 
    ```bash
-   git tag vX.Y.Z
-   git push --tags
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
    ```
 
-   Create the GitHub release from the new changelog section.
+   Pushing a `v*` tag triggers `.github/workflows/release.yml`, which
+   lints, tests, verifies the tag matches `package.json`'s version, packs
+   the tarball, and creates a GitHub Release with the matching
+   `## [x.y.z]` section of `CHANGELOG.md` as notes and the
+   `maestro-orchestrator-x.y.z.tgz` tarball attached.
+
+   The workflow never publishes to npm — step 6 remains a deliberate,
+   manual decision because the repository is private and publishing
+   exposes the source.
