@@ -90,10 +90,9 @@ async function ocrAgent(imageArg) {
     process.exit(1);
   }
   const prompt = [
-    "You are an OCR agent.",
-    "Transcribe ALL text visible in the image below, preserving line breaks and reading order.",
-    "Respond with the transcribed text only — no commentary, no markdown fences.",
-    "If the image contains no text, respond exactly with: NO TEXT FOUND",
+    "Read the image below and write out the text you see in it.",
+    "Keep the original line breaks and reading order.",
+    "Give just the text, with no extra commentary or markdown fences.",
     "",
     imagePath,
   ].join("\n");
