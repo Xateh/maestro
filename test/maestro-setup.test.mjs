@@ -35,10 +35,13 @@ import { parseTomlSubset } from "../src/setup/scanners/codex.mjs";
 import { parseFrontmatter } from "../src/setup/scanners/frontmatter.mjs";
 import { parseOllamaList } from "../src/setup/scanners/local-agents.mjs";
 import {
+  encryptedSecretsPath,
   loadLocalSecrets,
   readLocalSecrets,
   resolveProviderEnv,
+  runKeysWizard,
   secretsPath,
+  writeEncryptedSecrets,
   writeLocalSecrets,
 } from "../src/setup/keys.mjs";
 import { DEFAULT_PROVIDERS, DEFAULT_WORKFLOW, LocalTaskStore } from "../src/task-store.mjs";
@@ -949,4 +952,48 @@ test("formatDoctorReport renders pass/fail/skip glyph lines", async () => {
   assert.match(report, /✗ config\.json/);
   assert.match(report, /– herdr/);
   assert.match(report, /problems found/);
+});
+
+test("encrypted secrets write+load round-trip via passphrase env", async () => {
+  await withTempDir(async (dir) => {
+    await writeEncryptedSecrets(dir, { LINEAR_API_KEY: "lin_secret" }, "pw");
+    const enc = JSON.parse(await readFile(encryptedSecretsPath(dir), "utf8"));
+    assert.ok(!JSON.stringify(enc).includes("lin_secret")); // ciphertext only
+    const env = {};
+    const applied = await loadLocalSecrets(dir, env, {
+      passphraseEnv: { MAESTRO_SECRET_PASSPHRASE: "pw" },
+    });
+    assert.deepEqual(applied, ["LINEAR_API_KEY"]);
+    assert.equal(env.LINEAR_API_KEY, "lin_secret");
+  });
+});
+
+test("encrypted store: real env still wins over stored value", async () => {
+  await withTempDir(async (dir) => {
+    await writeEncryptedSecrets(dir, { LINEAR_API_KEY: "stored" }, "pw");
+    const env = { LINEAR_API_KEY: "real" };
+    const applied = await loadLocalSecrets(dir, env, {
+      passphraseEnv: { MAESTRO_SECRET_PASSPHRASE: "pw" },
+    });
+    assert.deepEqual(applied, []);
+    assert.equal(env.LINEAR_API_KEY, "real");
+  });
+});
+
+test("setup keys --encrypt migrates plaintext store and shreds it", async () => {
+  await withTempDir(async (dir) => {
+    await writeLocalSecrets(dir, { LINEAR_API_KEY: "lin_secret" });
+    const out = [];
+    await runKeysWizard({
+      stateDir: dir,
+      args: ["--encrypt"],
+      env: { MAESTRO_SECRET_PASSPHRASE: "pw" },
+      stdout: { write: (s) => out.push(s) },
+    });
+    await assert.rejects(() => stat(secretsPath(dir)), /ENOENT/);
+    const env = {};
+    await loadLocalSecrets(dir, env, { passphraseEnv: { MAESTRO_SECRET_PASSPHRASE: "pw" } });
+    assert.equal(env.LINEAR_API_KEY, "lin_secret");
+    assert.ok(out.join("").includes("encrypted"));
+  });
 });
