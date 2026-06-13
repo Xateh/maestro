@@ -74,7 +74,7 @@ test("makeRoleNode: emits question event when agent stdout contains MAESTRO_QUES
   try {
     db            = new SqliteTaskStore(path.join(dir, "maestro.db"));
     const taskId  = "20260608-000001-test-question";
-    db.createTask({ id: taskId, status: "running", prompt: "do the thing", cwd: dir, mode: "task", run_dir: null });
+    await db.createTask({ id: taskId, status: "running", prompt: "do the thing", cwd: dir, mode: "task", run_dir: null });
 
     const stubRunner = {
       runStep: async () => ({
@@ -95,7 +95,7 @@ test("makeRoleNode: emits question event when agent stdout contains MAESTRO_QUES
     assert.equal(result.event,        "question");
     assert.equal(result.currentState, "executor");
 
-    const saved = db.getTask(taskId);
+    const saved = await db.getTask(taskId);
     assert.equal(saved.status, "waiting_user");
     assert.ok(saved.active_question?.question, "active_question should be set in DB");
     assert.match(String(saved.active_question.question), /framework/);
@@ -114,7 +114,7 @@ test("makeRoleNode: emits waiting event when agent stdout contains MAESTRO_ACTIO
   try {
     db            = new SqliteTaskStore(path.join(dir, "maestro.db"));
     const taskId  = "20260608-000002-test-action";
-    db.createTask({ id: taskId, status: "running", prompt: "build it", cwd: dir, mode: "task", run_dir: null });
+    await db.createTask({ id: taskId, status: "running", prompt: "build it", cwd: dir, mode: "task", run_dir: null });
 
     const actionReq = { provider: "host", command: "make", args: ["build"], cwd: dir };
     const stubRunner = {
@@ -136,7 +136,7 @@ test("makeRoleNode: emits waiting event when agent stdout contains MAESTRO_ACTIO
     assert.equal(result.event,        "waiting");
     assert.equal(result.currentState, "executor");
 
-    const saved = db.getTask(taskId);
+    const saved = await db.getTask(taskId);
     assert.equal(saved.status, "waiting_approval");
     assert.ok(Array.isArray(saved.action_requests) && saved.action_requests.length > 0,
       "action_requests should be recorded in DB");
@@ -157,7 +157,7 @@ test("makeRoleNode: returns done and records handoff when agent emits MAESTRO_HA
     db            = new SqliteTaskStore(path.join(dir, "maestro.db"));
     const taskId  = "20260608-000003-test-handoff";
     // planner_policy: "on" forces the planner to run (auto-mode would skip for a simple prompt)
-    db.createTask({ id: taskId, status: "running", prompt: "add logging", cwd: dir, mode: "task", run_dir: null, planner_policy: "on" });
+    await db.createTask({ id: taskId, status: "running", prompt: "add logging", cwd: dir, mode: "task", run_dir: null, planner_policy: "on" });
 
     const handoffPayload = { plan_summary: "add logging to the server", steps: ["edit server.js"], files_to_touch: ["server.js"] };
     const stubRunner = {
@@ -182,7 +182,7 @@ test("makeRoleNode: returns done and records handoff when agent emits MAESTRO_HA
       "priorHandoffs should be populated after handoff");
     assert.equal(result.priorHandoffs[0].role, "planner");
 
-    const handoffs = db.getHandoffs(taskId);
+    const handoffs = await db.getHandoffs(taskId);
     assert.equal(handoffs.length, 1);
     assert.equal(handoffs[0].role, "planner");
     assert.deepEqual(handoffs[0].payload, handoffPayload);
@@ -301,13 +301,13 @@ async function runLoopGraph({ workflow = LOOP_WORKFLOW, runner, resumeCompletedR
   const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
   try {
     const taskId = "20260611-000001-loop-test";
-    db.createTask({ id: taskId, status: "running", prompt: "loop it", cwd: dir, mode: "task", run_dir: null });
+    await db.createTask({ id: taskId, status: "running", prompt: "loop it", cwd: dir, mode: "task", run_dir: null });
     const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, resumeCompletedRoles });
     const finalState = await graph.invoke(
-      { task: db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
+      { task: await db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
       { configurable: { thread_id: taskId }, recursionLimit: 50 },
     );
-    return { finalState, finalTask: db.getTask(taskId) };
+    return { finalState, finalTask: await db.getTask(taskId) };
   } finally {
     db.close();
     await rm(dir, { recursive: true, force: true });
@@ -406,7 +406,7 @@ test("standalone mode entry: imported role runs alone, default pipeline untouche
   const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
   try {
     const taskId = "20260612-000002-standalone";
-    db.createTask({ id: taskId, status: "running", prompt: "evaluate", cwd: dir, mode: "system_evaluator", run_dir: null });
+    await db.createTask({ id: taskId, status: "running", prompt: "evaluate", cwd: dir, mode: "system_evaluator", run_dir: null });
     const calls = [];
     const runner = {
       runStep: async ({ role, prompt }) => {
@@ -417,7 +417,7 @@ test("standalone mode entry: imported role runs alone, default pipeline untouche
     // graph must compile even though planner/executor/reviewer are not on this run's path
     const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, entry: "system_evaluator" });
     const final = await graph.invoke(
-      { task: db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
+      { task: await db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
       { configurable: { thread_id: taskId }, recursionLimit: 50 },
     );
     assert.equal(final.event, "done");

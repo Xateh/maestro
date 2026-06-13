@@ -5,6 +5,7 @@
 // here) and starts the CLI when invoked directly.
 
 import "../src/suppress-sqlite-warning.mjs";
+import "../src/telemetry.mjs";
 
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
