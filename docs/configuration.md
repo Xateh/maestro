@@ -178,6 +178,38 @@ files reference them as `"$VAR"` strings (e.g. `tracker.api_key:
 "$LINEAR_API_KEY"`, `providers.<p>.env`). The MCP server redacts
 secret-shaped values (`*_key`, `*_token`, `*_secret`, …) on read.
 
+#### Encrypted store (recommended)
+
+Run `maestro setup keys --encrypt` to migrate the plaintext store to an
+encrypted one at `.maestro/secrets.local.enc.json` (scrypt + AES-256-GCM, no
+new dependencies). The plaintext `secrets.local.json` is shredded after a
+successful migration; once encrypted, every subsequent `setup keys` write stays
+encrypted.
+
+The unlock passphrase lives in a **different trust domain than the ciphertext**
+(that is the whole point of encryption at rest): resolution order is
+
+1. `MAESTRO_SECRET_PASSPHRASE` in the environment (unattended runs, `serve`), then
+2. *(future)* OS keyring, then
+3. an interactive muted prompt when a TTY is attached.
+
+At startup, if an encrypted store exists but no passphrase is available,
+secrets are simply left unloaded (no error, no prompt) — commands that don't
+need them run normally. A wrong passphrase or a tampered/malformed store is a
+loud failure. `maestro doctor` reports the store mode (`encrypted` / `plaintext`)
+without printing or prompting for anything.
+
+#### Agent guardrail — `maestro setup harden`
+
+`maestro setup harden` installs a Claude Code guardrail into
+`~/.claude/settings.json` (use `--project` for the cwd's `.claude/settings.json`):
+a `PreToolUse` Bash hook (backed by `scripts/secret-guard.mjs`) plus `deny`
+rules that block any non-`maestro` command from reading or decrypting the secret
+store. Commands unrelated to the store are untouched. Scope note: this hook only
+constrains Claude Code — the **encryption above is the cross-process guarantee**;
+the hook is defense-in-depth against the agent that drives maestro. Use
+`--dry-run` to preview the target path.
+
 ### Planner Policy
 
 | Value | Behaviour |
