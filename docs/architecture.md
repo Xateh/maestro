@@ -121,7 +121,7 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
 | `src/linear-tracker.mjs` | `LinearTrackerClient`, `normalizeLinearIssue()` | GraphQL Linear issue fetcher for server mode. |
 | `src/logger.mjs` | `StructuredLogger`, `nullLogger` | Structured JSON logger. |
 | `src/tui.mjs` + `src/tui-*.mjs` | `runMaestroTui()` | Full interactive terminal UI. Provider/model/effort pickers, workflow editor, task browser. |
-| `src/mcp/server.mjs` | — | MCP stdio server (7 tools). See [mcp.md](mcp.md). |
+| `src/mcp/server.mjs` | — | MCP stdio server (8 tools). See [mcp.md](mcp.md). |
 
 ---
 

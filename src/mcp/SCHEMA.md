@@ -9,7 +9,7 @@ Registration: `.mcp.json` → key `maestro`
 ---
 
 ## `maestro_list_tasks`
-List tasks, sorted newest-first. **DB-aware**: reads from `.maestro/maestro.db` if it exists (LangGraph engine tasks), falls back to `.maestro/tasks/*.json` for legacy tasks.
+List tasks, sorted newest-first. **DB-aware**: reads from the task store (SQLite `.maestro/maestro.db` by default, or PostgreSQL when `DATABASE_URL` is set) for LangGraph engine tasks, falls back to `.maestro/tasks/*.json` for legacy tasks.
 
 **Input**
 | Field | Type | Default | Description |
@@ -24,7 +24,7 @@ List tasks, sorted newest-first. **DB-aware**: reads from `.maestro/maestro.db` 
 
 ## `maestro_show_task`
 Full details for one task: task JSON + per-role handoffs + stdout log tails (last 8 KB each).
-**DB-aware**: reads from SQLite DB first (LangGraph tasks), falls back to JSON file.
+**DB-aware**: reads from the task store (SQLite or PostgreSQL) first for LangGraph tasks, falls back to JSON file for legacy tasks.
 
 **Input** `{ id: string }` — required. ID must match `^[0-9A-Za-z][0-9A-Za-z._-]*$`; no slashes or `..`. Throws `invalid_id` otherwise.
 
@@ -76,7 +76,7 @@ Runtime state snapshot. Tries `GET http://localhost:{port}/api/v1/state` first (
 - HTTP mode: `{ source: "http", state: object }`
 - Files mode: `{ source: "files", config, workflow, live_tasks?: { running: Array<{id,status,current_state,active_step,prompt,updated_at}>, recent: Array<{id,status,prompt,updated_at}> } }`
 
-`live_tasks` is populated only when `.maestro/maestro.db` exists. `running` shows up to 10 currently-running tasks with active step details.
+`live_tasks` is populated when the task store is available (`.maestro/maestro.db` exists, or `DATABASE_URL` is set for PostgreSQL). `running` shows up to 10 currently-running tasks with active step details.
 
 **Security:** `config` is redacted before return — any key matching `*_key`, `*_token`, `*_secret`, `api_key`, `apikey`, `password`, or `passwd` has its value replaced with `"[redacted]"`.
 

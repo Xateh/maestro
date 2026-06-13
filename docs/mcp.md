@@ -1,6 +1,6 @@
 # Maestro MCP Server
 
-Maestro exposes seven tools via the [Model Context Protocol](https://modelcontextprotocol.io)
+Maestro exposes eight tools via the [Model Context Protocol](https://modelcontextprotocol.io)
 stdio transport. Any MCP-compatible agent (Claude, Cursor, etc.) can use these to read Maestro
 state and create tasks without shell access.
 
@@ -28,8 +28,9 @@ the `MAESTRO_ROOT` env var.
 
 ### `maestro_list_tasks`
 
-List tasks, sorted newest-first. DB-aware: reads SQLite (`maestro.db`) for LangGraph tasks,
-falls back to `tasks/*.json` for legacy tasks.
+List tasks, sorted newest-first. DB-aware: reads from the task store (SQLite
+`maestro.db` by default, or PostgreSQL when `DATABASE_URL` is set) for
+LangGraph engine tasks, then falls back to `tasks/*.json` for legacy tasks.
 
 **Input**
 
@@ -94,7 +95,7 @@ Spawn a new task. Launches `bin/maestro.mjs <mode> "<prompt>"` as a background p
 ### `maestro_get_state`
 
 Runtime state snapshot. Tries `GET http://localhost:{port}/api/v1/state` first, falls back to
-reading `config.json` + `workflow.json` + SQLite.
+reading `config.json` + `workflow.json` + the task store (SQLite or PostgreSQL).
 
 Sensitive keys are **redacted** before returning: anything matching
 `*_key / *_token / *_secret / api_key / apikey / password / passwd`.
@@ -112,6 +113,22 @@ Returns the current `workflow.json` and the optional `WORKFLOW.md` content.
 **Input** — none
 
 **Output** `{ workflow: object, workflowMd: string|null }`
+
+---
+
+### `maestro_validate_workflow`
+
+Validate `.maestro/workflow.json`: structural errors (bad initial state,
+dangling transitions, invalid modes, bad `max_visits`/`loop_limits`) and
+warnings (unreachable roles, unknown providers, cycles without termination
+clauses — each warning includes the recommended fix). Read-only; never mutates
+anything.
+
+**Input** — none
+
+**Output** `{ ok: boolean, errors: Array<{code, message}>, warnings: Array<{code, message}> }`
+- Returns `{ ok: false, errors: [{code: "missing_workflow", ...}] }` when no
+  readable `workflow.json` exists.
 
 ---
 
