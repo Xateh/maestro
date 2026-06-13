@@ -64,8 +64,8 @@ export async function resolveAgentRunner(timeoutMs, {
   // tabStore persists herdr tab ids across runner instances so resumed tasks
   // reuse their tab (conversation trail) instead of opening a new one.
   const tabStore = db ? {
-    get: (taskId) => db.getTask(taskId)?.herdr_tab_id ?? null,
-    set: (taskId, tabId) => { db.updateTask(taskId, { herdr_tab_id: tabId }); },
+    get: async (taskId) => (await db.getTask(taskId))?.herdr_tab_id ?? null,
+    set: async (taskId, tabId) => { await db.updateTask(taskId, { herdr_tab_id: tabId }); },
   } : null;
   return new HerdrAgentRunner({ timeoutMs, tabStore });
 }
@@ -121,7 +121,7 @@ async function _applyReviewerOutcome(db, taskId, review, ops) {
     const maxContinuations = review.max_continuations ?? REVIEW_MAX_CONTINUATIONS;
     if (continuationPrompt && attempts < maxContinuations) {
       const continuedReview = { ...review, continuation_attempts: attempts + 1, max_continuations: maxContinuations };
-      const updated = db.updateTask(taskId, {
+      const updated = await db.updateTask(taskId, {
         ...basePatch,
         status: "queued",
         review: continuedReview,
@@ -134,9 +134,9 @@ async function _applyReviewerOutcome(db, taskId, review, ops) {
       ...review,
       summary: review.summary || "Continuation budget exhausted or reviewer did not provide a continuation prompt.",
     };
-    const task = db.getTask(taskId);
+    const task = await db.getTask(taskId);
     const exhaustedBlockers = [{ code: "continuation_exhausted", summary: exhausted.summary }, ...(task.blockers ?? [])];
-    const updated = db.updateTask(taskId, {
+    const updated = await db.updateTask(taskId, {
       ...basePatch,
       status: "waiting_user",
       review: exhausted,
@@ -154,12 +154,12 @@ async function _applyReviewerOutcome(db, taskId, review, ops) {
 
   // ── incomplete_needs_user ─────────────────────────────────────────────────
   if (review.status === "reviewed" && review.completion_state === "incomplete_needs_user") {
-    const task = db.getTask(taskId);
+    const task = await db.getTask(taskId);
     const question = review.required_user_input?.question || review.summary || "Reviewer needs user input.";
     const questionId = `q${(task.question_answers ?? []).length + 1}`;
     const reviewerProvider = (task.steps ?? []).findLast?.((s) => s.role === "reviewer")?.provider ?? null;
     const activeQuestion = { id: questionId, role: "reviewer", provider: reviewerProvider, question, reason: review.required_user_input?.reason ?? null };
-    const updated = db.updateTask(taskId, {
+    const updated = await db.updateTask(taskId, {
       ...basePatch,
       status: "waiting_user",
       active_question: activeQuestion,
@@ -171,7 +171,7 @@ async function _applyReviewerOutcome(db, taskId, review, ops) {
 
   // ── incomplete_needs_approval ─────────────────────────────────────────────
   if (review.status === "reviewed" && review.completion_state === "incomplete_needs_approval") {
-    const task = db.getTask(taskId);
+    const task = await db.getTask(taskId);
     const reviewRequests = (review.action_requests ?? []).map((r, i) => ({
       ...r,
       id: r.id || `act-${i + 1}`,
@@ -202,7 +202,7 @@ async function _applyReviewerOutcome(db, taskId, review, ops) {
       reason: review.approval_request?.reason || review.summary || "",
       requested_at: new Date().toISOString(),
     } : null;
-    const updated = db.updateTask(taskId, {
+    const updated = await db.updateTask(taskId, {
       ...basePatch,
       status: "waiting_approval",
       active_approval: activeApproval,
@@ -214,8 +214,8 @@ async function _applyReviewerOutcome(db, taskId, review, ops) {
 
   // ── all other states ──────────────────────────────────────────────────────
   const status = _reviewStatusForCompletionState(review);
-  const task = db.getTask(taskId);
-  let updated = db.updateTask(taskId, {
+  const task = await db.getTask(taskId);
+  let updated = await db.updateTask(taskId, {
     ...basePatch,
     status,
     continuation_prompt: null,
@@ -230,7 +230,7 @@ async function _applyReviewerOutcome(db, taskId, review, ops) {
       updated = await finalizeProjectTask(updated);
       if (updated.status === "waiting_user") return updated;
     }
-    updated = db.updateTask(taskId, { status: "succeeded", active_step: null, review });
+    updated = await db.updateTask(taskId, { status: "succeeded", active_step: null, review });
     if (releasePathLeases) await releasePathLeases(updated);
   }
 
@@ -290,8 +290,8 @@ export async function runLangGraphTask(taskId, {
 } = {}) {
   const write = (stream, msg) => { try { stream.write(`${msg}\n`); } catch {} };
 
-  // ── open SQLite store ─────────────────────────────────────────────────────
-  const db = openStore(_dbPath(maestroRoot));
+  // ── open store (SQLite or PostgreSQL based on DATABASE_URL) ─────────────
+  const db = await openStore(_dbPath(maestroRoot));
 
   // ── load or migrate task into DB ──────────────────────────────────────────
   // Re-read from legacy store so CLI-command updates (extend-timeout, message,
@@ -311,14 +311,14 @@ export async function runLangGraphTask(taskId, {
   ];
   const legacyTask = await taskStore.readTask(taskId);
   if (!legacyTask) throw new Error(`task_not_found: ${taskId}`);
-  let task = db.getTask(taskId);
+  let task = await db.getTask(taskId);
   if (!task) {
-    task = db.createTask(legacyTask);
+    task = await db.createTask(legacyTask);
   } else {
     const inputPatch = Object.fromEntries(
       INPUT_SYNC_FIELDS.filter((k) => k in legacyTask).map((k) => [k, legacyTask[k]]),
     );
-    task = db.updateTask(taskId, inputPatch);
+    task = await db.updateTask(taskId, inputPatch);
   }
 
   if (task.run_dir) {
@@ -349,8 +349,8 @@ export async function runLangGraphTask(taskId, {
   // Both handoffs must be removed so those nodes don't skip themselves
   // (priorHandoffs acts as a "completed" set).
   if (task.continuation_prompt) {
-    db.deleteHandoffsByRole(taskId, "executor");
-    db.deleteHandoffsByRole(taskId, "reviewer");
+    await db.deleteHandoffsByRole(taskId, "executor");
+    await db.deleteHandoffsByRole(taskId, "reviewer");
   }
 
   // ── loop-limit recovery: the capped cycle must re-run on resume ──────────
@@ -369,15 +369,15 @@ export async function runLangGraphTask(taskId, {
       for (const cycle of cycles) {
         if (cycle.includes(blocker.role)) for (const role of cycle) cycleRoles.add(role);
       }
-      for (const role of cycleRoles) db.deleteHandoffsByRole(taskId, role);
+      for (const role of cycleRoles) await db.deleteHandoffsByRole(taskId, role);
     }
-    task = db.updateTask(taskId, {
+    task = await db.updateTask(taskId, {
       blockers: (task.blockers ?? []).filter((b) => b.code !== "loop_limit_exceeded"),
     });
   }
 
   // ── load prior handoffs from DB (for resume) ─────────────────────────────
-  const priorHandoffs = db.getHandoffs(taskId);
+  const priorHandoffs = await db.getHandoffs(taskId);
 
   write(stdout, `task ${taskId} engine=langgraph state=${initialState} handoffs=${priorHandoffs.length}`);
 
@@ -412,18 +412,18 @@ export async function runLangGraphTask(taskId, {
     }
   } catch (err) {
     write(stderr, `task ${taskId} langgraph error: ${err.message}`);
-    db.updateTask(taskId, {
+    await db.updateTask(taskId, {
       status: "waiting_user",
       active_step: null,
       blockers: [{ code: "engine_error", message: err.message }],
     });
-    const errTask = db.getTask(taskId);
+    const errTask = await db.getTask(taskId);
     await taskStore.updateTask(taskId, _mirrorPatch(errTask));
     return { task: errTask };
   }
 
   // ── interpret final graph state ───────────────────────────────────────────
-  const endTask = db.getTask(taskId);
+  const endTask = await db.getTask(taskId);
   const endEvent = finalState?.event;
   const endRole = finalState?.currentState;
 
@@ -443,7 +443,7 @@ export async function runLangGraphTask(taskId, {
   if (endEvent === "done" && isTerminalAfterState(workflow, endTask.mode, endRole)) {
     // If review_enabled === false, attach synthetic skipped review
     const reviewSkipped = endTask.review_enabled === false ? skippedReview() : endTask.review;
-    let updated = db.updateTask(taskId, {
+    let updated = await db.updateTask(taskId, {
       status: "succeeded",
       active_step: null,
       review: reviewSkipped ?? null,
@@ -455,18 +455,18 @@ export async function runLangGraphTask(taskId, {
         await taskStore.updateTask(taskId, _mirrorPatch(updated));
         return { task: updated };
       }
-      updated = db.updateTask(taskId, { status: "succeeded", active_step: null });
+      updated = await db.updateTask(taskId, { status: "succeeded", active_step: null });
     }
     if (ops.markProjectTaskStatus) await ops.markProjectTaskStatus(updated, "succeeded", { review: reviewSkipped });
     await _maybeCloseTab(agentRunner, taskId, config, "succeeded");
-    await taskStore.updateTask(taskId, _mirrorPatch(db.getTask(taskId)));
+    await taskStore.updateTask(taskId, _mirrorPatch(await db.getTask(taskId)));
     write(stdout, `task ${taskId} succeeded`);
-    return { task: db.getTask(taskId) };
+    return { task: await db.getTask(taskId) };
   }
 
   // interrupt events (node already updated DB)
   if (["question", "waiting", "error", "needs_review"].includes(endEvent)) {
-    const current = db.getTask(taskId);
+    const current = await db.getTask(taskId);
     await taskStore.updateTask(taskId, _mirrorPatch(current));
     return { task: current };
   }
@@ -474,7 +474,7 @@ export async function runLangGraphTask(taskId, {
   // generic "done" without reviewer (shouldn't normally occur in task mode)
   if (endEvent === "done") {
     const reviewSkipped = endTask.review_enabled === false ? skippedReview() : endTask.review;
-    let updated = db.updateTask(taskId, {
+    let updated = await db.updateTask(taskId, {
       status: "succeeded",
       active_step: null,
       review: reviewSkipped ?? null,
@@ -486,14 +486,14 @@ export async function runLangGraphTask(taskId, {
         await taskStore.updateTask(taskId, _mirrorPatch(updated));
         return { task: updated };
       }
-      updated = db.updateTask(taskId, { status: "succeeded", active_step: null });
+      updated = await db.updateTask(taskId, { status: "succeeded", active_step: null });
     }
     if (ops.markProjectTaskStatus) await ops.markProjectTaskStatus(updated, "succeeded");
     await _maybeCloseTab(agentRunner, taskId, config, "succeeded");
-    await taskStore.updateTask(taskId, _mirrorPatch(db.getTask(taskId)));
+    await taskStore.updateTask(taskId, _mirrorPatch(await db.getTask(taskId)));
     write(stdout, `task ${taskId} succeeded`);
-    return { task: db.getTask(taskId) };
+    return { task: await db.getTask(taskId) };
   }
 
-  return { task: db.getTask(taskId) };
+  return { task: await db.getTask(taskId) };
 }

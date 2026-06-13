@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import "../suppress-sqlite-warning.mjs";
+import "../telemetry.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -61,13 +62,12 @@ async function resolveValidModes() {
   return modes;
 }
 
-// Open SQLite store only if the DB file exists (LangGraph engine was used)
-function tryOpenStore() {
+// Open store only if the DB file exists (LangGraph engine was used) or DATABASE_URL is set
+async function tryOpenStore() {
   const { DB_PATH } = maestroPaths();
-  if (existsSync(DB_PATH)) {
-    try { return openStore(DB_PATH); } catch { return null; }
-  }
-  return null;
+  const hasDbUrl = process.env.DATABASE_URL?.startsWith("postgres");
+  if (!hasDbUrl && !existsSync(DB_PATH)) return null;
+  try { return await openStore(DB_PATH); } catch { return null; }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -117,10 +117,10 @@ async function listDir(dir) {
 
 async function listTasks({ limit = 20, status } = {}) {
   const { TASKS_DIR } = maestroPaths();
-  // DB path: use SQLite store if available
-  const db = tryOpenStore();
+  // DB path: use store if available (SQLite or PG)
+  const db = await tryOpenStore();
   if (db) {
-    const tasks = db.listTasks({ limit, status });
+    const tasks = await db.listTasks({ limit, status });
     return tasks.map((t) => ({
       id: t.id,
       prompt: t.prompt?.slice(0, 120),
@@ -152,12 +152,12 @@ async function showTask({ id } = {}) {
   if (!id) throw new Error("id required");
   if (!isValidId(id)) throw new Error(`invalid_id: ${id}`);
   const { TASKS_DIR, RUNS_DIR } = maestroPaths();
-  // DB path: try SQLite first
-  const db = tryOpenStore();
+  // DB path: try store first (SQLite or PG)
+  const db = await tryOpenStore();
   if (db) {
-    const task = db.getTask(id);
+    const task = await db.getTask(id);
     if (task) {
-      const handoffs = db.getHandoffs(id);
+      const handoffs = await db.getHandoffs(id);
       const runDir = task.run_dir ?? path.join(RUNS_DIR, id);
       assertInsideDir(RUNS_DIR, runDir);
       const logs = {};
@@ -287,10 +287,10 @@ async function getState() {
   // Fallback: return config + workflow + live task state from SQLite (task mode)
   const workflow = await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
   let liveTasks = null;
-  const db = tryOpenStore();
+  const db = await tryOpenStore();
   if (db) {
-    const running = db.listTasks({ limit: 10, status: "running" });
-    const recent = db.listTasks({ limit: 5 });
+    const running = await db.listTasks({ limit: 10, status: "running" });
+    const recent = await db.listTasks({ limit: 5 });
     liveTasks = {
       running: running.map((t) => ({
         id: t.id,

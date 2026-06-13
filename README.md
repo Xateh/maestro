@@ -338,6 +338,20 @@ See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
 
 ---
 
+## Enterprise Gaps & Roadmap
+
+While Maestro is a capable local orchestrator, it currently lacks several features required for highly-concurrent enterprise or production environments:
+
+- **Authentication & RBAC:** Single-user design; no identity provider integration or role-based access control.
+- **Web GUI / Dashboards:** Provides a rich TUI (`maestro tui`) and terminal panes (`herdr`), but no browser-based graphical user interface (GUI).
+- **Scalable State:** Hardcoded to use `node:sqlite` (`.maestro/maestro.db`). Lacks PostgreSQL or Redis adapters for high-availability cluster deployments.
+- **Observability:** No OpenTelemetry (OTel) tracing or Prometheus metrics exports.
+- **Secrets Management:** Relies on local CLIs for auth. No native HashiCorp Vault or AWS KMS integration.
+- **Containerization:** Missing official Dockerfiles or Kubernetes Helm charts.
+
+---
+
+
 ## Architecture
 
 ```

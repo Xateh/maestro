@@ -64,7 +64,7 @@ export class HerdrAgentRunner {
     // Reuse a persisted tab (task resumed by a fresh runner instance) so the
     // conversation trail stays in one place. Any failure means the tab is
     // gone — fall through and create a new one.
-    const persisted = this.tabStore?.get(taskId);
+    const persisted = await this.tabStore?.get(taskId);
     if (persisted) {
       try {
         await this.cli(["tab", "get", persisted]);
@@ -83,12 +83,12 @@ export class HerdrAgentRunner {
     ]);
     const tabId = result?.tab?.tab_id;
     this._taskTabs.set(taskId, tabId);
-    this.tabStore?.set(taskId, tabId);
+    await this.tabStore?.set(taskId, tabId);
     return tabId;
   }
 
   async closeTab(taskId) {
-    const tabId = this._taskTabs.get(taskId) ?? this.tabStore?.get(taskId);
+    const tabId = this._taskTabs.get(taskId) ?? await this.tabStore?.get(taskId);
     if (!tabId) return;
     try {
       await this.cli(["tab", "close", tabId]);

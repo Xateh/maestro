@@ -161,7 +161,7 @@ export function makeRoleNode(roleDef, {
     }
 
     // ── load fresh task from DB (captures any resume-time updates) ────────────
-    let currentTask = db.getTask(task.id);
+    let currentTask = await db.getTask(task.id);
 
     // ── loop limit: bound cycle revisits (max_visits / loop_limits) ──────────
     const maxVisits = resolveMaxVisits(workflow, transitionKey) ?? resolveMaxVisits(workflow, roleKey);
@@ -169,7 +169,7 @@ export function makeRoleNode(roleDef, {
       const onExceeded = workflow?.loop_limits?.on_exceeded ?? "ask_user";
       const blocker = { code: "loop_limit_exceeded", role: roleKey, visits: visitCount, max_visits: maxVisits };
       if (onExceeded === "halt") {
-        db.updateTask(task.id, {
+        await db.updateTask(task.id, {
           status: "waiting_user",
           active_step: null,
           current_state: roleKey,
@@ -179,7 +179,7 @@ export function makeRoleNode(roleDef, {
         return { event: "error", currentState: roleKey };
       }
       const questionId = `q${(currentTask.question_answers ?? []).length + 1}`;
-      db.updateTask(task.id, {
+      await db.updateTask(task.id, {
         status: "waiting_user",
         active_step: null,
         current_state: roleKey,
@@ -197,13 +197,13 @@ export function makeRoleNode(roleDef, {
 
     // ── cycle revisit: stale handoff in the DB must not mask the new run ─────
     if (isRevisit) {
-      db.deleteHandoffsByRole(task.id, roleKey);
+      await db.deleteHandoffsByRole(task.id, roleKey);
     }
 
     // ── reviewer: synthetic skip when review_enabled === false ───────────────
     if (roleKey === "reviewer" && currentTask.review_enabled === false) {
       const reviewSkipped = skippedReview();
-      db.updateTask(task.id, { review: reviewSkipped });
+      await db.updateTask(task.id, { review: reviewSkipped });
       return {
         priorHandoffs: [{ role: roleKey, provider: roleDef.provider, payload: reviewSkipped, log_path: null }],
         event: "done",
@@ -234,14 +234,14 @@ export function makeRoleNode(roleDef, {
 
     // ── update DB: mark this role as running ─────────────────────────────────
     const activeStep = { role: roleKey, provider: roleDef.provider, status: "running" };
-    db.updateTask(task.id, { status: "running", current_state: roleKey, active_step: activeStep });
+    await db.updateTask(task.id, { status: "running", current_state: roleKey, active_step: activeStep });
     if (markActiveStep) await markActiveStep(task.id, activeStep);
 
     let handoffMode = "normal";
     let contextRetryUsed = 0;
 
     while (true) {
-      currentTask = db.getTask(task.id);
+      currentTask = await db.getTask(task.id);
       const taskCwd = currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd();
 
       // ── capture start_head before agent runs (branch-tracked tasks) ──────────
@@ -249,8 +249,8 @@ export function makeRoleNode(roleDef, {
       if (currentTask.branch && gitRunner) {
         startHead = await _gitStdout(gitRunner, taskCwd, ["rev-parse", "HEAD"]);
         if (startHead && !currentTask.start_head) {
-          db.updateTask(task.id, { start_head: startHead });
-          currentTask = db.getTask(task.id);
+          await db.updateTask(task.id, { start_head: startHead });
+          currentTask = await db.getTask(task.id);
         }
       }
 
@@ -281,7 +281,7 @@ export function makeRoleNode(roleDef, {
         if (isContextWindowFailure(err) && contextRetryUsed < contextRetryLimit) {
           contextRetryUsed += 1;
           handoffMode = "strict";
-          db.appendStep(task.id, {
+          await db.appendStep(task.id, {
             role: roleKey,
             provider: roleDef.provider,
             status: "retried",
@@ -301,7 +301,7 @@ export function makeRoleNode(roleDef, {
           { code: failureCode, role: roleKey, provider: roleDef.provider, error: err.message },
           ...(currentTask.blockers ?? []),
         ];
-        db.appendStep(task.id, {
+        await db.appendStep(task.id, {
           role: roleKey,
           provider: roleDef.provider,
           status: "failed",
@@ -310,7 +310,7 @@ export function makeRoleNode(roleDef, {
           stdout_path: err.stdoutPath ?? null,
           stderr_path: err.stderrPath ?? null,
         });
-        db.updateTask(task.id, {
+        await db.updateTask(task.id, {
           status: "waiting_user",
           active_step: null,
           current_state: roleKey,
@@ -336,7 +336,7 @@ export function makeRoleNode(roleDef, {
           status: "pending",
           continuation_generation: currentTask.continuation_generation ?? 0,
         }));
-        db.appendStep(task.id, {
+        await db.appendStep(task.id, {
           role: roleKey,
           provider: roleDef.provider,
           status: "waiting",
@@ -357,7 +357,7 @@ export function makeRoleNode(roleDef, {
             action_requests: [...(currentTask.action_requests ?? []), ...actionRequests],
           };
         }
-        db.updateTask(task.id, {
+        await db.updateTask(task.id, {
           status: "waiting_approval",
           active_step: null,
           current_state: roleKey,
@@ -375,7 +375,7 @@ export function makeRoleNode(roleDef, {
       const question = parseAgentQuestion(combined);
       if (question) {
         const questionId = `q${(currentTask.question_answers ?? []).length + 1}`;
-        db.appendStep(task.id, {
+        await db.appendStep(task.id, {
           role: roleKey,
           provider: roleDef.provider,
           status: "waiting",
@@ -383,7 +383,7 @@ export function makeRoleNode(roleDef, {
           stdout_path: result.stdoutPath,
           stderr_path: result.stderrPath,
         });
-        db.updateTask(task.id, {
+        await db.updateTask(task.id, {
           status: "waiting_user",
           active_step: null,
           current_state: roleKey,
@@ -406,7 +406,7 @@ export function makeRoleNode(roleDef, {
           risk_level: review.risk_level,
           confidence: review.confidence,
         };
-        db.updateTask(task.id, { review });
+        await db.updateTask(task.id, { review });
       } else {
         payload = parseAgentHandoff(combined) ?? {};
       }
@@ -443,7 +443,7 @@ export function makeRoleNode(roleDef, {
       }
 
       // ── persist step + handoff to DB ─────────────────────────────────────
-      db.appendStep(task.id, {
+      await db.appendStep(task.id, {
         role: roleKey,
         provider: roleDef.provider,
         status: "succeeded",
@@ -454,7 +454,7 @@ export function makeRoleNode(roleDef, {
         command: result.command,
         args: result.args,
       });
-      db.addHandoff(task.id, {
+      await db.addHandoff(task.id, {
         role: roleKey,
         provider: roleDef.provider,
         payload,
@@ -465,8 +465,8 @@ export function makeRoleNode(roleDef, {
       if (roleKey !== "reviewer" && startHead && gitRunner) {
         const endHead = await _gitStdout(gitRunner, taskCwd, ["rev-parse", "HEAD"]);
         if (endHead && endHead !== startHead) {
-          const movedTask = db.getTask(task.id);
-          db.updateTask(task.id, {
+          const movedTask = await db.getTask(task.id);
+          await db.updateTask(task.id, {
             status: "needs_review",
             active_step: null,
             current_state: roleKey,

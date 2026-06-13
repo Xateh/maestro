@@ -11,6 +11,7 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import fs from "node:fs";
+import { openPgStore } from "./pg-store.mjs";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -54,20 +55,20 @@ export class SqliteTaskStore {
     this._db.prepare(
       "INSERT INTO tasks (id, status, created_at, updated_at, data) VALUES (?, ?, ?, ?, ?)",
     ).run(taskObj.id, taskObj.status ?? "queued", now, now, JSON.stringify(data));
-    return data;
+    return Promise.resolve(data);
   }
 
   getTask(id) {
     const row = this._db.prepare("SELECT data FROM tasks WHERE id = ?").get(id);
-    return row ? JSON.parse(row.data) : null;
+    return Promise.resolve(row ? JSON.parse(row.data) : null);
   }
 
   /**
    * Update task. patchOrFn is either a plain patch object or a function
    * (current) => patchObject. Returns the updated task.
    */
-  updateTask(id, patchOrFn) {
-    const current = this.getTask(id);
+  async updateTask(id, patchOrFn) {
+    const current = await this.getTask(id);
     if (!current) throw new Error(`task_not_found: ${id}`);
     const now = new Date().toISOString();
     const patch = typeof patchOrFn === "function" ? patchOrFn(current) : patchOrFn;
@@ -86,7 +87,7 @@ export class SqliteTaskStore {
       : this._db.prepare(
           "SELECT data FROM tasks ORDER BY created_at DESC LIMIT ?",
         ).all(limit);
-    return rows.map((r) => JSON.parse(r.data));
+    return Promise.resolve(rows.map((r) => JSON.parse(r.data)));
   }
 
   // ─── step management ───────────────────────────────────────────────────────
@@ -110,22 +111,24 @@ export class SqliteTaskStore {
     this._db.prepare(
       "INSERT INTO handoffs (task_id, role, provider, payload, log_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
     ).run(taskId, role, provider, JSON.stringify(payload ?? {}), logPath ?? null, now);
+    return Promise.resolve();
   }
 
   getHandoffs(taskId) {
     const rows = this._db.prepare(
       "SELECT role, provider, payload, log_path FROM handoffs WHERE task_id = ? ORDER BY id ASC",
     ).all(taskId);
-    return rows.map((r) => ({
+    return Promise.resolve(rows.map((r) => ({
       role: r.role,
       provider: r.provider,
       payload: JSON.parse(r.payload),
       log_path: r.log_path,
-    }));
+    })));
   }
 
   deleteHandoffsByRole(taskId, role) {
     this._db.prepare("DELETE FROM handoffs WHERE task_id = ? AND role = ?").run(taskId, role);
+    return Promise.resolve();
   }
 
   // ─── raw DB handle (for ad-hoc queries) ──────────────────────────────────────
@@ -142,7 +145,17 @@ export class SqliteTaskStore {
 // Singleton per dbPath — one connection per DB file.
 const _instances = new Map();
 
-export function openStore(dbPath) {
+/**
+ * Open the task store. When DATABASE_URL is set to a postgres(ql):// URI,
+ * returns a PostgresTaskStore (async init). Otherwise returns SqliteTaskStore.
+ *
+ * Returns a Promise so callers can `await openStore(...)` regardless of backend.
+ */
+export async function openStore(dbPath, { env = process.env } = {}) {
+  const dbUrl = env.DATABASE_URL ?? "";
+  if (dbUrl.startsWith("postgres://") || dbUrl.startsWith("postgresql://")) {
+    return openPgStore(dbUrl);
+  }
   const abs = path.resolve(dbPath);
   if (!_instances.has(abs)) _instances.set(abs, new SqliteTaskStore(abs));
   return _instances.get(abs);
