@@ -6,7 +6,7 @@ import { slugifyTaskTitle } from "../task-store.mjs";
 
 import { buildUnblockOptions } from "./action-requests.mjs";
 import { gitStdout, gitSucceeds, runGit } from "./git-exec.mjs";
-import { makeStore, normalizeProjectId, parseProjectArgs } from "./parse-args.mjs";
+import { findUnknownFlags, makeStore, normalizeProjectId, parseProjectArgs } from "./parse-args.mjs";
 import { exitCodeFromError, isInside, nowIso, pathExists, writeLine } from "./util.mjs";
 
 export function projectWorktreeRoot(cwd, config) {
@@ -412,8 +412,11 @@ async function cleanupProject({ taskStore, id, cwd, stdout, gitRunner }) {
   return { project: updated };
 }
 
-export async function runProjectCommand({ args, cwd, stdout, store, gitRunner }) {
+export async function runProjectCommand({ args, cwd, stdout, stderr = process.stderr, store, gitRunner }) {
   const parsed = parseProjectArgs(args, cwd);
+  for (const f of parsed.unknownFlags) {
+    writeLine(stderr, `warning: unknown flag for 'project ${parsed.action}': ${f}`);
+  }
   const taskStore = makeStore(parsed, store);
   const projectId = parsed.positional[0];
   if (parsed.action === "create") {

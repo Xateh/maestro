@@ -78,7 +78,11 @@ export async function runInitWizard({
   const yes = args.includes("--yes");
   const dryRun = args.includes("--dry-run");
   const workflowFlag = args.indexOf("--workflow");
-  const templateName = workflowFlag === -1 ? "default" : String(args[workflowFlag + 1] ?? "");
+  const positionalTemplate = args.find((a) => !a.startsWith("-"));
+  const templateName =
+    workflowFlag !== -1
+      ? String(args[workflowFlag + 1] ?? "")
+      : positionalTemplate ?? "default";
   const workflowTemplate = resolveWorkflowTemplate(templateName);
   const plan = await buildInitPlan(root);
 

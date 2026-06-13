@@ -114,6 +114,9 @@ export function parseTaskArgs(args, cwd) {
       forceParallel = true;
       continue;
     }
+    if (arg.startsWith("--")) {
+      throw new Error(`unknown_flag: ${arg} (not a recognized flag for 'task'; use -- to pass literal text)`);
+    }
     promptParts.push(arg);
   }
 
@@ -158,6 +161,7 @@ export function parseActionArgs(args, cwd) {
   let force = false;
   let timeoutMs = null;
   const positional = [];
+  const unknownFlags = [];
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--state-dir") {
@@ -187,9 +191,13 @@ export function parseActionArgs(args, cwd) {
       timeoutMs = parsed;
       continue;
     }
+    if (arg.startsWith("--")) {
+      unknownFlags.push(arg);
+      continue;
+    }
     positional.push(arg);
   }
-  return { stateDir, note, forceParallel, force, timeoutMs, positional };
+  return { stateDir, note, forceParallel, force, timeoutMs, positional, unknownFlags };
 }
 
 export function parseEditActionArgs(args, cwd) {
@@ -198,6 +206,7 @@ export function parseEditActionArgs(args, cwd) {
   const patch = {};
   let parsedArgsJson = null;
   const positional = [];
+  const unknownFlags = [];
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--state-dir") {
@@ -253,6 +262,10 @@ export function parseEditActionArgs(args, cwd) {
       patch.timeout_ms = parsed;
       continue;
     }
+    if (arg.startsWith("--")) {
+      unknownFlags.push(arg);
+      continue;
+    }
     positional.push(arg);
   }
   if (parsedArgsJson) {
@@ -262,7 +275,7 @@ export function parseEditActionArgs(args, cwd) {
       patch.normalized_args = normalizeGitActionArgs(parsedArgsJson);
     }
   }
-  return { stateDir, note, patch, positional };
+  return { stateDir, note, patch, positional, unknownFlags };
 }
 
 export function parseInspectArgs(args, cwd, stdout = process.stdout) {
@@ -270,6 +283,7 @@ export function parseInspectArgs(args, cwd, stdout = process.stdout) {
   let json = false;
   let color = stdout.isTTY === true && !process.env.NO_COLOR;
   const positional = [];
+  const unknownFlags = [];
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--state-dir") {
@@ -289,9 +303,13 @@ export function parseInspectArgs(args, cwd, stdout = process.stdout) {
       color = false;
       continue;
     }
+    if (arg.startsWith("--")) {
+      unknownFlags.push(arg);
+      continue;
+    }
     positional.push(arg);
   }
-  return { stateDir, json, color, positional };
+  return { stateDir, json, color, positional, unknownFlags };
 }
 
 export function parseProjectArgs(args, cwd) {
@@ -300,6 +318,7 @@ export function parseProjectArgs(args, cwd) {
   let target = null;
   let mergeMode = null;
   const positional = [];
+  const unknownFlags = [];
   for (let index = 2; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--state-dir") {
@@ -320,7 +339,16 @@ export function parseProjectArgs(args, cwd) {
       }
       continue;
     }
+    if (arg.startsWith("--")) {
+      unknownFlags.push(arg);
+      continue;
+    }
     positional.push(arg);
   }
-  return { action, stateDir, target, mergeMode, positional };
+  return { action, stateDir, target, mergeMode, positional, unknownFlags };
+}
+
+// Returns any --flag items in `args` not present in `knownFlags`.
+export function findUnknownFlags(args, knownFlags) {
+  return args.filter((a) => a.startsWith("--") && !knownFlags.has(a));
 }
