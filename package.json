@@ -47,7 +47,7 @@
     "test:enterprise": "npm run test:package && npm run test:maestro && npm run test:mcp",
     "lint": "biome lint .",
     "prepublishOnly": "npm run lint && npm test",
-    "test:coverage": "c8 --reporter=text --reporter=lcov npm test",
+    "test:coverage": "c8 npm test",
     "headroom:setup": "bash scripts/headroom-setup.sh"
   },
   "dependencies": {

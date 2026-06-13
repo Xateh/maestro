@@ -25,12 +25,16 @@ jobs:
       - run: npm run lint
 
   test:
-    name: Test (Node ${{ matrix.node-version }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         node-version: [22.x, 24.x]
+        include:
+          - os: macos-latest
+            node-version: 24.x
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
