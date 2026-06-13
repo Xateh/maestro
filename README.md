@@ -42,7 +42,9 @@ or live in the TUI. The pipeline stays the same; only the instruments change.
   - [CLI Commands](#cli-commands)
   - [Providers](#providers)
 - [Configuration](#configuration)
+- [Web Dashboard](#web-dashboard)
 - [MCP Integration](#mcp-integration)
+- [Observability](#observability)
 - [Security Model](#security-model)
 - [Architecture](#architecture)
 - [Environment Variables](#environment-variables)
@@ -78,9 +80,9 @@ session. If you can run `claude --version`, you're ready.
 - **Compact typed handoffs** — only `{ role, provider, payload, log_path }`
   objects pass between roles. Raw stdout (300–400 KB a step) stays on disk and
   is never re-sent as prompt context.
-- **SQLite persistence** — every task, step, and handoff lands in
-  `.maestro/maestro.db`. Full logs on disk, inspectable without the
-  orchestrator running.
+- **Dual-backend persistence** — every task, step, and handoff lands in
+  `.maestro/maestro.db` (SQLite, default) or a PostgreSQL database when
+  `DATABASE_URL=postgres://…` is set. Logs stay on disk; the DB stores paths.
 - **Visible agent panes** — the default backend seats each step in a
   [herdr](CREDITS.md#herdr) terminal pane, one tab per task. Tabs close on
   success, stay open while a task waits on you, and a resumed task picks up in
@@ -105,6 +107,13 @@ session. If you can run `claude --version`, you're ready.
 - **Security model** — host commands off by default, network binaries
   hard-denied even when allowlisted, secrets stripped from subprocess env, MCP
   file access path-traversal-guarded.
+- **Interactive web dashboard** — `maestro serve` exposes a Linear-inspired
+  browser UI at `http://localhost:<port>/`. Live-polls task state every 5 s,
+  filter tabs (All / Running / Retrying / Completed), click any row for a
+  detail panel, and trigger an orchestrator refresh — all without page reloads.
+- **OpenTelemetry tracing** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to export
+  traces, spans, and auto-instrumented http/pg calls via OTLP. Zero overhead
+  when the variable is unset.
 - **Linear integration** — optional server mode polls Linear and dispatches
   issues automatically.
 
@@ -338,19 +347,56 @@ See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
 
 ---
 
-## Enterprise Gaps & Roadmap
+## Web Dashboard
 
-While Maestro is a capable local orchestrator, it currently lacks several features required for highly-concurrent enterprise or production environments:
+When running `maestro serve`, Maestro starts an HTTP server (default port from
+`config.json → server.port`). Visit `http://localhost:<port>/` for the dashboard:
 
-- **Authentication & RBAC:** Single-user design; no identity provider integration or role-based access control.
-- **Web GUI / Dashboards:** Provides a rich TUI (`maestro tui`) and terminal panes (`herdr`), but no browser-based graphical user interface (GUI).
-- **Scalable State:** Hardcoded to use `node:sqlite` (`.maestro/maestro.db`). Lacks PostgreSQL or Redis adapters for high-availability cluster deployments.
-- **Observability:** No OpenTelemetry (OTel) tracing or Prometheus metrics exports.
-- **Secrets Management:** Relies on local CLIs for auth. No native HashiCorp Vault or AWS KMS integration.
-- **Containerization:** Missing official Dockerfiles or Kubernetes Helm charts.
+- **Live task board** — auto-polls `/api/v1/state` every 5 s (active tasks) or
+  30 s (idle). Updates sidebar counts, task rows, and token totals in-place.
+- **Filter tabs** — All / Running / Retrying / Completed.
+- **Detail panel** — click any row to fetch `/api/v1/<identifier>` and inspect
+  full issue data: state, attempt, timestamps, description, priority, assignee.
+  Copy JSON to clipboard or open the raw endpoint in a new tab.
+- **Trigger Refresh** — sends `POST /api/v1/refresh` then polls immediately;
+  button shows a spinner while in-flight.
+
+The JSON API is also directly usable:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/v1/state` | GET | Full orchestrator snapshot |
+| `/api/v1/<identifier>` | GET | Runtime details for one issue |
+| `/api/v1/refresh` | POST | Force an immediate tick + Linear reconcile |
 
 ---
 
+## Observability
+
+Maestro emits OpenTelemetry traces when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+It is a **no-op** (zero overhead, zero imports) when the variable is absent.
+
+```bash
+# Export to a local Jaeger or Grafana Tempo collector
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 maestro serve workflow.json
+```
+
+Auto-instrumented: `http`, `pg` (when using the PostgreSQL backend), `dns`.
+Service name defaults to the package name (`maestro-orchestrator`); override
+with `OTEL_SERVICE_NAME`.
+
+---
+
+## Known Limitations
+
+Maestro is a capable local orchestrator. The following areas are not yet
+implemented for production/enterprise deployments:
+
+- **Authentication & RBAC:** Single-user design; no identity provider integration or role-based access control.
+- **Secrets Management:** Relies on local CLIs for auth. No native HashiCorp Vault or AWS KMS integration.
+- **Containerization:** No official Dockerfiles or Kubernetes Helm charts.
+
+---
 
 ## Architecture
 
@@ -369,7 +415,10 @@ bin/maestro.mjs (CLI entry)
 │   └─ claude · codex · copilot · gemini · antigravity · ollama
 │
 ├─ src/setup/              init scaffolding, doctor, import/export, templates
-├─ src/db/store.mjs        SqliteTaskStore (node:sqlite)
+├─ src/db/
+│   ├─ store.mjs           SqliteTaskStore (node:sqlite, default)
+│   └─ pg-store.mjs        PostgresTaskStore (pg pool, activated by DATABASE_URL)
+├─ src/telemetry.mjs       OpenTelemetry SDK init (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT set)
 ├─ src/herdr-client.mjs    JSON-RPC wrapper around herdr binary
 ├─ src/herdr-agent-runner.mjs  HerdrAgentRunner (default backend, tab lifecycle)
 ├─ src/agent-runner.mjs    TerminalAgentRunner (fallback backend)
@@ -382,7 +431,7 @@ bin/maestro.mjs (CLI entry)
 ├─ src/workspace.mjs       WorkspaceManager (git worktrees)
 ├─ src/markers.mjs         Pure parsers: HANDOFF/QUESTION/REVIEW/ACTION_REQUEST
 ├─ src/logger.mjs          StructuredLogger (logfmt, crash-safe)
-├─ src/http-server.mjs     Optional HTTP API (/api/v1/state)
+├─ src/http-server.mjs     HTTP server: interactive dashboard (/) + JSON API (/api/v1/*)
 ├─ src/linear-tracker.mjs  Linear GraphQL issue fetcher
 ├─ src/tui.mjs + src/tui/  Interactive terminal UI (full-screen + classic)
 └─ src/mcp/server.mjs      MCP stdio server (8 tools)
@@ -401,6 +450,9 @@ Full architecture documentation: [docs/architecture.md](docs/architecture.md)
 | `MAESTRO_TUI_CLASSIC` | unset | `1` forces the classic prompt-driven TUI |
 | `HERDR_BIN` | `"herdr"` | Path to the herdr binary |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr daemon socket |
+| `DATABASE_URL` | unset | PostgreSQL connection string (`postgres://user:pass@host/db`). When set, Maestro uses PostgreSQL instead of SQLite for all task/handoff state. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP collector base URL (e.g. `http://localhost:4318`). Enables OpenTelemetry tracing. No-op when unset. |
+| `OTEL_SERVICE_NAME` | `maestro-orchestrator` | Override the OTel service name reported in traces. |
 
 ---
 
