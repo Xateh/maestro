@@ -2,6 +2,12 @@
 
 Thanks for taking a seat in the orchestra. Here's how to keep rehearsals short.
 
+## Code of Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By
+participating you agree to uphold it; report concerns to the contact listed
+there.
+
 ## Setup
 
 - Node.js **>= 22.13** (Maestro uses the built-in `node:sqlite` driver).
