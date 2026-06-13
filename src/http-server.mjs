@@ -12,41 +12,7 @@ function sendJson(response, status, body, extraHeaders = {}) {
 }
 
 function buildDashboardHtml(snapshot) {
-  const { counts = {}, running = [], retrying = [], completed = [], last_tick_at, codex_totals } = snapshot;
-
-  const badge = (text, color) =>
-    `<span class="badge" style="background:${color}">${text}</span>`;
-
-  const statusBadge = (status) => {
-    const map = {
-      running: ["#0052cc", "Running"],
-      retrying: ["#974f0c", "Retrying"],
-      succeeded: ["#1a7f37", "Done"],
-      failed: ["#cf222e", "Failed"],
-    };
-    const [color, label] = map[status] ?? ["#6e7781", status];
-    return badge(label, color);
-  };
-
-  const taskRow = (item, status) => `
-    <tr>
-      <td class="id">${item.issue_identifier ?? "—"}</td>
-      <td>${statusBadge(status)}</td>
-      <td>${item.state ?? item.reason ?? "—"}</td>
-      <td>${item.attempt != null ? `#${item.attempt}` : "—"}</td>
-      <td class="ts">${(item.started_at ?? item.due_at ?? item.completed_at ?? "").replace("T", " ").slice(0, 19)}</td>
-    </tr>`;
-
-  const rows = [
-    ...running.map((t) => taskRow(t, "running")),
-    ...retrying.map((t) => taskRow(t, "retrying")),
-    ...completed.map((t) => taskRow(t, t.status ?? "succeeded")),
-  ].join("");
-
-  const totalTokens = codex_totals?.total_tokens ?? 0;
-  const tickAge = last_tick_at
-    ? `${Math.round((Date.now() - Date.parse(last_tick_at)) / 1000)}s ago`
-    : "—";
+  const initialJson = JSON.stringify(snapshot).replace(/<\/script>/g, "<\\/script>");
 
   return `<!doctype html>
 <html lang="en">
@@ -59,92 +25,415 @@ function buildDashboardHtml(snapshot) {
     :root {
       --bg: #0d1117; --surface: #161b22; --border: #30363d;
       --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+      --danger: #f85149; --warn: #d29922; --ok: #3fb950;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; display: flex; min-height: 100vh; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; display: flex; min-height: 100vh; overflow: hidden; }
 
-    /* sidebar */
-    nav { width: 220px; min-height: 100vh; background: var(--surface); border-right: 1px solid var(--border); padding: 1.5rem 1rem; flex-shrink: 0; }
+    /* ── sidebar ── */
+    nav { width: 220px; min-height: 100vh; background: var(--surface); border-right: 1px solid var(--border); padding: 1.5rem 1rem; flex-shrink: 0; display: flex; flex-direction: column; gap: 0; }
     nav h1 { font-size: 15px; font-weight: 700; color: var(--accent); margin-bottom: 1.5rem; letter-spacing: .02em; }
-    nav .section { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 1.2rem 0 .4rem; }
-    nav .stat { display: flex; justify-content: space-between; padding: .3rem .5rem; border-radius: 6px; color: var(--muted); font-size: 13px; }
-    nav .stat strong { color: var(--text); }
-    .nav-item { display: block; padding: .35rem .5rem; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: 13px; }
-    .nav-item:hover { background: #21262d; color: var(--text); }
-    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-    .dot-run { background: #58a6ff; } .dot-wait { background: #d29922; } .dot-done { background: #3fb950; }
+    .nav-section { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 1rem 0 .3rem; }
+    .nav-stat { display: flex; justify-content: space-between; align-items: center; padding: .3rem .5rem; border-radius: 6px; color: var(--muted); font-size: 13px; }
+    .nav-stat strong { color: var(--text); font-variant-numeric: tabular-nums; }
+    .nav-link { display: block; padding: .35rem .5rem; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: 13px; cursor: pointer; border: none; background: none; width: 100%; text-align: left; }
+    .nav-link:hover { background: #21262d; color: var(--text); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; flex-shrink: 0; }
+    .dot-run { background: var(--accent); } .dot-wait { background: var(--warn); } .dot-done { background: var(--ok); }
+    #tick-age { font-size: 12px; color: var(--muted); margin-top: auto; padding-top: 1rem; }
 
-    /* main */
-    main { flex: 1; padding: 2rem; overflow: auto; }
-    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; }
-    .header h2 { font-size: 18px; font-weight: 600; }
-    .header small { color: var(--muted); font-size: 12px; }
-    .meta { color: var(--muted); font-size: 12px; margin-bottom: 1.5rem; }
+    /* ── main content ── */
+    .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border); gap: 1rem; flex-shrink: 0; }
+    .toolbar h2 { font-size: 17px; font-weight: 600; }
+    .toolbar-right { display: flex; align-items: center; gap: .75rem; }
 
-    /* table */
+    /* filter tabs */
+    .tabs { display: flex; gap: .25rem; }
+    .tab { padding: .3rem .75rem; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid transparent; color: var(--muted); background: none; transition: background .1s, color .1s; }
+    .tab:hover { background: #21262d; color: var(--text); }
+    .tab.active { background: #1c2128; border-color: var(--border); color: var(--text); }
+
+    /* buttons */
+    .btn { border: none; border-radius: 6px; padding: .38rem .9rem; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem; transition: opacity .1s; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-primary { background: #238636; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #2ea043; }
+    .btn-ghost { background: #21262d; color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost:hover:not(:disabled) { background: #30363d; }
+
+    /* spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { width: 12px; height: 12px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
+
+    /* table area */
+    .table-wrap { flex: 1; overflow: auto; padding: 1.25rem 1.5rem; }
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-    table { width: 100%; border-collapse: collapse; }
-    th { background: #0d1117; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: .6rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
-    td { padding: .65rem 1rem; border-bottom: 1px solid #21262d; vertical-align: middle; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th { background: #0d1117; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: .55rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
+    td { padding: .6rem 1rem; border-bottom: 1px solid #21262d; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: #1c2128; }
-    td.id { font-family: monospace; color: var(--accent); font-size: 13px; }
-    td.ts { color: var(--muted); font-size: 12px; font-family: monospace; }
-    .empty { text-align: center; color: var(--muted); padding: 3rem; }
-
-    /* badges */
+    tbody tr { cursor: pointer; transition: background .1s; }
+    tbody tr:hover td { background: #1c2128; }
+    tbody tr.selected td { background: #1c2128; border-left: 2px solid var(--accent); }
+    td.col-id { font-family: monospace; color: var(--accent); font-size: 13px; width: 160px; }
+    td.col-ts { color: var(--muted); font-size: 12px; font-family: monospace; width: 160px; }
+    td.col-state { color: var(--muted); width: 180px; }
+    td.col-attempt { width: 70px; color: var(--muted); }
     .badge { display: inline-block; padding: .15rem .5rem; border-radius: 12px; font-size: 11px; font-weight: 600; color: #fff; white-space: nowrap; }
+    .empty { text-align: center; color: var(--muted); padding: 3rem; font-size: 13px; }
 
-    /* refresh button */
-    .btn { background: #238636; color: #fff; border: none; border-radius: 6px; padding: .4rem .9rem; font-size: 13px; cursor: pointer; }
-    .btn:hover { background: #2ea043; }
-    .btn:active { opacity: .8; }
+    /* ── detail panel ── */
+    .panel-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 10; }
+    .panel-overlay.open { opacity: 1; pointer-events: auto; }
+    .panel { position: fixed; top: 0; right: 0; width: 420px; max-width: 100vw; height: 100vh; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; transform: translateX(100%); transition: transform .22s cubic-bezier(.4,0,.2,1); z-index: 11; }
+    .panel.open { transform: translateX(0); }
+    .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .panel-title { font-size: 15px; font-weight: 600; font-family: monospace; color: var(--accent); }
+    .panel-close { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; padding: .2rem .4rem; border-radius: 4px; line-height: 1; }
+    .panel-close:hover { background: #21262d; color: var(--text); }
+    .panel-body { flex: 1; overflow-y: auto; padding: 1.25rem; }
+    .panel-loading { display: flex; align-items: center; justify-content: center; height: 120px; color: var(--muted); gap: .5rem; }
+    .panel-loading .spinner { border-top-color: var(--muted); }
+    .detail-section { margin-bottom: 1.25rem; }
+    .detail-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: .4rem; }
+    .detail-value { font-size: 13px; color: var(--text); word-break: break-word; }
+    .detail-value.mono { font-family: monospace; font-size: 12px; }
+    .detail-value.pre { white-space: pre-wrap; background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: .6rem .8rem; font-size: 12px; font-family: monospace; max-height: 200px; overflow: auto; }
+    .panel-actions { display: flex; gap: .5rem; padding: 1rem 1.25rem; border-top: 1px solid var(--border); flex-shrink: 0; }
+
+    /* ── toasts ── */
+    #toasts { position: fixed; bottom: 1.25rem; right: 1.25rem; display: flex; flex-direction: column; gap: .5rem; z-index: 20; }
+    .toast { background: #21262d; border: 1px solid var(--border); border-radius: 8px; padding: .6rem 1rem; font-size: 13px; min-width: 200px; animation: slide-in .2s ease; }
+    .toast.ok { border-color: var(--ok); color: var(--ok); }
+    .toast.err { border-color: var(--danger); color: var(--danger); }
+    @keyframes slide-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+    /* ── pulse indicator ── */
+    .pulse { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
   </style>
 </head>
 <body>
-  <nav>
-    <h1>🎼 Maestro</h1>
-    <div class="section">Status</div>
-    <div class="stat"><span><span class="dot dot-run"></span>Running</span><strong>${counts.running ?? 0}</strong></div>
-    <div class="stat"><span><span class="dot dot-wait"></span>Retrying</span><strong>${counts.retrying ?? 0}</strong></div>
-    <div class="stat"><span><span class="dot dot-done"></span>Completed</span><strong>${counts.completed ?? 0}</strong></div>
-    <div class="section">Tokens</div>
-    <div class="stat"><span>Total</span><strong>${totalTokens.toLocaleString()}</strong></div>
-    <div class="section">Links</div>
-    <a class="nav-item" href="/api/v1/state" target="_blank">JSON State ↗</a>
-    <a class="nav-item" href="#" id="refresh-link">↺ Refresh</a>
-  </nav>
-  <main>
-    <div class="header">
+
+<nav>
+  <h1>🎼 Maestro</h1>
+  <div class="nav-section">Live Status</div>
+  <div class="nav-stat"><span><span class="dot dot-run"></span>Running</span><strong id="cnt-running">0</strong></div>
+  <div class="nav-stat"><span><span class="dot dot-wait"></span>Retrying</span><strong id="cnt-retrying">0</strong></div>
+  <div class="nav-stat"><span><span class="dot dot-done"></span>Completed</span><strong id="cnt-completed">0</strong></div>
+  <div class="nav-section">Tokens</div>
+  <div class="nav-stat"><span>Total</span><strong id="cnt-tokens">0</strong></div>
+  <div class="nav-stat"><span>Input</span><strong id="cnt-input">0</strong></div>
+  <div class="nav-stat"><span>Output</span><strong id="cnt-output">0</strong></div>
+  <div class="nav-section">Links</div>
+  <a class="nav-link" href="/api/v1/state" target="_blank">JSON State ↗</a>
+  <div id="tick-age">Last tick: —</div>
+</nav>
+
+<div class="content">
+  <div class="toolbar">
+    <div style="display:flex;align-items:center;gap:.75rem">
       <h2>Tasks</h2>
-      <div>
-        <small style="margin-right:1rem">Last tick: ${tickAge}</small>
-        <button class="btn" id="refresh-btn">Trigger Refresh</button>
+      <span class="pulse" id="live-dot" title="Live polling"></span>
+    </div>
+    <div class="toolbar-right">
+      <div class="tabs">
+        <button class="tab active" data-filter="all">All</button>
+        <button class="tab" data-filter="running">Running</button>
+        <button class="tab" data-filter="retrying">Retrying</button>
+        <button class="tab" data-filter="completed">Completed</button>
       </div>
+      <button class="btn btn-ghost" id="poll-btn" title="Force poll now">↺ Poll</button>
+      <button class="btn btn-primary" id="refresh-btn">Trigger Refresh</button>
     </div>
+  </div>
+
+  <div class="table-wrap">
     <div class="card">
-      ${rows
-        ? `<table>
-            <thead><tr>
-              <th>Identifier</th><th>Status</th><th>State / Reason</th><th>Attempt</th><th>Timestamp</th>
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>`
-        : `<div class="empty">No tasks in memory — start a run via <code>maestro run</code>.</div>`}
+      <div id="table-container"></div>
     </div>
-  </main>
-  <script>
-    async function triggerRefresh() {
+  </div>
+</div>
+
+<!-- detail panel -->
+<div class="panel-overlay" id="overlay"></div>
+<div class="panel" id="panel">
+  <div class="panel-header">
+    <span class="panel-title" id="panel-title">—</span>
+    <button class="panel-close" id="panel-close">×</button>
+  </div>
+  <div class="panel-body" id="panel-body"></div>
+  <div class="panel-actions" id="panel-actions"></div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+(function () {
+  // ── initial data ──────────────────────────────────────────────────────────
+  let state = ${initialJson};
+  let activeFilter = 'all';
+  let selectedId = null;
+  let pollTimer = null;
+
+  // ── helpers ───────────────────────────────────────────────────────────────
+  const STATUS_MAP = {
+    running:   { color: '#0052cc', label: 'Running'  },
+    retrying:  { color: '#974f0c', label: 'Retrying' },
+    succeeded: { color: '#1a7f37', label: 'Done'     },
+    failed:    { color: '#cf222e', label: 'Failed'   },
+  };
+
+  function badge(status) {
+    const { color, label } = STATUS_MAP[status] ?? { color: '#6e7781', label: status };
+    return \`<span class="badge" style="background:\${color}">\${label}</span>\`;
+  }
+
+  function esc(v) {
+    return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function ts(v) {
+    return (v ?? '').replace('T', ' ').slice(0, 19);
+  }
+
+  function toast(msg, kind = 'ok') {
+    const el = document.createElement('div');
+    el.className = 'toast ' + kind;
+    el.textContent = msg;
+    document.getElementById('toasts').append(el);
+    setTimeout(() => el.remove(), 3500);
+  }
+
+  // ── sidebar ───────────────────────────────────────────────────────────────
+  function updateSidebar(s) {
+    const c = s.counts ?? {};
+    document.getElementById('cnt-running').textContent   = c.running   ?? 0;
+    document.getElementById('cnt-retrying').textContent  = c.retrying  ?? 0;
+    document.getElementById('cnt-completed').textContent = c.completed ?? 0;
+    const tot = s.codex_totals ?? {};
+    document.getElementById('cnt-tokens').textContent = (tot.total_tokens  ?? 0).toLocaleString();
+    document.getElementById('cnt-input').textContent  = (tot.input_tokens  ?? 0).toLocaleString();
+    document.getElementById('cnt-output').textContent = (tot.output_tokens ?? 0).toLocaleString();
+    const age = s.last_tick_at
+      ? Math.round((Date.now() - Date.parse(s.last_tick_at)) / 1000) + 's ago'
+      : '—';
+    document.getElementById('tick-age').textContent = 'Last tick: ' + age;
+  }
+
+  // ── table ─────────────────────────────────────────────────────────────────
+  function allTasks(s) {
+    return [
+      ...(s.running   ?? []).map(t => ({ ...t, _status: 'running'  })),
+      ...(s.retrying  ?? []).map(t => ({ ...t, _status: 'retrying' })),
+      ...(s.completed ?? []).map(t => ({ ...t, _status: t.status ?? 'succeeded' })),
+    ];
+  }
+
+  function renderTable(s) {
+    const tasks = allTasks(s).filter(t =>
+      activeFilter === 'all' ||
+      (activeFilter === 'running'   && t._status === 'running') ||
+      (activeFilter === 'retrying'  && t._status === 'retrying') ||
+      (activeFilter === 'completed' && (t._status === 'succeeded' || t._status === 'failed'))
+    );
+
+    const container = document.getElementById('table-container');
+    if (!tasks.length) {
+      container.innerHTML = '<div class="empty">No tasks — start a run via <code>maestro run</code>.</div>';
+      return;
+    }
+
+    const rows = tasks.map(t => {
+      const id  = esc(t.issue_identifier ?? '—');
+      const st  = esc(t.state ?? t.reason ?? '—');
+      const att = t.attempt != null ? '#' + t.attempt : '—';
+      const ts_ = ts(t.started_at ?? t.due_at ?? t.completed_at);
+      const sel = t.issue_identifier === selectedId ? ' selected' : '';
+      return \`<tr class="task-row\${sel}" data-id="\${id}" title="Click to view details">
+        <td class="col-id">\${id}</td>
+        <td>\${badge(t._status)}</td>
+        <td class="col-state">\${st}</td>
+        <td class="col-attempt">\${att}</td>
+        <td class="col-ts">\${ts_}</td>
+      </tr>\`;
+    }).join('');
+
+    container.innerHTML = \`<table>
+      <thead><tr>
+        <th style="width:150px">Identifier</th>
+        <th style="width:100px">Status</th>
+        <th>State / Reason</th>
+        <th style="width:75px">Attempt</th>
+        <th style="width:155px">Timestamp</th>
+      </tr></thead>
+      <tbody>\${rows}</tbody>
+    </table>\`;
+
+    container.querySelectorAll('.task-row').forEach(row => {
+      row.addEventListener('click', () => openPanel(row.dataset.id));
+    });
+  }
+
+  // ── polling ───────────────────────────────────────────────────────────────
+  function scheduleNext() {
+    const active = (state.counts?.running ?? 0) + (state.counts?.retrying ?? 0);
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, active > 0 ? 5000 : 30000);
+  }
+
+  async function poll() {
+    try {
+      const res  = await fetch('/api/v1/state');
+      if (!res.ok) throw new Error(res.status);
+      const next = await res.json();
+      state = next;
+      updateSidebar(state);
+      renderTable(state);
+      if (selectedId) refreshPanelData(selectedId);
+    } catch { /* network glitch — retry next cycle */ }
+    scheduleNext();
+  }
+
+  document.getElementById('poll-btn').addEventListener('click', async () => {
+    clearTimeout(pollTimer);
+    await poll();
+    toast('Polled');
+  });
+
+  // ── refresh trigger ───────────────────────────────────────────────────────
+  document.getElementById('refresh-btn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Refreshing…';
+    try {
       await fetch('/api/v1/refresh', { method: 'POST' });
-      location.reload();
+      toast('Refresh triggered');
+      clearTimeout(pollTimer);
+      await poll();
+    } catch { toast('Refresh failed', 'err'); }
+    finally {
+      btn.disabled = false;
+      btn.innerHTML = 'Trigger Refresh';
     }
-    document.getElementById('refresh-btn').addEventListener('click', triggerRefresh);
-    document.getElementById('refresh-link').addEventListener('click', (e) => { e.preventDefault(); location.reload(); });
-    // Auto-refresh every 10 s when tasks are running
-    if (${counts.running ?? 0} > 0 || ${counts.retrying ?? 0} > 0) {
-      setTimeout(() => location.reload(), 10000);
+  });
+
+  // ── filter tabs ───────────────────────────────────────────────────────────
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      activeFilter = tab.dataset.filter;
+      renderTable(state);
+    });
+  });
+
+  // ── detail panel ──────────────────────────────────────────────────────────
+  function openPanel(identifier) {
+    selectedId = identifier;
+    renderTable(state);           // mark row selected
+    document.getElementById('panel-title').textContent = identifier;
+    document.getElementById('panel-body').innerHTML =
+      '<div class="panel-loading"><span class="spinner"></span> Loading…</div>';
+    document.getElementById('panel-actions').innerHTML = '';
+    document.getElementById('panel').classList.add('open');
+    document.getElementById('overlay').classList.add('open');
+    refreshPanelData(identifier);
+  }
+
+  async function refreshPanelData(identifier) {
+    try {
+      const res = await fetch('/api/v1/' + encodeURIComponent(identifier));
+      if (res.status === 404) { renderPanelNotFound(identifier); return; }
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      renderPanel(data);
+    } catch (err) {
+      document.getElementById('panel-body').innerHTML =
+        '<div class="panel-loading" style="color:var(--danger)">Failed to load details</div>';
     }
-  </script>
+  }
+
+  function renderPanelNotFound(id) {
+    document.getElementById('panel-body').innerHTML =
+      '<div class="panel-loading" style="color:var(--muted)">No runtime details for ' + esc(id) + '</div>';
+  }
+
+  function field(label, value, mono = false) {
+    if (value == null || value === '') return '';
+    const cls = mono ? ' mono' : '';
+    return \`<div class="detail-section">
+      <div class="detail-label">\${label}</div>
+      <div class="detail-value\${cls}">\${esc(String(value))}</div>
+    </div>\`;
+  }
+
+  function preField(label, value) {
+    if (value == null) return '';
+    const txt = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    return \`<div class="detail-section">
+      <div class="detail-label">\${label}</div>
+      <div class="detail-value pre">\${esc(txt)}</div>
+    </div>\`;
+  }
+
+  function renderPanel(data) {
+    const issue = data.issue ?? {};
+    let html = '';
+    html += field('Status',      data.status);
+    html += field('Identifier',  data.issue_identifier, true);
+    html += field('State',       issue.state ?? data.status);
+    html += field('Attempt',     data.attempt != null ? '#' + data.attempt : null);
+    html += field('Started',     ts(data.started_at));
+    html += field('Due / Retry', ts(data.due_at));
+    html += field('Completed',   ts(data.completed_at));
+    html += field('Reason',      data.reason);
+    if (issue.title) html += field('Title', issue.title);
+    if (issue.description) html += preField('Description', issue.description.slice(0, 600));
+    if (issue.priority != null) html += field('Priority', issue.priority);
+    if (issue.assignee)  html += field('Assignee', issue.assignee?.name ?? issue.assignee);
+    if (Object.keys(issue).length > 0) html += preField('Full Issue', issue);
+    document.getElementById('panel-body').innerHTML = html || '<div class="panel-loading" style="color:var(--muted)">No detail fields</div>';
+
+    // action buttons
+    const actions = document.getElementById('panel-actions');
+    actions.innerHTML = '';
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'btn btn-ghost';
+    copyBtn.textContent = 'Copy JSON';
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(JSON.stringify(data, null, 2))
+        .then(() => toast('Copied to clipboard'))
+        .catch(() => toast('Copy failed', 'err'));
+    };
+    actions.append(copyBtn);
+
+    const rawBtn = document.createElement('a');
+    rawBtn.className = 'btn btn-ghost';
+    rawBtn.textContent = 'Raw ↗';
+    rawBtn.href = '/api/v1/' + encodeURIComponent(data.issue_identifier ?? '');
+    rawBtn.target = '_blank';
+    actions.append(rawBtn);
+  }
+
+  function closePanel() {
+    selectedId = null;
+    document.getElementById('panel').classList.remove('open');
+    document.getElementById('overlay').classList.remove('open');
+    renderTable(state);
+  }
+
+  document.getElementById('panel-close').addEventListener('click', closePanel);
+  document.getElementById('overlay').addEventListener('click', closePanel);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closePanel(); });
+
+  // ── boot ──────────────────────────────────────────────────────────────────
+  updateSidebar(state);
+  renderTable(state);
+  scheduleNext();
+})();
+</script>
 </body>
 </html>`;
 }
