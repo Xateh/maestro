@@ -6,7 +6,7 @@ import { slugifyTaskTitle } from "../task-store.mjs";
 
 import { buildUnblockOptions } from "./action-requests.mjs";
 import { gitStdout, gitSucceeds, runGit } from "./git-exec.mjs";
-import { findUnknownFlags, makeStore, normalizeProjectId, parseProjectArgs } from "./parse-args.mjs";
+import { makeStore, normalizeProjectId, parseProjectArgs } from "./parse-args.mjs";
 import { exitCodeFromError, isInside, nowIso, pathExists, writeLine } from "./util.mjs";
 
 export function projectWorktreeRoot(cwd, config) {

@@ -19,13 +19,15 @@ No API keys, no vendor lock-in, no per-token billing you didn't sign up for.
 ```
 prompt → [planner] ──handoff──► [executor] ──handoff──► [reviewer] → done
             │                       │                       │
-          gemini                  codex                   claude
-        (research +              (writes +              (reviews +
+          claude                  codex                   codex
+        (plans +                 (writes +              (reviews +
         architecture)             edits code)            approves)
 ```
 
-Mix and match freely: swap any role to any provider in `.maestro/config.json`
-or live in the TUI. The pipeline stays the same; only the instruments change.
+That's the stock `default` workflow. Mix and match freely: swap any role to any
+provider (`gemini` for big-context research, `ollama` for fully local, …) in
+`.maestro/config.json` or live in the TUI. The pipeline stays the same; only the
+instruments change.
 
 ---
 
@@ -245,20 +247,26 @@ Default mapping: **planner = claude**, **executor = codex**, **reviewer = codex*
 | `antigravity` | `antigravity` | Optional; bring-your-own CLI |
 | `ollama` | `ollama` | Fully local, offline-capable models — privacy-sensitive or air-gapped work. See [docs/local-llm.md](docs/local-llm.md) |
 
-**Example multi-provider setup:**
+**Assign a provider to each role:** role → provider mapping lives in
+`.maestro/workflow.json` (the `providers` block in `config.json` only *defines*
+each provider's adapter, models, and aliases). Edit it live in `maestro tui`
+(full-screen role editor), or by hand:
 
 ```jsonc
-// .maestro/config.json
+// .maestro/workflow.json — defaults shown; swap any provider
 {
-  "providers": {
-    "planner":  "gemini",   // large context, research
-    "executor": "codex",    // writes and edits code
-    "reviewer": "claude"    // careful review and approval
+  "roles": {
+    "planner":  { "provider": "claude", "alias": "claude" },  // plans + architecture
+    "executor": { "provider": "codex",  "alias": "codex"  },  // writes and edits code
+    "reviewer": { "provider": "codex",  "alias": "codex"  }   // reviews and approves
   }
 }
 ```
 
-Override per role in `.maestro/workflow.json`, or live in `maestro tui`.
+Want Gemini's large context for planning? Set `planner.provider` to `gemini`.
+Editing by hand replaces the whole file, so keep every role you want — the TUI
+is the safe path. See [docs/configuration.md](docs/configuration.md) for the
+full role schema.
 
 **Terminal backend:**
 
@@ -453,6 +461,12 @@ Full architecture documentation: [docs/architecture.md](docs/architecture.md)
 | `DATABASE_URL` | unset | PostgreSQL connection string (`postgres://user:pass@host/db`). When set, Maestro uses PostgreSQL instead of SQLite for all task/handoff state. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP collector base URL (e.g. `http://localhost:4318`). Enables OpenTelemetry tracing. No-op when unset. |
 | `OTEL_SERVICE_NAME` | `maestro-orchestrator` | Override the OTel service name reported in traces. |
+| `MAESTRO_SECRET_PASSPHRASE` | unset | Unlocks the encrypted secret store (`secrets.local.enc.json`) without an interactive prompt. Real environment variables still take precedence. |
+| `MAESTRO_OLLAMA_BIN` | `"ollama"` | Ollama binary or alias for the built-in local provider and the `agent:ocr`/`agent:eval` scripts. |
+| `MAESTRO_OLLAMA_MODEL` | `"llama3.2"` | Default text model for local (Ollama) runs. |
+| `MAESTRO_OLLAMA_VISION_MODEL` | `"llama3.2-vision"` | Vision model for the OCR agent (multimodal). |
+| `HEADROOM_PROXY_URL` | `http://localhost:8787` | Headroom compression proxy endpoint used for prior-output context compaction. |
+| `NO_COLOR` | unset | Set to any value to disable ANSI color in CLI/TUI output (honors the [NO_COLOR](https://no-color.org) standard). |
 
 ---
 

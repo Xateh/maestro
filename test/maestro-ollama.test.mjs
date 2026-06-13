@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { TerminalAgentRunner, buildAgentCommand } from "../src/agent-runner.mjs";
+import { TerminalAgentRunner, buildAgentCommand, stripAnsi } from "../src/agent-runner.mjs";
 import { buildOllamaCommand } from "../src/adapters/ollama.mjs";
 
 const DEFAULT_OLLAMA_MODEL = "llama3.2";
@@ -111,6 +111,28 @@ test("TerminalAgentRunner dispatches an ollama provider def end to end", async (
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("stripAnsi renders cursor-back + erase-line redraws without duplicating fragments", () => {
+  const ESC = "\x1b";
+  // The exact idiom ollama emits at a wrap point: print a fragment, move the
+  // cursor back over it, erase to end of line, newline, reprint the full word.
+  const raw = `lead to p${ESC}[1D${ESC}[K\nperformance issues`;
+  // The "p" fragment is erased; the newline in the byte stream is preserved.
+  assert.equal(stripAnsi(raw), "lead to\nperformance issues");
+});
+
+test("stripAnsi strips colors and honors carriage return, leaving plain text intact", () => {
+  assert.equal(stripAnsi(`${"\x1b"}[31mred${"\x1b"}[0m text`), "red text");
+  assert.equal(stripAnsi("abc\rX"), "Xbc");
+  // Bracketed/parenthesized/numeric prose must never be touched.
+  const plain = "node >=22.13 [ok] (1) #2; a?b";
+  assert.equal(stripAnsi(plain), plain);
+});
+
+test("stripAnsi passes non-string values through unchanged", () => {
+  assert.equal(stripAnsi(undefined), undefined);
+  assert.equal(stripAnsi(null), null);
 });
 
 test("local-agents script runs the OCR and system evaluator agents", async () => {

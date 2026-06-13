@@ -52,6 +52,68 @@ export function safeRunnerEnv(env = {}) {
   );
 }
 
+// Render captured terminal output to clean text. CLIs like ollama redraw
+// streaming output with cursor-back + erase-line (ESC[nD ESC[K) at wrap points;
+// naively deleting the escapes would leave duplicated word fragments
+// ("certai" + "certain"). So we replay cursor-back (D), cursor-forward (C),
+// erase-to-end-of-line (K), and carriage-return the way a terminal would, then
+// drop every other escape sequence (colors, OSC, charset, ...). On-disk logs
+// stay raw; this only cleans the in-memory stdout/stderr that flow into handoff
+// payloads and the console.
+export function stripAnsi(value) {
+  if (typeof value !== "string") return value;
+  const ESC = "\x1b";
+  const CSI = "\x9b";
+  const BEL = "\x07";
+  let out = "";
+  let cursor = 0; // write position within out
+  let lineStart = 0; // index of the current line's start within out
+  const put = (ch) => {
+    out = cursor < out.length ? out.slice(0, cursor) + ch + out.slice(cursor + 1) : out + ch;
+    cursor += 1;
+  };
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (ch === ESC || ch === CSI) {
+      let j = i + 1;
+      if (ch === ESC && value[j] === "[") {
+        j++; // CSI introduced by ESC [
+      } else if (ch === ESC && value[j] === "]") {
+        // OSC: ESC ] ... terminated by BEL or ST (ESC \)
+        j++;
+        while (j < value.length && value[j] !== BEL && !(value[j] === ESC && value[j + 1] === "\\")) j++;
+        i = value[j] === ESC ? j + 1 : j;
+        continue;
+      } else if (ch === ESC) {
+        i = j; // other 2-char escape (charset select, etc.)
+        continue;
+      }
+      let params = "";
+      while (j < value.length && /[0-9;?]/.test(value[j])) params += value[j++];
+      const final = value[j];
+      i = j;
+      const n = Math.max(1, Number.parseInt(params, 10) || 1);
+      if (final === "D") cursor = Math.max(lineStart, cursor - n);
+      else if (final === "C") cursor = Math.min(out.length, cursor + n);
+      else if (final === "K" && (Number.parseInt(params, 10) || 0) === 0) out = out.slice(0, cursor);
+      continue;
+    }
+    if (ch === "\r") {
+      cursor = lineStart;
+      continue;
+    }
+    if (ch === "\n") {
+      out += "\n";
+      cursor = out.length;
+      lineStart = out.length;
+      continue;
+    }
+    put(ch);
+  }
+  // Drop trailing spaces left on a line by an erase that stopped mid-word.
+  return out.replace(/[ \t]+\n/g, "\n");
+}
+
 function appendBoundedTail(current, chunk, maxBytes) {
   const next = `${current}${chunk.toString("utf8")}`;
   const buffer = Buffer.from(next, "utf8");
@@ -276,6 +338,8 @@ export class TerminalAgentRunner {
       });
     } catch (error) {
       await Promise.allSettled([endStream(stdoutStream), endStream(stderrStream)]);
+      error.stdout = stripAnsi(error.stdout);
+      error.stderr = stripAnsi(error.stderr);
       error.stdoutPath = stdoutPath;
       error.stderrPath = stderrPath;
       throw error;
@@ -286,8 +350,8 @@ export class TerminalAgentRunner {
 
     return {
       status: "succeeded",
-      stdout: result.stdout,
-      stderr: result.stderr,
+      stdout: stripAnsi(result.stdout),
+      stderr: stripAnsi(result.stderr),
       stdoutPath,
       stderrPath,
       command: commandSpec.command,

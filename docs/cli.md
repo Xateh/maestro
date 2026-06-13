@@ -323,11 +323,25 @@ Detect installed agent runtimes (claude/codex/copilot/gemini/antigravity +
 ollama/pi/hermes/openclaw), discover Ollama models, and record
 machine-specific values in `config.local.json`.
 
-### `setup keys [--var NAME]`
+### `setup keys [--var NAME] [--encrypt]`
 
 Manage API keys in `.maestro/secrets.local.json` (mode 0600). Interactive by
-default (input hidden); `--var NAME` reads the value from stdin for scripts.
-Keys are optional — provider CLIs handle their own auth.
+default (typed input is masked); `--var NAME` reads the value from stdin for
+scripts. Keys are optional — provider CLIs handle their own auth.
+
+`--encrypt` migrates the plaintext store to an encrypted
+`secrets.local.enc.json` (scrypt + AES-256-GCM) and shreds the plaintext file.
+Unlock later with `MAESTRO_SECRET_PASSPHRASE` or the interactive prompt; real
+environment variables still take precedence. `maestro doctor` reports the
+active store mode.
+
+### `setup harden [--project] [--dry-run]`
+
+Install a Claude Code secret guardrail so only Maestro can read its secret
+store: a `PreToolUse` hook plus deny rules that block other agents from reading
+`secrets.local.json` / `secrets.local.enc.json`. `--project` installs into the
+project's `.claude/` instead of the user scope; `--dry-run` prints the planned
+changes without writing. See [configuration.md](configuration.md) § Secrets.
 
 ### `workflow validate [--json] [--strict]`
 

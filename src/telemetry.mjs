@@ -21,7 +21,6 @@ if (endpoint) {
   const { SEMRESATTRS_SERVICE_NAME, SEMRESATTRS_SERVICE_VERSION } =
     await import("@opentelemetry/semantic-conventions");
 
-  const { readFileSync } = await import("node:fs");
   const { createRequire } = await import("node:module");
   const { fileURLToPath } = await import("node:url");
 

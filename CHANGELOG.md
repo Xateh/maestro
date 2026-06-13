@@ -5,10 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-06-14
+
+Initial release.
 
 ### Added
 
+- Plan → execute → review pipeline driven by a LangGraph state graph, with
+  typed handoffs between roles (raw agent logs never re-enter prompt context).
+- Six provider backends: claude, codex, copilot, gemini, antigravity, and a
+  built-in ollama adapter for fully local models.
+- Herdr terminal integration: one tab per task, agents run in visible panes.
+  Tabs close automatically on success, persist as a conversation trail while a
+  task waits on the user, and are reused when the task resumes
+  (`herdr.close_tab_on`: `success` | `terminal` | `never`).
+- **Dual-backend persistence** — SQLite task store (`node:sqlite`) by default,
+  or PostgreSQL when `DATABASE_URL=postgres://…` is set. `openStore()` routes to
+  `PostgresTaskStore` (`pg` pool) automatically; both backends share an
+  identical schema and a uniform async store interface. JSON-file mirror kept
+  for legacy readers.
 - **Encrypted secret store** — `maestro setup keys --encrypt` migrates
   `.maestro/secrets.local.json` to an encrypted `secrets.local.enc.json`
   (scrypt + AES-256-GCM, zero new deps) and shreds the plaintext. Unlock with
@@ -16,16 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `maestro doctor` reports the store mode. `maestro setup harden` installs a
   Claude Code guardrail (PreToolUse hook + deny rules) so only maestro reads its
   secrets. See `docs/configuration.md` § Secrets.
-- **PostgreSQL backend** — set `DATABASE_URL=postgres://…` to use PostgreSQL
-  instead of SQLite for all task/handoff state. `openStore()` routes to
-  `PostgresTaskStore` (`pg` pool) automatically; SQLite remains the default.
-  Both backends share an identical schema; all store methods are now async.
 - **OpenTelemetry tracing** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to export
   traces and spans via OTLP/HTTP proto. Auto-instruments `http`, `pg`, and
   `dns`. Completely zero-overhead (no imports, no SDK init) when the env var
   is absent. Override the service name with `OTEL_SERVICE_NAME`.
-- **Interactive web dashboard** — the HTTP server (`maestro serve`) now serves
-  a Linear-inspired browser UI at `/`:
+- MCP server exposing eight `maestro_*` tools for agent callbacks.
+- Interactive TUI (`maestro tui`) for reviewing, approving, and answering tasks.
+- **Interactive web dashboard** — the HTTP server (`maestro serve`) serves a
+  Linear-inspired browser UI at `/`:
   - Live task board polling `/api/v1/state` every 5 s (active) or 30 s (idle)
     with surgical DOM updates — no page reloads.
   - Filter tabs: All / Running / Retrying / Completed.
@@ -36,32 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Trigger Refresh button (POST `/api/v1/refresh`) with loading spinner;
     Force-Poll button for immediate state sync.
   - Toast notifications and a live pulse indicator in the toolbar.
-
-### Changed
-
-- All `SqliteTaskStore` methods now return Promises (previously synchronous),
-  making the store interface uniform across SQLite and PostgreSQL backends.
-  Callers in `engine.mjs`, `nodes.mjs`, `mcp/server.mjs`, and
-  `herdr-agent-runner.mjs` updated to `await` all store calls.
-
----
-
-## [0.1.0] - 2026-06-13
-
-Initial release.
-
-### Added
-
-- Plan → execute → review pipeline driven by a LangGraph state graph, with
-  typed handoffs between roles (raw agent logs never re-enter prompt context).
-- Five provider backends: claude, codex, copilot, gemini, antigravity.
-- Herdr terminal integration: one tab per task, agents run in visible panes.
-  Tabs close automatically on success, persist as a conversation trail while a
-  task waits on the user, and are reused when the task resumes
-  (`herdr.close_tab_on`: `success` | `terminal` | `never`).
-- SQLite task store (`node:sqlite`) with JSON-file mirror for legacy readers.
-- MCP server exposing seven `maestro_*` tools for agent callbacks.
-- Interactive TUI (`maestro tui`) for reviewing, approving, and answering tasks.
 - Security model: host-command denylist, env secret stripping, path-traversal
   guards, config redaction.
 - Headroom context compression for prior-output pipelines.
@@ -80,7 +67,7 @@ Initial release.
   template; the previous file is always backed up to `workflow.json.bak`.
 - `maestro doctor [--json]` — read-only preflight: node version, provider CLI
   presence + versions, herdr availability, and state-dir health (config,
-  workflow validation, db, secrets file mode). Exit 1 on any failing check.
+  workflow validation, db, secret store mode). Exit 1 on any failing check.
 - Automatic herdr → terminal backend fallback: when the herdr binary isn't on
   PATH, tasks run on the terminal backend with a one-line notice instead of
   failing (`MAESTRO_BACKEND=terminal` still forces/silences it).
@@ -121,5 +108,8 @@ Initial release.
   exists up-tree; root discovery is lazy and errors surface on first tool call.
 - The `node:sqlite` ExperimentalWarning is no longer printed on every CLI and
   MCP server run; other process warnings still pass through.
+- Captured agent stdout/stderr are stripped of ANSI/VT control sequences before
+  entering handoff payloads and the console (on-disk logs stay raw), so CLIs
+  that redraw streaming progress no longer leak cursor-move escapes.
 
 [0.1.0]: https://github.com/Xateh/maestro/releases/tag/v0.1.0
