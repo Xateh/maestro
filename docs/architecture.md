@@ -71,27 +71,28 @@ Pure functions returning `{ command, args, cwd, stdin }` — no I/O.
 
 | File | Export | Purpose |
 |---|---|---|
-| `store.mjs` | `SqliteTaskStore`, `openStore()` | SQLite-backed store using `node:sqlite` (`DatabaseSync`). DB at `.maestro/maestro.db`. Large logs stay on disk; DB stores paths. |
+| `store.mjs` | `SqliteTaskStore`, `openStore()` | Factory + SQLite backend. `openStore(dbPath)` returns a `PostgresTaskStore` when `DATABASE_URL` is a `postgres://` URI, otherwise `SqliteTaskStore`. All methods return Promises. |
+| `pg-store.mjs` | `PostgresTaskStore`, `openPgStore()` | PostgreSQL backend using a `pg` connection pool. Identical schema to SQLite (JSONB `data` column). Activated automatically via `DATABASE_URL`. |
 
-**SQLite schema:**
+**Schema** (identical for both backends; SQLite uses `TEXT`, PostgreSQL uses `JSONB`/`TIMESTAMPTZ`):
 
 ```sql
 CREATE TABLE tasks (
   id         TEXT PRIMARY KEY,
   status     TEXT NOT NULL DEFAULT 'queued',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  data       TEXT NOT NULL   -- full task JSON
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  data       JSONB NOT NULL   -- full task object
 );
 
 CREATE TABLE handoffs (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  id         SERIAL PRIMARY KEY,
   task_id    TEXT NOT NULL REFERENCES tasks(id),
   role       TEXT NOT NULL,
   provider   TEXT NOT NULL,
-  payload    TEXT NOT NULL,  -- compact typed handoff
+  payload    JSONB NOT NULL,  -- compact typed handoff
   log_path   TEXT,
-  created_at TEXT NOT NULL
+  created_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX handoffs_task_id ON handoffs(task_id);
@@ -115,7 +116,8 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
 
 | File | Export | Purpose |
 |---|---|---|
-| `src/http-server.mjs` | `startMaestroHttpServer()` | Optional HTTP API at `/api/v1/state`, `/api/v1/state/:id`, `/api/v1/refresh`. Uses `node:http`. |
+| `src/http-server.mjs` | `startMaestroHttpServer()` | HTTP server (port from `config.json`). Serves a Linear-inspired interactive dashboard at `/` (live polling, filter tabs, detail panel) and JSON API at `/api/v1/*`. |
+| `src/telemetry.mjs` | — | OpenTelemetry SDK init. Activated by `OTEL_EXPORTER_OTLP_ENDPOINT`; exports traces via OTLP/HTTP proto with auto-instrumentation for `http`, `pg`, `dns`. No-op when the env var is absent. |
 | `src/linear-tracker.mjs` | `LinearTrackerClient`, `normalizeLinearIssue()` | GraphQL Linear issue fetcher for server mode. |
 | `src/logger.mjs` | `StructuredLogger`, `nullLogger` | Structured JSON logger. |
 | `src/tui.mjs` + `src/tui-*.mjs` | `runMaestroTui()` | Full interactive terminal UI. Provider/model/effort pickers, workflow editor, task browser. |
@@ -131,7 +133,7 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
    → resolveWorkspaceLocalInvocation(): cwd = INIT_CWD / MAESTRO_CALLER_CWD / processCwd
 
 2. runLangGraphTask(taskId, prompt, opts):
-   a. Open SqliteTaskStore at .maestro/maestro.db
+   a. Open task store: SqliteTaskStore (.maestro/maestro.db) or PostgresTaskStore (DATABASE_URL)
    b. Create task record (status: queued)
    c. Load workflow.json → buildGraph()
    d. Select runner: HerdrAgentRunner (default) or TerminalAgentRunner
