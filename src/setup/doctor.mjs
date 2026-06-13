@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 
 import { directCommandExists } from "../agent-runner.mjs";
 import { validateWorkflow } from "../workflow-validate.mjs";
-import { readLocalSecrets, secretsPath } from "./keys.mjs";
+import { encryptedSecretsPath, secretsPath } from "./keys.mjs";
 import { CLI_PROVIDERS, LOCAL_AGENT_PROVIDERS } from "./scanners/local-agents.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -136,14 +136,25 @@ export async function runDoctor({
   }
 
   try {
-    const stat = await fs.stat(secretsPath(stateDir));
-    const secrets = await readLocalSecrets(stateDir);
-    const names = Object.keys(secrets);
+    // Prefer the encrypted store; fall back to legacy plaintext.
+    let storePath = encryptedSecretsPath(stateDir);
+    let mode = "encrypted";
+    let stat;
+    try {
+      stat = await fs.stat(storePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      storePath = secretsPath(stateDir);
+      mode = "plaintext";
+      stat = await fs.stat(storePath);
+    }
     const tooOpen = process.platform !== "win32" && (stat.mode & 0o077) !== 0;
     if (tooOpen) {
-      checks.push(check("secrets", "secrets", "fail", `file mode too open — run: chmod 600 ${secretsPath(stateDir)}`));
+      checks.push(check("secrets", "secrets", "fail", `file mode too open — run: chmod 600 ${storePath}`));
+    } else if (mode === "plaintext") {
+      checks.push(check("secrets", "secrets", "warn", "plaintext store — run: maestro setup keys --encrypt"));
     } else {
-      checks.push(check("secrets", "secrets", "pass", names.length > 0 ? `keys: ${names.join(", ")}` : "no keys stored"));
+      checks.push(check("secrets", "secrets", "pass", "encrypted store (scrypt+AES-256-GCM)"));
     }
   } catch (error) {
     checks.push(error.code === "ENOENT"
@@ -157,6 +168,7 @@ export async function runDoctor({
 const GLYPHS = {
   pass: { mark: "✓", color: "\u001b[32m" },
   fail: { mark: "✗", color: "\u001b[31m" },
+  warn: { mark: "!", color: "\u001b[33m" },
   skip: { mark: "–", color: "\u001b[2m" },
 };
 const RESET = "\u001b[0m";

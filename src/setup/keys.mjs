@@ -94,10 +94,20 @@ export async function readSecretsEnvMap(
 // Load secrets into the process env. Real environment variables always win.
 // Returns the names of keys that were applied.
 export async function loadLocalSecrets(stateDir, env = process.env, opts = {}) {
-  const secrets = await readSecretsEnvMap(stateDir, {
-    passphraseEnv: opts.passphraseEnv ?? env,
-    interactive: opts.interactive ?? false,
-  });
+  let secrets;
+  try {
+    secrets = await readSecretsEnvMap(stateDir, {
+      passphraseEnv: opts.passphraseEnv ?? env,
+      interactive: opts.interactive ?? false,
+    });
+  } catch (error) {
+    // An encrypted store with no passphrase available at (non-interactive)
+    // startup is not an error: most commands don't need secrets. Stay silent
+    // and leave secrets unloaded. Genuine failures (bad passphrase, tampered or
+    // malformed store) still propagate so callers can warn.
+    if (error.message === "secret_passphrase_required") return [];
+    throw error;
+  }
   const applied = [];
   for (const [key, value] of Object.entries(secrets)) {
     if (typeof value !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
