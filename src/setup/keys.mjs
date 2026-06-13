@@ -12,6 +12,7 @@ import { ENV_KEY_DENYLIST } from "../agent-runner.mjs";
 import { resolveDollarValue } from "../workflow.mjs";
 import { decryptSecrets, encryptSecrets, isEncryptedEnvelope } from "./secret-crypto.mjs";
 import { getPassphrase } from "./secret-passphrase.mjs";
+import { readSecretMasked } from "./secret-prompt.mjs";
 
 const SECRETS_FILE = "secrets.local.json";
 const ENC_SECRETS_FILE = "secrets.local.enc.json";
@@ -138,22 +139,20 @@ export function resolveProviderEnv(providerDef, env = process.env) {
   return resolved;
 }
 
-// Read one line with terminal echo muted (best-effort; falls back to plain).
-function questionMuted(rl, stdout, prompt) {
-  return new Promise((resolve) => {
-    stdout.write(prompt);
-    const origWrite = rl._writeToOutput?.bind(rl);
-    if (origWrite) {
-      // Suppress ALL echo while muted — a pasted secret containing newlines
-      // must not leak to the terminal; the resolve path writes its own "\n".
-      rl._writeToOutput = () => {};
-    }
-    rl.question("", (answer) => {
-      if (origWrite) rl._writeToOutput = origWrite;
-      stdout.write("\n");
-      resolve(answer);
-    });
-  });
+// Read a masked secret value while a readline interface owns stdin: pause the
+// interface and detach its keypress listener for the duration, so readSecretMasked
+// (raw mode) is the sole reader, then restore. Only the typed value is masked —
+// the prompt/instructions written by readSecretMasked stay visible.
+async function readMaskedWithReadline(rl, stdin, stdout, prompt) {
+  rl.pause();
+  const saved = stdin.listeners("data");
+  stdin.removeAllListeners("data");
+  try {
+    return await readSecretMasked({ stdin, stdout, prompt });
+  } finally {
+    for (const listener of saved) stdin.on("data", listener);
+    rl.resume();
+  }
 }
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -235,7 +234,9 @@ export async function runKeysWizard({
           stdout.write("invalid name — letters, digits, underscore; cannot start with a digit\n");
           continue;
         }
-        const value = (await questionMuted(rl, stdout, "value (hidden): ")).trim();
+        const value = (
+          await readMaskedWithReadline(rl, stdin, stdout, `enter value for ${name} (masked): `)
+        ).trim();
         if (!value) {
           stdout.write("empty value — skipped\n");
           continue;
