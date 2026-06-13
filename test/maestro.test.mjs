@@ -251,8 +251,9 @@ test("workflow loading returns typed errors for bad files and strict prompt rend
 });
 
 test("CLI parser supports default workflow path, explicit path, and --port override", () => {
+  // With no WORKFLOW.md on disk the default resolves to the .maestro/ location.
   assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs"]), {
-    workflowPath: path.resolve("WORKFLOW.md"),
+    workflowPath: path.resolve(".maestro/WORKFLOW.md"),
     port: null,
   });
   assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs", "ops/WORKFLOW.md", "--port", "0"]), {
@@ -263,6 +264,46 @@ test("CLI parser supports default workflow path, explicit path, and --port overr
     () => parseCliArgs(["node", "scripts/maestro.mjs", "--port", "nope"]),
     /invalid_port/,
   );
+});
+
+test("CLI parser honors --workflow-path and --state-dir flags", () => {
+  assert.equal(
+    parseCliArgs(["node", "maestro", "--workflow-path", "ops/flow.md"]).workflowPath,
+    path.resolve("ops/flow.md"),
+  );
+  assert.equal(
+    parseCliArgs(["node", "maestro", "--state-dir", "custom-state"]).workflowPath,
+    path.resolve("custom-state/WORKFLOW.md"),
+  );
+});
+
+test("resolveServerWorkflowPath prefers .maestro/, then legacy root", async () => {
+  const { resolveServerWorkflowPath } = await import("../src/workflow.mjs");
+  await withTempDir(async (dir) => {
+    // Nothing on disk → canonical .maestro/ location.
+    assert.equal(
+      resolveServerWorkflowPath({ cwd: dir }),
+      path.join(dir, ".maestro", "WORKFLOW.md"),
+    );
+    // Legacy root file present, no .maestro/ copy → fall back to root.
+    await writeFile(path.join(dir, "WORKFLOW.md"), "x");
+    assert.equal(
+      resolveServerWorkflowPath({ cwd: dir }),
+      path.join(dir, "WORKFLOW.md"),
+    );
+    // .maestro/ copy present → it wins over the legacy root file.
+    await mkdir(path.join(dir, ".maestro"), { recursive: true });
+    await writeFile(path.join(dir, ".maestro", "WORKFLOW.md"), "y");
+    assert.equal(
+      resolveServerWorkflowPath({ cwd: dir }),
+      path.join(dir, ".maestro", "WORKFLOW.md"),
+    );
+    // Explicit path always wins, resolved against cwd.
+    assert.equal(
+      resolveServerWorkflowPath({ explicit: "a/b.md", cwd: dir }),
+      path.join(dir, "a", "b.md"),
+    );
+  });
 });
 
 test("workspace manager sanitizes identifiers, runs hooks, and enforces root containment", async () => {
