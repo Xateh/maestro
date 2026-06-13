@@ -10,6 +10,7 @@ import { formatValidation, validateWorkflow } from "../workflow-validate.mjs";
 
 import { defaultGitRunner, defaultHostRunner } from "./git-exec.mjs";
 import {
+  findUnknownFlags,
   makeStore,
   parseActionArgs,
   parseEditActionArgs,
@@ -37,6 +38,12 @@ import {
   startDetachedLocalTask,
 } from "./tasks-run.mjs";
 import { writeLine } from "./util.mjs";
+
+function warnFlags(flags, command, stderr) {
+  for (const f of flags) {
+    writeLine(stderr, `warning: unknown flag for '${command}': ${f}`);
+  }
+}
 
 export async function runLocalMaestroCommand({
   args,
@@ -68,11 +75,12 @@ export async function runLocalMaestroCommand({
   }
 
   if (command === "project") {
-    return runProjectCommand({ args, cwd, stdout, store, gitRunner });
+    return runProjectCommand({ args, cwd, stdout, stderr, store, gitRunner });
   }
 
   if (command === "tui") {
     const parsed = parseSharedStateArgs(args, cwd);
+    warnFlags(findUnknownFlags(parsed.positional, new Set()), "tui", stderr);
     const taskStore = makeStore(parsed, store);
     return runMaestroTui({
       cwd,
@@ -258,6 +266,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "run-task") {
     const parsed = parseSharedStateArgs(args, cwd);
+    warnFlags(findUnknownFlags(parsed.positional.slice(1), new Set()), "run-task", stderr);
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
@@ -266,6 +275,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "approve" || command === "deny") {
     const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, command, stderr);
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
@@ -291,6 +301,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "approve-action" || command === "deny-action" || command === "run-action") {
     const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, command, stderr);
     const [taskId, actionId] = parsed.positional;
     if (!taskId) throw new Error("missing_task_id");
     if (!actionId) throw new Error("missing_action_id");
@@ -335,6 +346,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "edit-action") {
     const parsed = parseEditActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "edit-action", stderr);
     const [taskId, actionId] = parsed.positional;
     if (!taskId) throw new Error("missing_task_id");
     if (!actionId) throw new Error("missing_action_id");
@@ -353,6 +365,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "message") {
     const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "message", stderr);
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
@@ -393,6 +406,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "retry") {
     const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "retry", stderr);
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
@@ -413,6 +427,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "extend-timeout") {
     const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "extend-timeout", stderr);
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     if (parsed.timeoutMs === null) throw new Error("missing_timeout_ms");
@@ -442,6 +457,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "mark-done") {
     const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "mark-done", stderr);
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     const actionId = parsed.positional[1] ?? null;
@@ -473,6 +489,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "cancel") {
     const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "cancel", stderr);
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
@@ -483,6 +500,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "status") {
     const parsed = parseSharedStateArgs(args, cwd);
+    warnFlags(findUnknownFlags(parsed.positional, new Set()), "status", stderr);
     const taskStore = makeStore(parsed, store);
     const tasks = await recoverStaleRunningTasks(taskStore);
     if (tasks.length === 0) {
@@ -496,6 +514,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "inspect") {
     const parsed = parseInspectArgs(args, cwd, stdout);
+    warnFlags(parsed.unknownFlags, "inspect", stderr);
     const id = parsed.positional[0];
     if (!id) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
@@ -508,6 +527,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "init") {
     const parsed = parseSharedStateArgs(args, cwd);
+    warnFlags(findUnknownFlags(parsed.positional, new Set(["--yes", "--dry-run", "--workflow"])), "init", stderr);
     const { runInitWizard } = await import("../setup/init.mjs");
     return runInitWizard({
       stateDir: parsed.stateDir,
@@ -522,6 +542,7 @@ export async function runLocalMaestroCommand({
 
   if (command === "doctor") {
     const parsed = parseSharedStateArgs(args, cwd);
+    warnFlags(findUnknownFlags(parsed.positional, new Set(["--json"])), "doctor", stderr);
     const { runDoctor, formatDoctorReport } = await import("../setup/doctor.mjs");
     const result = await runDoctor({ stateDir: parsed.stateDir, cwd });
     writeLine(stdout, parsed.positional.includes("--json")
@@ -535,14 +556,17 @@ export async function runLocalMaestroCommand({
     const parsed = parseSharedStateArgs(args, cwd);
     const [action, ...rest] = parsed.positional;
     if (action === "keys") {
+      warnFlags(findUnknownFlags(rest, new Set(["--var"])), "setup keys", stderr);
       await runKeysWizard({ stateDir: parsed.stateDir, args: rest, stdin, stdout });
       return {};
     }
     if (action === "local") {
+      warnFlags(findUnknownFlags(rest, new Set(["--yes", "--json"])), "setup local", stderr);
       const taskStore = makeStore(parsed, store);
       return runLocalSetup({ store: taskStore, args: rest, stdin, stdout });
     }
     if (action === "import") {
+      warnFlags(findUnknownFlags(rest, new Set(["--dry-run", "--yes", "--copy"])), "setup import", stderr);
       const taskStore = makeStore(parsed, store);
       const { runImportWizard } = await import("../setup/import.mjs");
       return runImportWizard({ store: taskStore, stateDir: parsed.stateDir, args: rest, stdin, stdout, stderr });
@@ -553,6 +577,7 @@ export async function runLocalMaestroCommand({
   if (command === "export") {
     const parsed = parseSharedStateArgs(args, cwd);
     const rest = parsed.positional;
+    warnFlags(findUnknownFlags(rest, new Set(["--name", "--out", "--single-file"])), "export", stderr);
     const { buildBundle, writeBundleDir, writeBundleFile } = await import("../setup/export.mjs");
     const nameIndex = rest.indexOf("--name");
     const outIndex = rest.indexOf("--out");
@@ -575,6 +600,7 @@ export async function runLocalMaestroCommand({
     const parsed = parseSharedStateArgs(args, cwd);
     const [bundlePath, ...rest] = parsed.positional;
     if (!bundlePath) throw new Error("missing_bundle_path (usage: maestro import <bundle-dir-or-file> [--dry-run] [--force] [--yes])");
+    warnFlags(findUnknownFlags(rest, new Set(["--dry-run", "--force", "--yes"])), "import", stderr);
     const { readBundle, importBundle } = await import("../setup/export.mjs");
     const bundle = await readBundle(path.resolve(cwd, bundlePath));
     const taskStore = makeStore(parsed, store);
@@ -638,6 +664,7 @@ export async function runLocalMaestroCommand({
     const parsed = parseSharedStateArgs(args, cwd);
     const [action, ...rest] = parsed.positional;
     if (action === "validate") {
+      warnFlags(findUnknownFlags(rest, new Set(["--json", "--strict"])), "workflow validate", stderr);
       const taskStore = makeStore(parsed, store);
       const [workflow, config] = await Promise.all([
         taskStore.readWorkflow(),
@@ -654,6 +681,7 @@ export async function runLocalMaestroCommand({
       return result;
     }
     if (action === "use") {
+      warnFlags(findUnknownFlags(rest, new Set()), "workflow use", stderr);
       const name = rest.find((arg) => !arg.startsWith("-"));
       if (!name) throw usageError(["workflow", "use"]);
       const { applyWorkflowTemplate } = await import("../setup/workflow-templates.mjs");
