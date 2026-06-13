@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **PostgreSQL backend** — set `DATABASE_URL=postgres://…` to use PostgreSQL
+  instead of SQLite for all task/handoff state. `openStore()` routes to
+  `PostgresTaskStore` (`pg` pool) automatically; SQLite remains the default.
+  Both backends share an identical schema; all store methods are now async.
+- **OpenTelemetry tracing** — set `OTEL_EXPORTER_OTLP_ENDPOINT` to export
+  traces and spans via OTLP/HTTP proto. Auto-instruments `http`, `pg`, and
+  `dns`. Completely zero-overhead (no imports, no SDK init) when the env var
+  is absent. Override the service name with `OTEL_SERVICE_NAME`.
+- **Interactive web dashboard** — the HTTP server (`maestro serve`) now serves
+  a Linear-inspired browser UI at `/`:
+  - Live task board polling `/api/v1/state` every 5 s (active) or 30 s (idle)
+    with surgical DOM updates — no page reloads.
+  - Filter tabs: All / Running / Retrying / Completed.
+  - Click any row to open a slide-in detail panel that fetches
+    `/api/v1/<identifier>`: shows issue state, attempt, timestamps,
+    description, priority, assignee, and full JSON. Actions: Copy JSON,
+    Raw endpoint link.
+  - Trigger Refresh button (POST `/api/v1/refresh`) with loading spinner;
+    Force-Poll button for immediate state sync.
+  - Toast notifications and a live pulse indicator in the toolbar.
+
+### Changed
+
+- All `SqliteTaskStore` methods now return Promises (previously synchronous),
+  making the store interface uniform across SQLite and PostgreSQL backends.
+  Callers in `engine.mjs`, `nodes.mjs`, `mcp/server.mjs`, and
+  `herdr-agent-runner.mjs` updated to `await` all store calls.
+
+---
+
 ## [0.1.0] - 2026-06-13
 
 Initial release.

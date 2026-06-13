@@ -34,7 +34,7 @@ and always targets the caller's directory — never the package checkout.
   imported/              # snapshots of sources imported with --copy
   prompts/               # instruction docs materialized from imported bundles
   .gitignore             # written by the importer; covers the local-only files
-  maestro.db             # SQLite — tasks, handoffs (LangGraph engine)
+  maestro.db             # SQLite — tasks, handoffs (LangGraph engine, default backend)
   tasks/                 # legacy per-task JSON files (pre-LangGraph)
   runs/                  # per-run artifact directories
     <task-id>/
@@ -113,6 +113,11 @@ Key fields:
     "close_tab_on": "success"     // "success" | "terminal" | "never"
   },
 
+  // HTTP server (maestro serve)
+  "server": {
+    "port": 4000                  // set to null to disable
+  },
+
   // Security
   "host_command_allow": []        // exact basenames; network binaries hard-denied
 }
@@ -137,6 +142,21 @@ Tabs are **never** closed while a task is `waiting_user`, `waiting_approval`,
 or `needs_review` — the conversation stays visible until the task resumes,
 and the resume lands in the same tab (verified via `herdr tab get`; recreated
 if the tab was closed manually).
+
+### PostgreSQL Backend
+
+By default Maestro stores all task and handoff state in SQLite
+(`.maestro/maestro.db`). Set `DATABASE_URL` to a PostgreSQL connection string
+to use PostgreSQL instead — useful for high-availability deployments where
+multiple workers share a database, or for persisting state outside the project
+directory.
+
+```bash
+DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve workflow.json
+```
+
+The schema is created automatically on first connection. Both backends expose
+the same async API; no application code changes are needed to switch.
 
 ### Local Config Overlay — `config.local.json`
 

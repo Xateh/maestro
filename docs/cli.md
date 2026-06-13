@@ -101,12 +101,27 @@ maestro doctor --json     # machine-readable result
 
 ### `serve [WORKFLOW.md]`
 
-Start server mode: poll Linear and auto-dispatch issues.
+Start server mode: poll Linear and auto-dispatch issues. Also starts the
+HTTP server, which serves the **interactive web dashboard** at `/` and a
+JSON API at `/api/v1/*`.
 
 ```bash
 maestro serve                 # default WORKFLOW.md
 maestro serve ./WORKFLOW.md --port 4100
 ```
+
+**Dashboard** (`http://localhost:<port>/`): Linear-inspired browser UI with
+live task polling (5 s when tasks are active, 30 s when idle), filter tabs
+(All / Running / Retrying / Completed), and a slide-in detail panel per task.
+Actions: Refresh (triggers `POST /api/v1/refresh`), Force Poll, Copy JSON.
+
+**API endpoints:**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/state` | Full orchestrator snapshot (JSON) |
+| `GET` | `/api/v1/:id` | Single task detail |
+| `POST` | `/api/v1/refresh` | Trigger a Linear sync |
 
 > `maestro <file.md>` (bare path, no `serve`) still works when the file
 > exists, but is deprecated — a note is printed to stderr.
@@ -399,6 +414,9 @@ TTYs (pipes, scripts), or on demand with `MAESTRO_TUI_CLASSIC=1`.
 | `INIT_CWD` | — | npm-style caller cwd (set by npm when running scripts) |
 | `HERDR_BIN` | `"herdr"` | Path to the herdr binary |
 | `HERDR_SOCKET_PATH` | `~/.config/herdr/herdr.sock` | herdr daemon unix socket |
+| `DATABASE_URL` | — | PostgreSQL connection string (`postgres://…`). When set, all task/handoff state is stored in PostgreSQL instead of the default SQLite backend. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP/HTTP endpoint for OpenTelemetry trace export (e.g. `http://localhost:4318`). When unset, OTel is completely disabled (no imports, no overhead). |
+| `OTEL_SERVICE_NAME` | `"maestro"` | Override the service name reported in OTel traces. |
 
 ---
 
