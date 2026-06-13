@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Encrypted secret store** — `maestro setup keys --encrypt` migrates
+  `.maestro/secrets.local.json` to an encrypted `secrets.local.enc.json`
+  (scrypt + AES-256-GCM, zero new deps) and shreds the plaintext. Unlock with
+  `MAESTRO_SECRET_PASSPHRASE` or an interactive prompt; real env vars still win.
+  `maestro doctor` reports the store mode. `maestro setup harden` installs a
+  Claude Code guardrail (PreToolUse hook + deny rules) so only maestro reads its
+  secrets. See `docs/configuration.md` § Secrets.
 - **PostgreSQL backend** — set `DATABASE_URL=postgres://…` to use PostgreSQL
   instead of SQLite for all task/handoff state. `openStore()` routes to
   `PostgresTaskStore` (`pg` pool) automatically; SQLite remains the default.
