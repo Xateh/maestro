@@ -261,8 +261,10 @@ Both `maestro import` and `maestro workflow use` back up the previous file to
 }
 ```
 
-The workflow can also be accompanied by a `WORKFLOW.md` file at the same path, which defines
-per-role Liquid prompt templates in human-readable Markdown.
+The workflow can also be accompanied by a `WORKFLOW.md` file in the same
+`.maestro/` directory (`.maestro/WORKFLOW.md`), which defines per-role Liquid
+prompt templates in human-readable Markdown. A legacy `WORKFLOW.md` at the repo
+root is still read when no `.maestro/WORKFLOW.md` exists.
 
 ### Role fields for imported/custom roles
 

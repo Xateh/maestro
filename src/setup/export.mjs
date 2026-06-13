@@ -122,7 +122,10 @@ export async function buildBundle({ stateDir, name = null, now = () => new Date(
     roleDef.instruction_paths = rewritten;
   }
 
-  const workflowMd = await fs.readFile(path.join(stateDir, "..", "WORKFLOW.md"), "utf8").catch(() => null);
+  // WORKFLOW.md (server/dispatch mode) lives in the state dir; fall back to the
+  // legacy repo-root location for bundles created before the move.
+  const workflowMd = await fs.readFile(path.join(stateDir, "WORKFLOW.md"), "utf8").catch(() => null)
+    ?? await fs.readFile(path.join(stateDir, "..", "WORKFLOW.md"), "utf8").catch(() => null);
   if (workflowMd) files["WORKFLOW.md"] = workflowMd;
 
   files["workflow.json"] = `${JSON.stringify(workflow, null, 2)}\n`;
@@ -280,7 +283,7 @@ export async function importBundle({ bundle, stateDir, store, force = false, now
   await fs.writeFile(manifestPath(stateDir), `${JSON.stringify(manifest, null, 2)}\n`);
 
   if (bundle.files["WORKFLOW.md"]) {
-    await fs.writeFile(path.join(stateDir, "..", "WORKFLOW.md"), bundle.files["WORKFLOW.md"]).catch(() => {});
+    await fs.writeFile(path.join(stateDir, "WORKFLOW.md"), bundle.files["WORKFLOW.md"]).catch(() => {});
   }
 
   return { workflow, validation, manifest };

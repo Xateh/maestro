@@ -315,8 +315,9 @@ async function readWorkflow() {
   const { MAESTRO_DIR, ROOT } = maestroPaths();
   const workflowPath = path.join(MAESTRO_DIR, "workflow.json");
   const workflow = await readJSON(workflowPath).catch(() => null);
-  const wfMdPath = path.join(ROOT, "WORKFLOW.md");
-  const wfMd = await fs.readFile(wfMdPath, "utf8").catch(() => null);
+  // WORKFLOW.md lives in .maestro/; fall back to the legacy repo-root location.
+  const wfMd = await fs.readFile(path.join(MAESTRO_DIR, "WORKFLOW.md"), "utf8").catch(() => null)
+    ?? await fs.readFile(path.join(ROOT, "WORKFLOW.md"), "utf8").catch(() => null);
   return { workflow_json: workflow, workflow_md: wfMd };
 }
 
