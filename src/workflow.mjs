@@ -1,4 +1,4 @@
-import { readFile, stat, watchFile, unwatchFile } from "node:fs";
+import { existsSync, readFile, stat, watchFile, unwatchFile } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -240,9 +240,28 @@ export async function renderPrompt(template, context) {
   }
 }
 
+// Server-mode artifacts live under the .maestro/ state directory alongside the
+// rest of Maestro's config. Older setups kept WORKFLOW.md at the repo root, so
+// resolve the canonical .maestro/ location first and fall back to the legacy
+// root path when it is the only one present.
+export const DEFAULT_STATE_DIR = ".maestro";
+
+export function resolveServerWorkflowPath({ explicit = null, stateDir = null, cwd = process.cwd() } = {}) {
+  if (explicit) return path.resolve(cwd, explicit);
+  const dir = path.resolve(cwd, stateDir ?? DEFAULT_STATE_DIR);
+  const inStateDir = path.join(dir, "WORKFLOW.md");
+  if (existsSync(inStateDir)) return inStateDir;
+  const legacyRoot = path.resolve(cwd, "WORKFLOW.md");
+  if (existsSync(legacyRoot)) return legacyRoot;
+  // Neither exists yet — point at the canonical .maestro/ location so any
+  // "missing workflow" error names the place the file belongs.
+  return inStateDir;
+}
+
 export function parseCliArgs(argv = process.argv) {
   const args = argv.slice(2);
   let workflowPath = null;
+  let stateDir = null;
   let port = null;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -257,6 +276,20 @@ export function parseCliArgs(argv = process.argv) {
       port = parsed;
       continue;
     }
+    if (arg === "--workflow-path") {
+      const value = args[index + 1];
+      index += 1;
+      if (!value) throw typedError("missing_workflow_path");
+      workflowPath = value;
+      continue;
+    }
+    if (arg === "--state-dir") {
+      const value = args[index + 1];
+      index += 1;
+      if (!value) throw typedError("missing_state_dir");
+      stateDir = value;
+      continue;
+    }
     if (arg.startsWith("--")) {
       throw typedError("unknown_cli_arg", arg);
     }
@@ -268,7 +301,7 @@ export function parseCliArgs(argv = process.argv) {
   }
 
   return {
-    workflowPath: path.resolve(workflowPath ?? "WORKFLOW.md"),
+    workflowPath: resolveServerWorkflowPath({ explicit: workflowPath, stateDir }),
     port,
   };
 }

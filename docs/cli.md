@@ -106,9 +106,15 @@ HTTP server, which serves the **interactive web dashboard** at `/` and a
 JSON API at `/api/v1/*`.
 
 ```bash
-maestro serve                 # default WORKFLOW.md
-maestro serve ./WORKFLOW.md --port 4100
+maestro serve                       # default .maestro/WORKFLOW.md (legacy ./WORKFLOW.md still honored)
+maestro serve ./ops/WORKFLOW.md --port 4100
+maestro serve --workflow-path .maestro/WORKFLOW.md
+maestro serve --state-dir ./alt     # reads <state-dir>/WORKFLOW.md
 ```
+
+The server-mode workflow file lives in the `.maestro/` state directory
+(`.maestro/WORKFLOW.md`). For backward compatibility a `WORKFLOW.md` at the
+repo root is still used when no `.maestro/WORKFLOW.md` is present.
 
 **Dashboard** (`http://localhost:<port>/`): Linear-inspired browser UI with
 live task polling (5 s when tasks are active, 30 s when idle), filter tabs
