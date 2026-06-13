@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import "../src/suppress-sqlite-warning.mjs";
+
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";

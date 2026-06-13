@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 import { resolveWorkspaceLocalInvocation } from "../bin/maestro.mjs";
 import { parseCliArgs } from "../src/workflow.mjs";
@@ -74,4 +78,30 @@ test("unblock commands also use central Maestro state", () => {
       path.join(PACKAGE_ROOT, ".maestro"),
     ]);
   }
+});
+
+test("CLI runs without the node:sqlite ExperimentalWarning on stderr", async () => {
+  const { stdout, stderr } = await execFileAsync(
+    process.execPath,
+    [path.join(PACKAGE_ROOT, "bin", "maestro.mjs"), "help"],
+    { cwd: PACKAGE_ROOT },
+  );
+
+  assert.ok(stdout.length > 0);
+  assert.doesNotMatch(stderr, /ExperimentalWarning/);
+});
+
+test("warning suppressor passes other warnings through to stderr", async () => {
+  const script = [
+    'await import("./src/suppress-sqlite-warning.mjs");',
+    'process.emitWarning("legacy api", "DeprecationWarning");',
+    "await new Promise((resolve) => setImmediate(resolve));",
+  ].join("\n");
+  const { stderr } = await execFileAsync(
+    process.execPath,
+    ["--input-type=module", "-e", script],
+    { cwd: PACKAGE_ROOT },
+  );
+
+  assert.match(stderr, /DeprecationWarning: legacy api/);
 });
