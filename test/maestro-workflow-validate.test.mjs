@@ -222,3 +222,71 @@ test("full-audit-sweep: implementation reaches human_approval which completes", 
   }
   assert.equal(template.transitions.human_approval.done, "$complete");
 });
+
+// ── SP3 kind:"command" role spec validation (bad_command_spec) ───────────────
+
+test("command role missing run → bad_command_spec error", () => {
+  const wf = baseWorkflow({
+    executor: { kind: "command", output_schema: "evaluation", commands: [{ name: "lint" }] },
+  });
+  const result = validateWorkflow(wf);
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes("bad_command_spec"));
+});
+
+test("command role missing name → bad_command_spec error", () => {
+  const wf = baseWorkflow({
+    executor: { kind: "command", output_schema: "evaluation", commands: [{ run: "npm test" }] },
+  });
+  const result = validateWorkflow(wf);
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes("bad_command_spec"));
+});
+
+test("command role duplicate name → bad_command_spec error", () => {
+  const wf = baseWorkflow({
+    executor: {
+      kind: "command",
+      output_schema: "evaluation",
+      commands: [{ name: "x", run: "true" }, { name: "x", run: "false" }],
+    },
+  });
+  const result = validateWorkflow(wf);
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes("bad_command_spec"));
+});
+
+test("command role non-array commands → bad_command_spec error", () => {
+  const wf = baseWorkflow({
+    executor: { kind: "command", output_schema: "evaluation", commands: "nope" },
+  });
+  const result = validateWorkflow(wf);
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes("bad_command_spec"));
+});
+
+test("command role empty commands:[] → clean", () => {
+  const wf = baseWorkflow({
+    executor: { kind: "command", output_schema: "evaluation", commands: [] },
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(!codes(result).includes("bad_command_spec"));
+});
+
+test("command role valid 2 commands → clean", () => {
+  const wf = baseWorkflow({
+    executor: {
+      kind: "command",
+      output_schema: "evaluation",
+      commands: [{ name: "lint", run: "npm run lint" }, { name: "test", run: "npm test" }],
+    },
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(!codes(result).includes("bad_command_spec"));
+});
+
+test("full-audit-sweep validates clean — no bad_command_spec", () => {
+  const result = validateWorkflow(resolveWorkflowTemplate("full-audit-sweep"));
+  assert.equal(result.ok, true);
+  assert.ok(!codes(result).includes("bad_command_spec"));
+});

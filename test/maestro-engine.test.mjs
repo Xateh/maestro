@@ -1173,3 +1173,302 @@ test("full-audit-sweep: malformed verifier output records ok:false but advances"
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── SP3 commandRunner (default impl) — hermetic coreutils ────────────────────
+
+import { commandRunner } from "../src/command-runner.mjs";
+
+test("commandRunner: echo → exit 0 with stdout", async () => {
+  const r = await commandRunner({ run: "echo hi", cwd: process.cwd(), timeoutMs: 5000 });
+  assert.equal(r.exit_code, 0);
+  assert.equal(r.timed_out, false);
+  assert.match(r.stdout, /hi/);
+});
+
+test("commandRunner: false → exit 1", async () => {
+  const r = await commandRunner({ run: "false", cwd: process.cwd(), timeoutMs: 5000 });
+  assert.equal(r.exit_code, 1);
+  assert.equal(r.timed_out, false);
+});
+
+test("commandRunner: sleep beyond timeout → timed_out, exit null, SIGTERM", async () => {
+  const r = await commandRunner({ run: "sleep 5", cwd: process.cwd(), timeoutMs: 50 });
+  assert.equal(r.timed_out, true);
+  assert.equal(r.exit_code, null);
+  assert.equal(r.signal, "SIGTERM");
+});
+
+test("commandRunner: missing binary resolves (no throw) with spawn_error", async () => {
+  // sh runs but the inner binary is missing → non-zero exit (not a spawn_error
+  // of sh itself). Force a spawn error by injecting a throwing spawnProcess.
+  const r = await commandRunner({
+    run: "echo hi",
+    cwd: process.cwd(),
+    timeoutMs: 5000,
+    spawnProcess: () => { throw new Error("spawn ENOENT"); },
+  });
+  assert.equal(r.exit_code, 127);
+  assert.equal(r.spawn_error, true);
+});
+
+test("commandRunner: child 'error' event resolves with spawn_error 127", async () => {
+  const { EventEmitter } = await import("node:events");
+  const fakeChild = new EventEmitter();
+  fakeChild.kill = () => {};
+  fakeChild.stdout = new EventEmitter();
+  fakeChild.stderr = new EventEmitter();
+  const p = commandRunner({
+    run: "x", cwd: process.cwd(), timeoutMs: 5000,
+    spawnProcess: () => fakeChild,
+  });
+  fakeChild.emit("error", new Error("boom"));
+  const r = await p;
+  assert.equal(r.exit_code, 127);
+  assert.equal(r.spawn_error, true);
+});
+
+test("commandRunner: bounded tail keeps last maxTailBytes", async () => {
+  const r = await commandRunner({ run: "printf 'abcdefghij'", cwd: process.cwd(), timeoutMs: 5000, maxTailBytes: 4 });
+  assert.equal(Buffer.from(r.stdout, "utf8").length <= 4, true);
+  assert.equal(r.stdout, "ghij");
+});
+
+// ── SP3 kind:"command" node branch ───────────────────────────────────────────
+
+function commandRoleDef(commands) {
+  return {
+    label: "Evaluation",
+    kind: "command",
+    provider: null,
+    prompt_template: "evaluation",
+    output_schema: "evaluation",
+    commands,
+  };
+}
+
+test("command node: two commands (exit0/exit1) → done, pass_rate 0.5, one failure, schema ok, runner never called", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0001";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const calls = [];
+    const fakeRunner = async ({ run }) => {
+      calls.push(run);
+      return { exit_code: run === "good" ? 0 : 1, signal: null, stdout: "", stderr: "", timed_out: false };
+    };
+    const node = makeRoleNode(commandRoleDef([{ name: "ok", run: "good" }, { name: "bad", run: "boom" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: fakeRunner },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].provider, null);
+    assert.equal(result.priorHandoffs[0].payload.pass_rate, 0.5);
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+    assert.deepEqual(result.priorHandoffs[0].payload.coverage, {});
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.deepEqual(calls, ["good", "boom"]);
+    // DB sentinel is "command", engine-visible handoff is null
+    const handoffs = await db.getHandoffs(taskId);
+    assert.equal(handoffs[0].provider, "command");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: empty commands → runner never called, pass_rate 1", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0002";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    let called = false;
+    const node = makeRoleNode(commandRoleDef([]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => { called = true; return {}; } },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(called, false);
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.pass_rate, 1);
+    assert.deepEqual(result.priorHandoffs[0].payload.failures, []);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: spawn-error result → one failure, done", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0003";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "missing", run: "nope" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => ({ exit_code: 127, signal: null, stdout: "", stderr: "boom", timed_out: false, spawn_error: true }) },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.pass_rate, 0);
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+    assert.equal(result.priorHandoffs[0].payload.failures[0].exit_code, 127);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: timeout result → failure timed_out:true, done", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0004";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "slow", run: "sleep" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => ({ exit_code: null, signal: "SIGTERM", stdout: "", stderr: "", timed_out: true }) },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+    assert.equal(result.priorHandoffs[0].payload.failures[0].timed_out, true);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: rejecting commandRunner is caught → failure, done (never throws)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0005";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "c", run: "x" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => { throw new Error("rejected"); } },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+    assert.equal(result.priorHandoffs[0].payload.failures[0].exit_code, 127);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: absent commandRunner → synthetic spawn-error, done", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0006";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "c", run: "x" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: {},
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: allow_failure failing command excluded from pass_rate + failures", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0007";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([
+      { name: "ok", run: "good" },
+      { name: "flaky", run: "bad", allow_failure: true },
+    ]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async ({ run }) => ({ exit_code: run === "good" ? 0 : 1, signal: null, stdout: "", stderr: "", timed_out: false }) },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.priorHandoffs[0].payload.pass_rate, 1);
+    assert.deepEqual(result.priorHandoffs[0].payload.failures, []);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: resume skip → commandRunner never called", async () => {
+  let called = false;
+  const node = makeRoleNode(commandRoleDef([{ name: "c", run: "x" }]), {
+    db: { getTask: () => { throw new Error("db should not be hit on resume skip"); } },
+    runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+    ops: { commandRunner: async () => { called = true; return {}; } },
+  });
+  const result = await node({
+    task: { id: "t-resume" },
+    priorHandoffs: [{ role: "evaluation", provider: null, payload: {} }],
+    event: null, currentState: null,
+  });
+  assert.equal(result.event, "done");
+  assert.equal(called, false);
+});
+
+// ── SP3 template conversion + real-command e2e + back-compat ─────────────────
+
+test("full-audit-sweep template: evaluation is kind:command with commands:[]", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  assert.equal(template.roles.evaluation.kind, "command");
+  assert.deepEqual(template.roles.evaluation.commands, []);
+});
+
+test("full-audit-sweep: real-command evaluation e2e → succeeded, pass_rate 0.5, bad in failures", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-e2e-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    template.roles.evaluation.commands = [{ name: "ok", run: "true" }, { name: "bad", run: "false" }];
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner },
+    });
+    assert.equal(finalTask.status, "succeeded");
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const evaluation = handoffs.find((h) => h.role === "evaluation");
+      assert.equal(evaluation.payload.pass_rate, 0.5);
+      assert.ok(evaluation.payload.failures.some((f) => f.name === "bad"));
+      assert.deepEqual(evaluation.payload.coverage, {});
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("back-compat: DEFAULT_WORKFLOW roles declare no kind (kind absent ⇒ agent)", () => {
+  for (const role of Object.values(DEFAULT_WORKFLOW.roles)) {
+    assert.equal(role.kind, undefined);
+  }
+});

@@ -157,6 +157,32 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
       }
     }
 
+    // ── command role spec (SP3 kind:"command") ─────────────────────────────
+    // Each command needs a non-empty name + run; names must be unique within
+    // the role. An empty commands:[] is valid (opt-in no-op). `category` is
+    // permissive (any string / absent) — unknown categories are not rejected.
+    if (role?.kind === "command") {
+      if (role.commands !== undefined && !Array.isArray(role.commands)) {
+        errors.push(issue("bad_command_spec", `role "${roleName}" commands must be an array, got ${JSON.stringify(role.commands)}`));
+      } else if (Array.isArray(role.commands)) {
+        const seen = new Set();
+        for (const [i, command] of role.commands.entries()) {
+          const name = command?.name;
+          const run = command?.run;
+          if (typeof name !== "string" || name.length === 0) {
+            errors.push(issue("bad_command_spec", `role "${roleName}" command[${i}] is missing a non-empty "name"`));
+          } else if (seen.has(name)) {
+            errors.push(issue("bad_command_spec", `role "${roleName}" command name "${name}" is duplicated`));
+          } else {
+            seen.add(name);
+          }
+          if (typeof run !== "string" || run.length === 0) {
+            errors.push(issue("bad_command_spec", `role "${roleName}" command "${name ?? i}" is missing a non-empty "run"`));
+          }
+        }
+      }
+    }
+
     // ── output schema declaration (manifest v2) ─────────────────────────────
     const resolved = resolveRoleSchema(role ?? {});
     if (resolved.source === "unknown") {
