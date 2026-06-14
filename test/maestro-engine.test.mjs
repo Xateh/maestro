@@ -509,7 +509,7 @@ test("standalone mode entry: imported role runs alone, default pipeline untouche
       },
     };
     // graph must compile even though planner/executor/reviewer are not on this run's path
-    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, entry: "system_evaluator" });
+    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, entry: "system_evaluator", availabilityProbe: () => true });
     const final = await graph.invoke(
       { task: await db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
       { configurable: { thread_id: taskId }, recursionLimit: 50 },

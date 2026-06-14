@@ -3988,6 +3988,7 @@ test("local task CLI creates a task, runs planner/executor/reviewer, and records
       stderr: { write: () => {} },
       store,
       runner,
+      availabilityProbe: () => true, // stub runner; don't probe the host PATH
       onTaskCreated: (task) => {
         createdTaskId = task.id;
       },
