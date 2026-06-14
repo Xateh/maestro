@@ -187,12 +187,16 @@ function buildFullAuditSweepWorkflow() {
       }),
       regression: role({
         label: "Regression",
-        kind: "stub",
+        kind: "regression",
         provider: null,
         permission: "read",
         prompt_template: "regression",
         output_schema: "regression",
-        instructions: "Pass-through stub (SP4 wires the regression corpus).",
+        corpus_dir: ".maestro/regression", // default; shown for clarity
+        attempts: 1, // default single-shot
+        fail_threshold: 1, // default: any new failure routes fail
+        fail_event: "regressions_found", // default outcome event
+        instructions: "Re-runs the on-disk regression corpus and auto-promotes evaluation failures. Empty corpus ⇒ pass-through (event done).",
       }),
       human_approval: role({
         label: "Human Approval",
@@ -215,7 +219,7 @@ function buildFullAuditSweepWorkflow() {
       edge_cases: { done: "tests", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
       tests: { done: "evaluation", question: "$ask_user", error: "$halt" },
       evaluation: { done: "regression", error: "$halt" },
-      regression: { done: "human_approval", error: "$halt" },
+      regression: { done: "human_approval", regressions_found: "implementation", error: "$halt" },
       human_approval: { done: "$complete", question: "$ask_user", error: "$halt" },
     },
     modes: {

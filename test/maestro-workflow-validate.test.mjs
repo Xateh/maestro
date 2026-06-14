@@ -195,10 +195,12 @@ test("full-audit-sweep template validates with no errors", () => {
   }
 });
 
-test("full-audit-sweep: three rework cycles each terminate", () => {
+test("full-audit-sweep: rework cycles each terminate", () => {
   const template = resolveWorkflowTemplate("full-audit-sweep");
   const cycles = findCycles(template.transitions);
-  assert.equal(cycles.length, 3, "review/threat_model/edge_cases each loop to implementation");
+  // review/threat_model/edge_cases each loop to implementation (3) plus the SP4
+  // regression → implementation back-edge (regressions_found) = 4.
+  assert.equal(cycles.length, 4, "three review back-edges + regression loop-back");
   for (const cycle of cycles) {
     assert.ok(cycleHasTermination(cycle, template), `cycle ${cycle.join("→")} must terminate`);
   }
@@ -289,4 +291,56 @@ test("full-audit-sweep validates clean — no bad_command_spec", () => {
   const result = validateWorkflow(resolveWorkflowTemplate("full-audit-sweep"));
   assert.equal(result.ok, true);
   assert.ok(!codes(result).includes("bad_command_spec"));
+});
+
+// ── SP4 kind:"regression" role spec validation (bad_regression_spec) ─────────
+
+test("regression role missing fail_event transition → bad_regression_spec", () => {
+  // baseWorkflow auto-adds only {done, error}, so the default "regressions_found"
+  // fail_event transition is absent.
+  const wf = baseWorkflow({ r: { kind: "regression", output_schema: "regression" } });
+  const result = validateWorkflow(wf);
+  assert.ok(codes(result).includes("bad_regression_spec"));
+});
+
+test("regression role custom fail_event missing transition → bad_regression_spec", () => {
+  const wf = baseWorkflow({ r: { kind: "regression", fail_event: "oops", output_schema: "regression" } });
+  // transitions auto-added: { done, error } — "oops" missing.
+  const result = validateWorkflow(wf);
+  assert.ok(codes(result).includes("bad_regression_spec"));
+});
+
+test("regression role non-positive attempts → bad_regression_spec", () => {
+  for (const attempts of [0, -1, 1.5]) {
+    const wf = baseWorkflow(
+      { r: { kind: "regression", attempts, output_schema: "regression" } },
+      { transitions: { r: { done: "$complete", regressions_found: "$complete", error: "$halt" } } },
+    );
+    const result = validateWorkflow(wf);
+    assert.ok(codes(result).includes("bad_regression_spec"), `attempts ${attempts} should fail`);
+  }
+});
+
+test("regression role non-positive fail_threshold → bad_regression_spec", () => {
+  const wf = baseWorkflow(
+    { r: { kind: "regression", fail_threshold: 0, output_schema: "regression" } },
+    { transitions: { r: { done: "$complete", regressions_found: "$complete", error: "$halt" } } },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(codes(result).includes("bad_regression_spec"));
+});
+
+test("well-formed regression role validates clean — no bad_regression_spec", () => {
+  const wf = baseWorkflow(
+    { r: { kind: "regression", attempts: 2, fail_threshold: 1, output_schema: "regression" } },
+    { transitions: { r: { done: "$complete", regressions_found: "$complete", error: "$halt" } } },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(!codes(result).includes("bad_regression_spec"));
+});
+
+test("full-audit-sweep validates clean — no bad_regression_spec", () => {
+  const result = validateWorkflow(resolveWorkflowTemplate("full-audit-sweep"));
+  assert.equal(result.ok, true);
+  assert.ok(!codes(result).includes("bad_regression_spec"));
 });

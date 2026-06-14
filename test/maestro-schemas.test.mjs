@@ -327,3 +327,19 @@ test("buildEvaluationPayload: empty → vacuous pass + coverage {}", () => {
   assert.deepEqual(payload.failures, []);
   assert.deepEqual(payload.coverage, {});
 });
+
+test("SP4 regression payload (with extra fields) conforms to the regression schema", () => {
+  const payload = {
+    regressions_run: [
+      { id: "a", run: "x", category: null, exit_code: 1, signal: null, timed_out: false, passed: false, attempts: 1, output_tail: "" },
+    ],
+    new_failures: [
+      { id: "a", run: "x", category: null, exit_code: 1, signal: null, timed_out: false, attempts: 1, output_tail: "" },
+    ],
+    promoted_tests: [{ id: "b", source: "evaluation.failures", run: "y", category: "unit", path: "/tmp/b.json" }],
+    corpus_load_errors: [{ file: "broken.json", error: "bad" }],
+    outcome: "regressions_found",
+  };
+  const r = validatePayload("regression", payload);
+  assert.equal(r.ok, true);
+});

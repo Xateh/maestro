@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -1045,9 +1045,9 @@ test("full-audit-sweep: e2e runs the spine to human_approval, one handoff per st
     });
 
     assert.equal(finalTask.status, "succeeded");
-    // stubs never reach the runner
+    // non-agent stages never reach the runner (stub / command / regression)
     for (const stub of ["static_analysis", "evaluation", "regression"]) {
-      assert.ok(!ranRoles.includes(stub), `stub ${stub} must not call the runner`);
+      assert.ok(!ranRoles.includes(stub), `non-agent stage ${stub} must not call the runner`);
     }
 
     const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
@@ -1177,6 +1177,7 @@ test("full-audit-sweep: malformed verifier output records ok:false but advances"
 // ── SP3 commandRunner (default impl) — hermetic coreutils ────────────────────
 
 import { commandRunner } from "../src/command-runner.mjs";
+import { regressionStore } from "../src/regression-corpus.mjs";
 
 test("commandRunner: echo → exit 0 with stdout", async () => {
   const r = await commandRunner({ run: "echo hi", cwd: process.cwd(), timeoutMs: 5000 });
@@ -1470,5 +1471,478 @@ test("full-audit-sweep: real-command evaluation e2e → succeeded, pass_rate 0.5
 test("back-compat: DEFAULT_WORKFLOW roles declare no kind (kind absent ⇒ agent)", () => {
   for (const role of Object.values(DEFAULT_WORKFLOW.roles)) {
     assert.equal(role.kind, undefined);
+  }
+});
+
+// ── SP4 kind:"regression" node branch ────────────────────────────────────────
+
+function regressionRoleDef(overrides = {}) {
+  return {
+    label: "Regression",
+    kind: "regression",
+    provider: null,
+    prompt_template: "regression",
+    output_schema: "regression",
+    fail_event: "regressions_found",
+    ...overrides,
+  };
+}
+
+// In-memory fake regressionStore. `cmd` maps a case-run string → result object.
+function fakeStore({ cases = [], loadErrors = [], promoted = [], writeErrors = [], onPromote } = {}) {
+  return {
+    loadCorpus: async () => ({ cases, loadErrors }),
+    promoteFailures: async (args) => (onPromote ? onPromote(args) : { promoted, writeErrors }),
+    deriveCaseId: (f) => f.id,
+  };
+}
+
+async function runRegressionNode(roleDef, { ops, db: dbArg, priorHandoffs = [], config = null } = {}) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-reg-"));
+  const db = dbArg ?? new SqliteTaskStore(path.join(dir, "maestro.db"));
+  const taskId = `20260614-reg-${Math.random().toString(36).slice(2, 8)}`;
+  await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+  const node = makeRoleNode(roleDef, {
+    db, runner: THROWING_RUNNER, providerDef: null, stateName: "regression", config, ops,
+  });
+  const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs, event: null, currentState: null });
+  return { result, db, dir, taskId };
+}
+
+test("regression node: 2 cases (pass/fail) → 2 run, 1 new_failure, schema ok, runner untouched", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [
+      { id: "a", command: { run: "good" } },
+      { id: "b", command: { run: "bad" } },
+    ] }),
+    commandRunner: async ({ run }) => ({ exit_code: run === "good" ? 0 : 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.regressions_run.length, 2);
+    assert.equal(p.new_failures.length, 1);
+    assert.equal(p.new_failures[0].id, "b");
+    assert.equal(p.new_failures[0].exit_code, 1);
+    assert.equal(p.new_failures[0].timed_out, false);
+    assert.equal(p.new_failures[0].attempts, 1);
+    assert.equal("output_tail" in p.new_failures[0], true);
+    assert.equal("passed" in p.new_failures[0], false); // new_failures omit `passed`
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.equal(result.priorHandoffs[0].provider, null);
+    assert.equal(result.event, "regressions_found");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: DB row carries provider sentinel 'regression', engine handoff null", async () => {
+  const ops = { regressionStore: fakeStore({ cases: [] }) };
+  const { result, db, dir, taskId } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    assert.equal(result.priorHandoffs[0].provider, null);
+    const handoffs = await db.getHandoffs(taskId);
+    assert.equal(handoffs[0].provider, "regression");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: retry fail→fail→pass ⇒ passed, attempts 3, done/clean", async () => {
+  let n = 0;
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => {
+      n += 1;
+      return { exit_code: n < 3 ? 1 : 0, signal: null, stdout: "", stderr: "", timed_out: false };
+    },
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ attempts: 3 }), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.regressions_run[0].passed, true);
+    assert.equal(p.regressions_run[0].attempts, 3);
+    assert.equal(p.new_failures.length, 0);
+    assert.equal(result.event, "done");
+    assert.equal(p.outcome, "clean");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: retry fail×3 ⇒ not passed, attempts 3, one new_failure, regressions_found", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => ({ exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ attempts: 3 }), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.regressions_run[0].passed, false);
+    assert.equal(p.regressions_run[0].attempts, 3);
+    assert.equal(p.new_failures.length, 1);
+    assert.equal(result.event, "regressions_found");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: first-try pass stops early (attempts 1, runner called once)", async () => {
+  let calls = 0;
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => { calls += 1; return { exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }; },
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ attempts: 3 }), { ops });
+  try {
+    assert.equal(calls, 1);
+    assert.equal(result.priorHandoffs[0].payload.regressions_run[0].attempts, 1);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: attempts precedence — case > role > config", async () => {
+  // case.attempts wins over role.attempts.
+  let calls = 0;
+  const ops1 = {
+    regressionStore: fakeStore({ cases: [{ id: "a", attempts: 2, command: { run: "x" } }] }),
+    commandRunner: async () => { calls += 1; return { exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }; },
+  };
+  const r1 = await runRegressionNode(regressionRoleDef({ attempts: 5 }), { ops: ops1, config: { regression_attempts: 9 } });
+  try {
+    assert.equal(calls, 2);
+    assert.equal(r1.result.priorHandoffs[0].payload.regressions_run[0].attempts, 2);
+  } finally { r1.db.close(); await rm(r1.dir, { recursive: true, force: true }); }
+
+  // no case/role value ⇒ config.regression_attempts used.
+  calls = 0;
+  const ops2 = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => { calls += 1; return { exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }; },
+  };
+  const r2 = await runRegressionNode(regressionRoleDef(), { ops: ops2, config: { regression_attempts: 2 } });
+  try {
+    assert.equal(calls, 2);
+  } finally { r2.db.close(); await rm(r2.dir, { recursive: true, force: true }); }
+});
+
+test("regression node: empty corpus + no eval failures ⇒ all empty, clean, done", async () => {
+  const ops = { regressionStore: fakeStore({ cases: [] }) };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.deepEqual(p.regressions_run, []);
+    assert.deepEqual(p.new_failures, []);
+    assert.deepEqual(p.promoted_tests, []);
+    assert.deepEqual(p.corpus_load_errors, []);
+    assert.equal(p.outcome, "clean");
+    assert.equal(result.event, "done");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: one failing case ⇒ event regressions_found, outcome mirrors", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => ({ exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    assert.equal(result.event, "regressions_found");
+    assert.equal(result.priorHandoffs[0].payload.outcome, "regressions_found");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: fail_threshold 2 with one failure ⇒ done", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => ({ exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ fail_threshold: 2 }), { ops });
+  try {
+    assert.equal(result.priorHandoffs[0].payload.new_failures.length, 1);
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.outcome, "clean");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: custom fail_event honored", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => ({ exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ fail_event: "oops" }), { ops });
+  try {
+    assert.equal(result.event, "oops");
+    assert.equal(result.priorHandoffs[0].payload.outcome, "oops");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: auto-promotion + dedup against existing corpus", async () => {
+  let promoteArgs = null;
+  const ops = {
+    regressionStore: fakeStore({
+      cases: [{ id: "lint-existing", command: { run: "npm run lint" } }],
+      onPromote: (args) => {
+        promoteArgs = args;
+        // store reports one new promoted entry (the second failure)
+        return { promoted: [{ id: "test-new", source: "evaluation.failures", run: "npm test", category: "unit", path: "/tmp/test-new.json" }], writeErrors: [] };
+      },
+    }),
+    commandRunner: async () => ({ exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const priorHandoffs = [{
+    role: "evaluation",
+    provider: null,
+    payload: { failures: [
+      { name: "lint", run: "npm run lint", category: "lint" },
+      { name: "test", run: "npm test", category: "unit" },
+    ] },
+  }];
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops, priorHandoffs });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.promoted_tests.length, 1);
+    assert.equal(p.promoted_tests[0].id, "test-new");
+    assert.equal(p.promoted_tests[0].source, "evaluation.failures");
+    assert.ok(p.promoted_tests[0].path);
+    // existingIds passed to the store includes the already-present corpus id
+    assert.ok(promoteArgs.existingIds.has("lint-existing"));
+    assert.equal(promoteArgs.failures.length, 2);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: no prior evaluation handoff ⇒ promoted_tests empty, corpus still runs", async () => {
+  let promoteCalled = false;
+  const ops = {
+    regressionStore: {
+      loadCorpus: async () => ({ cases: [{ id: "a", command: { run: "x" } }], loadErrors: [] }),
+      promoteFailures: async () => { promoteCalled = true; return { promoted: [], writeErrors: [] }; },
+    },
+    commandRunner: async () => ({ exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    assert.deepEqual(result.priorHandoffs[0].payload.promoted_tests, []);
+    assert.equal(result.priorHandoffs[0].payload.regressions_run.length, 1);
+    assert.equal(promoteCalled, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: load errors don't halt; appear in corpus_load_errors", async () => {
+  const ops = {
+    regressionStore: fakeStore({
+      cases: [{ id: "a", command: { run: "x" } }],
+      loadErrors: [{ file: "broken.json", error: "bad" }],
+    }),
+    commandRunner: async () => ({ exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.corpus_load_errors.length, 1);
+    assert.equal(p.regressions_run.length, 1);
+    assert.equal(result.event, "done");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: absent regressionStore ⇒ done, empty arrays (no runner)", async () => {
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops: {} });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.deepEqual(p.regressions_run, []);
+    assert.deepEqual(p.new_failures, []);
+    assert.equal(result.event, "done");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: throwing commandRunner ⇒ synthetic 127 failure, never throws", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "c", command: { run: "x" } }] }),
+    commandRunner: async () => { throw new Error("rej"); },
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.new_failures.length, 1);
+    assert.equal(p.new_failures[0].exit_code, 127);
+    assert.equal(result.event, "regressions_found");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: promote write failure tolerated (writeErrors swallowed)", async () => {
+  const ops = {
+    regressionStore: fakeStore({
+      cases: [],
+      onPromote: () => ({ promoted: [], writeErrors: [{ id: "x", error: "EACCES" }] }),
+    }),
+  };
+  const priorHandoffs = [{ role: "evaluation", provider: null, payload: { failures: [{ name: "lint", run: "npm run lint" }] } }];
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops, priorHandoffs });
+  try {
+    assert.deepEqual(result.priorHandoffs[0].payload.promoted_tests, []);
+    assert.equal(result.event, "done"); // clean corpus ⇒ done despite write error
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: resume skip ⇒ neither store nor runner called", async () => {
+  let touched = false;
+  const node = makeRoleNode(regressionRoleDef(), {
+    db: { getTask: () => { throw new Error("db should not be hit on resume skip"); } },
+    runner: THROWING_RUNNER, providerDef: null, stateName: "regression",
+    ops: {
+      regressionStore: { loadCorpus: async () => { touched = true; return { cases: [], loadErrors: [] }; } },
+      commandRunner: async () => { touched = true; return {}; },
+    },
+  });
+  const result = await node({
+    task: { id: "t-resume" },
+    priorHandoffs: [{ role: "regression", provider: null, payload: {} }],
+    event: null, currentState: null,
+  });
+  assert.equal(result.event, "done");
+  assert.equal(touched, false);
+});
+
+// ── SP4 template conversion + e2e + back-compat ──────────────────────────────
+
+test("full-audit-sweep template: regression is kind:regression with loop-back transition", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  assert.equal(template.roles.regression.kind, "regression");
+  assert.equal(template.transitions.regression.regressions_found, "implementation");
+  assert.equal(template.transitions.regression.done, "human_approval");
+});
+
+test("full-audit-sweep: clean-corpus e2e → succeeded, regression handoff clean, runner untouched", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-reg-e2e-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const ranRoles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        ranRoles.push(role);
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner, regressionStore },
+    });
+    assert.equal(finalTask.status, "succeeded");
+    assert.ok(!ranRoles.includes("regression"), "regression must not call the agent runner");
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const regression = handoffs.find((h) => h.role === "regression");
+      assert.ok(regression, "regression handoff present");
+      assert.deepEqual(regression.payload.regressions_run, []);
+      assert.deepEqual(regression.payload.new_failures, []);
+      assert.equal(regression.payload.outcome, "clean");
+      assert.equal(regression.provider, "regression");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: regressions_found loops back to implementation, bounded by loop_limits", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-reg-loop-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "loop it", cwd: dir, workflow: "full-audit-sweep" });
+
+    // Seed one corpus case that always fails.
+    const corpusDir = path.join(dir, ".maestro", "regression");
+    await mkdir(corpusDir, { recursive: true });
+    await writeFile(path.join(corpusDir, "always-fail.json"), JSON.stringify({
+      id: "always-fail", command: { run: "false" },
+    }));
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner, regressionStore },
+    });
+    // The regression→implementation loop is bounded by loop_limits → eventually
+    // pauses for the user (does not run forever / does not crash).
+    assert.ok(["waiting_user", "succeeded"].includes(finalTask.status), `unexpected status ${finalTask.status}`);
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const regression = handoffs.find((h) => h.role === "regression");
+      assert.ok(regression, "regression handoff present");
+      assert.ok(regression.payload.new_failures.length >= 1);
+    } finally {
+      db.close();
+    }
+    // Explicit loop-back: the regressions_found event routed back to
+    // implementation, so it ran more than once (steps append per visit and are
+    // not deduped, unlike handoffs) — proves routing, not merely inferred from
+    // the paused status.
+    const implRuns = (finalTask.steps ?? []).filter((s) => s.role === "implementation").length;
+    assert.ok(implRuns >= 2, `expected implementation re-visited, got ${implRuns} run(s)`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
