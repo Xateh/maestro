@@ -254,9 +254,10 @@ the hook is defense-in-depth against the agent that drives maestro. Use
 
 ---
 
-## `workflow.json` (v1)
+## `workflow.json` (v2)
 
-Defines the role graph loaded by LangGraph. `maestro init --workflow <name>`
+Defines the role graph loaded by LangGraph. The default workflow declares
+`"version": 2`; v1 workflows remain valid (all v2 additions are optional). `maestro init --workflow <name>`
 (or `maestro workflow use <name>` after init) writes a built-in template:
 
 | Template | Pipeline |
@@ -364,6 +365,64 @@ Reserved events that handoff payloads may not redefine: `done`, `error`,
 declared in `transitions[role]` to be honored. Validate with
 `maestro workflow validate` — unterminated cycles produce a warning with a
 recommended termination clause. See [import-export.md](import-export.md).
+
+### Stage I/O contracts (manifest v2)
+
+A role may declare the structured-output schema its agent should emit. SP1
+ships this vocabulary plus **soft** validation: a non-conforming payload is
+recorded as evidence, never blocked, and routing is unaffected.
+
+| Field | Description |
+|---|---|
+| `output_schema` | A built-in registry name (string) **or** an inline JSON Schema object (draft 2020-12). |
+| `output_schema_ref` | A path, relative to the state dir, to a JSON Schema file. Must not be absolute or escape the state dir (`..`). |
+| `gates` (top-level) | Quality gate declarations (defined and validated now; enforcement is a later sub-project). |
+
+Resolution order when more than one is set: inline `output_schema` object >
+`output_schema_ref` > `output_schema` registry name.
+
+Built-in registry schema names: `implementation`, `static_analysis`, `review`,
+`threat_model`, `edge_cases`, `tests`, `evaluation`, `regression`, `scoring`,
+`stage_event`. Each is strict on required keys, value types and enums but
+permissive on extra keys (`additionalProperties: true`).
+
+```jsonc
+{
+  "version": 2,
+  "roles": {
+    "executor": { "output_schema": "implementation" },
+    "auditor":  { "output_schema_ref": "schemas/audit.schema.json" }
+  },
+  "gates": {
+    "min_coverage": 90,                  // number 0–100
+    "no_high_severity_findings": true,   // boolean
+    "all_regressions_pass": true,        // boolean
+    "min_overall_confidence": 0.8        // number 0–1
+  }
+}
+```
+
+When an agent emits a `MAESTRO_HANDOFF` marker and its role resolves a schema,
+Maestro records `schema_validation: { ok, errors, schema }` alongside the
+handoff — in graph state (`priorHandoffs`), the `handoff.<role>.json` run-dir
+file, and the database `handoffs` row. No marker emitted ⇒ no
+`schema_validation` (nothing to check).
+
+`maestro workflow validate` reports new codes: `unknown_output_schema` (string
+name not in the registry), `bad_output_schema` (inline schema fails to compile,
+or a bad `output_schema_ref` path), `bad_gates` (unknown gate key or
+out-of-range/typed value), and a `missing_output_schema` warning for a role
+whose name matches a verifier stage (review/threat_model/edge_cases/tests/
+evaluation/regression) but declares no schema.
+
+### YAML authoring
+
+A workflow may be authored in YAML instead of JSON:
+`.maestro/workflows/<name>.yaml` (named) or `.maestro/workflow.yaml` (default).
+`readWorkflow()` normalizes YAML to the same in-memory shape as the JSON
+equivalent. JSON remains canonical: when both a `.json` and `.yaml` exist for
+the same slot, the JSON wins and a `workflow_format_precedence` warning is
+emitted. Writers (`writeWorkflow`, templates) keep writing JSON.
 
 ---
 

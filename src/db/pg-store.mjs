@@ -24,12 +24,19 @@ CREATE TABLE IF NOT EXISTS handoffs (
   provider    TEXT NOT NULL,
   payload     JSONB NOT NULL,
   log_path    TEXT,
+  schema_validation JSONB,
   created_at  TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS handoffs_task_id ON handoffs(task_id);
 CREATE INDEX IF NOT EXISTS tasks_status     ON tasks(status);
 CREATE INDEX IF NOT EXISTS tasks_created_at ON tasks(created_at);
+`;
+
+// Idempotent guarded migration for tables created before schema_validation was
+// added. Postgres supports ADD COLUMN IF NOT EXISTS directly.
+const MIGRATIONS = `
+ALTER TABLE handoffs ADD COLUMN IF NOT EXISTS schema_validation JSONB;
 `;
 
 export class PostgresTaskStore {
@@ -42,6 +49,7 @@ export class PostgresTaskStore {
 
   async _init() {
     await this._pool.query(SCHEMA);
+    await this._pool.query(MIGRATIONS);
   }
 
   // ─── task CRUD ──────────────────────────────────────────────────────────────
@@ -103,17 +111,25 @@ export class PostgresTaskStore {
 
   // ─── handoffs ───────────────────────────────────────────────────────────────
 
-  async addHandoff(taskId, { role, provider, payload, logPath }) {
+  async addHandoff(taskId, { role, provider, payload, logPath, schemaValidation = null }) {
     const now = new Date().toISOString();
     await this._pool.query(
-      "INSERT INTO handoffs (task_id, role, provider, payload, log_path, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-      [taskId, role, provider, JSON.stringify(payload ?? {}), logPath ?? null, now],
+      "INSERT INTO handoffs (task_id, role, provider, payload, log_path, schema_validation, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+      [
+        taskId,
+        role,
+        provider,
+        JSON.stringify(payload ?? {}),
+        logPath ?? null,
+        schemaValidation == null ? null : JSON.stringify(schemaValidation),
+        now,
+      ],
     );
   }
 
   async getHandoffs(taskId) {
     const { rows } = await this._pool.query(
-      "SELECT role, provider, payload, log_path FROM handoffs WHERE task_id = $1 ORDER BY id ASC",
+      "SELECT role, provider, payload, log_path, schema_validation FROM handoffs WHERE task_id = $1 ORDER BY id ASC",
       [taskId],
     );
     return rows.map((r) => ({
@@ -121,6 +137,7 @@ export class PostgresTaskStore {
       provider: r.provider,
       payload: r.payload,
       log_path: r.log_path,
+      ...(r.schema_validation == null ? {} : { schema_validation: r.schema_validation }),
     }));
   }
 

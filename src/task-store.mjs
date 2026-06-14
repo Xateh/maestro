@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import YAML from "yaml";
+
 import { deepMergeConfig } from "./config-local.mjs";
 
 export const DEFAULT_LOCAL_STATE_DIR = ".maestro";
@@ -109,7 +111,7 @@ export const DEFAULT_PROVIDERS = {
 };
 
 export const DEFAULT_WORKFLOW = {
-  version: 1,
+  version: 2,
   initial: "planner",
   // Each role may also carry an optional `fallback: ["<provider>", ...]` —
   // ordered provider keys tried (by live availability) when the role's primary
@@ -405,6 +407,11 @@ export class LocalTaskStore {
     return path.join(this.root, "workflow.json");
   }
 
+  // Legacy single-file YAML default (.maestro/workflow.yaml).
+  get workflowYamlPath() {
+    return path.join(this.root, "workflow.yaml");
+  }
+
   get workflowsDir() {
     return path.join(this.root, "workflows");
   }
@@ -414,6 +421,14 @@ export class LocalTaskStore {
       throw new Error(`invalid_workflow_name: ${name}`);
     }
     return path.join(this.workflowsDir, `${name}.json`);
+  }
+
+  // Named YAML authoring path (.maestro/workflows/<name>.yaml).
+  workflowYamlFilePath(name) {
+    if (!isValidWorkflowName(name)) {
+      throw new Error(`invalid_workflow_name: ${name}`);
+    }
+    return path.join(this.workflowsDir, `${name}.yaml`);
   }
 
   get localConfigPath() {
@@ -673,15 +688,53 @@ export class LocalTaskStore {
     }
   }
 
+  // YAML mirror of _readWorkflowFile. Normalizes to the same in-memory shape as
+  // the JSON path (merge over DEFAULT_WORKFLOW). Returns null when absent or
+  // unparseable. YAML.parse throws YAMLParseError on malformed input — swallow
+  // it like the JSON SyntaxError path so a broken file falls back, not crashes.
+  async _readWorkflowYamlFile(filePath) {
+    let text;
+    try {
+      text = await fs.readFile(filePath, "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    }
+    try {
+      const parsed = YAML.parse(text);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      return { ...DEFAULT_WORKFLOW, ...parsed };
+    } catch {
+      return null;
+    }
+  }
+
   // Resolve a named workflow.
   //  - "default": prefers workflows/default.json, falls back to the legacy
   //    workflow.json, then DEFAULT_WORKFLOW. Warns once when both files exist.
   //  - other names: only workflows/<name>.json; missing → null (no fallback).
+  // Resolve a single slot from its JSON + YAML candidates. JSON wins when both
+  // exist (and warns via onWarn). Returns the parsed workflow or null.
+  async _resolveWorkflowSlot(jsonPath, yamlPath) {
+    const json = await this._readWorkflowFile(jsonPath);
+    const yaml = await this._readWorkflowYamlFile(yamlPath);
+    if (json) {
+      if (yaml) {
+        this.onWarn(`workflow_format_precedence: both ${jsonPath} and ${yamlPath} exist; using the JSON file`);
+      }
+      return json;
+    }
+    return yaml;
+  }
+
   async readWorkflow(name = DEFAULT_WORKFLOW_NAME) {
     if (!isValidWorkflowName(name)) {
       throw new Error(`invalid_workflow_name: ${name}`);
     }
-    const named = await this._readWorkflowFile(this.workflowFilePath(name));
+    const named = await this._resolveWorkflowSlot(
+      this.workflowFilePath(name),
+      this.workflowYamlFilePath(name),
+    );
     if (name !== DEFAULT_WORKFLOW_NAME) {
       return named; // null when missing — caller decides how to surface it
     }
@@ -692,7 +745,7 @@ export class LocalTaskStore {
       }
       return named;
     }
-    const legacy = await this._readWorkflowFile(this.workflowPath);
+    const legacy = await this._resolveWorkflowSlot(this.workflowPath, this.workflowYamlPath);
     if (legacy) return legacy;
     return structuredClone(DEFAULT_WORKFLOW);
   }

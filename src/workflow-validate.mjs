@@ -2,6 +2,43 @@
 // termination-clause analysis. No I/O — callers pass parsed workflow/config.
 
 import { SINK_STATES, isSink } from "./state-machine.mjs";
+import { resolveRoleSchema, validateInline } from "./schemas/index.mjs";
+
+// Role names that denote a verification stage. When a role with one of these
+// names declares no resolvable output schema we emit a `missing_output_schema`
+// warning (advisory only — these stages benefit from a structured contract).
+const VERIFIER_ROLE_NAMES = new Set([
+  "review",
+  "threat_model",
+  "edge_cases",
+  "tests",
+  "evaluation",
+  "regression",
+]);
+
+// Allowed `gates` keys → validator predicate. Each returns true when the value
+// is acceptable. Enforcement of the gate values themselves is SP5; SP1 only
+// validates the manifest declaration.
+const isUnit = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+const isPercent = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100;
+const isBool = (v) => typeof v === "boolean";
+const GATE_VALIDATORS = {
+  min_coverage: isPercent,
+  no_high_severity_findings: isBool,
+  all_regressions_pass: isBool,
+  min_overall_confidence: isUnit,
+};
+
+// Syntactic check for output_schema_ref: a relative path that does not escape
+// the state dir. No file I/O — existence is checked at load, not here.
+function isSafeRelativeRef(ref) {
+  if (typeof ref !== "string" || ref.length === 0) return false;
+  if (ref.startsWith("/")) return false;
+  if (/^[a-zA-Z]:[\\/]/.test(ref)) return false; // windows absolute
+  const segments = ref.split(/[\\/]/);
+  if (segments.includes("..")) return false;
+  return true;
+}
 
 // Enumerate simple cycles among role→role transitions (sink destinations are
 // not edges). Workflows are tiny, so a DFS from every node is fine. Cycles are
@@ -116,6 +153,67 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
       for (const key of role.fallback) {
         if (!config.providers[key]) {
           warnings.push(issue("unknown_fallback", `role "${roleName}" fallback provider "${key}" is not configured`));
+        }
+      }
+    }
+
+    // ── output schema declaration (manifest v2) ─────────────────────────────
+    const resolved = resolveRoleSchema(role ?? {});
+    if (resolved.source === "unknown") {
+      errors.push(issue(
+        "unknown_output_schema",
+        `role "${roleName}" output_schema "${resolved.name}" is not a known registry schema`,
+      ));
+    } else if (resolved.source === "inline") {
+      // Compile the inline schema in-memory (no file I/O); report failures.
+      const compiled = validateInline(resolved.schema, {});
+      const compileError = compiled.errors.find((e) => e.message?.startsWith("bad_schema"));
+      if (compileError) {
+        errors.push(issue(
+          "bad_output_schema",
+          `role "${roleName}" inline output_schema does not compile: ${compileError.message}`,
+        ));
+      }
+    } else if (resolved.source === "ref") {
+      if (!isSafeRelativeRef(role.output_schema_ref)) {
+        errors.push(issue(
+          "bad_output_schema",
+          `role "${roleName}" output_schema_ref must be a relative path inside the state dir, got ${JSON.stringify(role.output_schema_ref)}`,
+        ));
+      }
+    }
+
+    // `output_schema_ref` given as a non-string never reaches source:"ref"
+    // (resolveRoleSchema ignores it); flag it explicitly.
+    if (role?.output_schema_ref !== undefined && typeof role.output_schema_ref !== "string") {
+      errors.push(issue(
+        "bad_output_schema",
+        `role "${roleName}" output_schema_ref must be a string path, got ${JSON.stringify(role.output_schema_ref)}`,
+      ));
+    }
+
+    // Verifier-named role lacking any resolvable schema → advisory warning.
+    if (VERIFIER_ROLE_NAMES.has(roleName)
+      && (resolved.source === "none" || resolved.source === "unknown")) {
+      warnings.push(issue(
+        "missing_output_schema",
+        `role "${roleName}" matches a known verifier stage but declares no output_schema`,
+      ));
+    }
+  }
+
+  // ── top-level gates block (manifest v2) ────────────────────────────────────
+  if (workflow.gates !== undefined) {
+    const gates = workflow.gates;
+    if (gates === null || typeof gates !== "object" || Array.isArray(gates)) {
+      errors.push(issue("bad_gates", `gates must be an object, got ${JSON.stringify(gates)}`));
+    } else {
+      for (const [key, value] of Object.entries(gates)) {
+        const validator = GATE_VALIDATORS[key];
+        if (!validator) {
+          errors.push(issue("bad_gates", `unknown gate "${key}" (allowed: ${Object.keys(GATE_VALIDATORS).join(", ")})`));
+        } else if (!validator(value)) {
+          errors.push(issue("bad_gates", `gate "${key}" has an invalid value ${JSON.stringify(value)}`));
         }
       }
     }

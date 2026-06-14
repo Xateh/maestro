@@ -45,6 +45,7 @@ import {
   parseAgentHandoff,
   REVIEW_MAX_CONTINUATIONS,
 } from "../src/markers.mjs";
+import YAML from "yaml";
 
 const TEST_HANDLE = process.env.USER ?? process.env.USERNAME ?? "xateh";
 
@@ -3976,6 +3977,47 @@ test("workflow use --as writes a named slot", async () => {
     });
     const wf = await store.readWorkflow("fast");
     assert.deepEqual(Object.keys(wf.roles), ["executor"]);
+  });
+});
+
+test("readWorkflow: named .yaml normalizes to the JSON-equivalent shape", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    const wfObj = { version: 2, initial: "executor", roles: { executor: { provider: "codex" } }, transitions: { executor: { done: "$complete" } } };
+    await writeFile(store.workflowYamlFilePath("foo"), YAML.stringify(wfObj));
+    const fromYaml = await store.readWorkflow("foo");
+    await writeFile(store.workflowFilePath("bar"), JSON.stringify(wfObj));
+    const fromJson = await store.readWorkflow("bar");
+    assert.deepEqual(fromYaml, fromJson);
+  });
+});
+
+test("readWorkflow: named JSON wins over YAML with a precedence warning", async () => {
+  await withTempDir(async (dir) => {
+    const warnings = [];
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: (m) => warnings.push(m) });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    const jsonObj = { version: 2, initial: "executor", roles: { executor: { provider: "codex", model: "json" } }, transitions: { executor: { done: "$complete" } } };
+    const yamlObj = { ...jsonObj, roles: { executor: { provider: "codex", model: "yaml" } } };
+    await writeFile(store.workflowFilePath("foo"), JSON.stringify(jsonObj));
+    await writeFile(store.workflowYamlFilePath("foo"), YAML.stringify(yamlObj));
+    const wf = await store.readWorkflow("foo");
+    assert.equal(wf.roles.executor.model, "json");
+    assert.ok(warnings.some((m) => m.includes("workflow_format_precedence")));
+  });
+});
+
+test("readWorkflow: default .maestro/workflow.yaml is used when no JSON exists", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    const wfObj = { version: 2, initial: "executor", roles: { executor: { provider: "codex", model: "fromyaml" } }, transitions: { executor: { done: "$complete" } } };
+    await writeFile(store.workflowYamlPath, YAML.stringify(wfObj));
+    const wf = await store.readWorkflow();
+    assert.equal(wf.roles.executor.model, "fromyaml");
   });
 });
 

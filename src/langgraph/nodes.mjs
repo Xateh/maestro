@@ -28,6 +28,7 @@ import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../sta
 import { resolveProviderEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
+import { resolveRoleSchema, validatePayload, validateInline } from "../schemas/index.mjs";
 
 const INSTRUCTION_FILE_CAP = 16 * 1024;
 const INSTRUCTION_TOTAL_CAP = 64 * 1024;
@@ -111,11 +112,12 @@ function _maestroEnv(task, role) {
   };
 }
 
-async function _writeHandoffFile(runDir, role, { role: r, provider, payload, stdoutPath, stderrPath }) {
+async function _writeHandoffFile(runDir, role, { role: r, provider, payload, schemaValidation, stdoutPath, stderrPath }) {
   const handoff = {
     role: r,
     provider,
     payload,
+    ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
     stdout_path: stdoutPath ?? null,
     stderr_path: stderrPath ?? null,
     created_at: new Date().toISOString(),
@@ -550,6 +552,10 @@ export function makeRoleNode(roleDef, {
       }
 
       // ── parse handoff payload ─────────────────────────────────────────────
+      // rawHandoff is the parsed MAESTRO_HANDOFF marker (null when none emitted).
+      // Soft schema validation only runs when a marker was actually emitted —
+      // an absent marker leaves nothing to validate (schema_validation omitted).
+      const rawHandoff = parseAgentHandoff(combined);
       let payload;
       if (roleKey === "reviewer") {
         const review = parseReviewerOutput(combined, currentTask.review ?? null);
@@ -564,7 +570,20 @@ export function makeRoleNode(roleDef, {
         };
         await db.updateTask(task.id, { review });
       } else {
-        payload = parseAgentHandoff(combined) ?? {};
+        payload = rawHandoff ?? {};
+      }
+
+      // ── soft schema validation (additive evidence; never alters routing) ────
+      let schemaValidation = null;
+      if (rawHandoff != null) {
+        const resolved = resolveRoleSchema(roleDef);
+        if (resolved.source === "name" && resolved.schema) {
+          const result = validatePayload(resolved.name, payload);
+          schemaValidation = { ok: result.ok, errors: result.errors, schema: resolved.name };
+        } else if (resolved.source === "inline" && resolved.schema) {
+          const result = validateInline(resolved.schema, payload);
+          schemaValidation = { ok: result.ok, errors: result.errors, schema: "inline" };
+        }
       }
 
       // ── custom event passthrough: handoff may route a declared transition ──
@@ -590,6 +609,7 @@ export function makeRoleNode(roleDef, {
             role: roleKey,
             provider: runProvider,
             payload,
+            schemaValidation,
             stdoutPath: result.stdoutPath,
             stderrPath: result.stderrPath,
           });
@@ -615,6 +635,7 @@ export function makeRoleNode(roleDef, {
         provider: runProvider,
         payload,
         logPath: result.stdoutPath,
+        schemaValidation,
       });
 
       // ── git HEAD guard: non-reviewer roles with branch tracking ──────────
@@ -651,7 +672,13 @@ export function makeRoleNode(roleDef, {
       }
 
       return {
-        priorHandoffs: [{ role: roleKey, provider: runProvider, payload, log_path: result.stdoutPath ?? null }],
+        priorHandoffs: [{
+          role: roleKey,
+          provider: runProvider,
+          payload,
+          log_path: result.stdoutPath ?? null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
         event,
         currentState: roleKey,
         visits: { [roleKey]: 1 },

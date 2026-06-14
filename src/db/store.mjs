@@ -45,6 +45,16 @@ export class SqliteTaskStore {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this._db = new DatabaseSync(dbPath);
     this._db.exec(SCHEMA);
+    this._migrate();
+  }
+
+  // Idempotent guarded migrations for columns added after the initial schema.
+  // node:sqlite lacks "ADD COLUMN IF NOT EXISTS", so probe pragma first.
+  _migrate() {
+    const cols = this._db.prepare("PRAGMA table_info(handoffs)").all();
+    if (!cols.some((c) => c.name === "schema_validation")) {
+      this._db.exec("ALTER TABLE handoffs ADD COLUMN schema_validation TEXT");
+    }
   }
 
   // ─── task CRUD ─────────────────────────────────────────────────────────────
@@ -106,23 +116,32 @@ export class SqliteTaskStore {
 
   // ─── handoffs (compact typed, no raw stdout) ────────────────────────────────
 
-  addHandoff(taskId, { role, provider, payload, logPath }) {
+  addHandoff(taskId, { role, provider, payload, logPath, schemaValidation = null }) {
     const now = new Date().toISOString();
     this._db.prepare(
-      "INSERT INTO handoffs (task_id, role, provider, payload, log_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(taskId, role, provider, JSON.stringify(payload ?? {}), logPath ?? null, now);
+      "INSERT INTO handoffs (task_id, role, provider, payload, log_path, schema_validation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      taskId,
+      role,
+      provider,
+      JSON.stringify(payload ?? {}),
+      logPath ?? null,
+      schemaValidation == null ? null : JSON.stringify(schemaValidation),
+      now,
+    );
     return Promise.resolve();
   }
 
   getHandoffs(taskId) {
     const rows = this._db.prepare(
-      "SELECT role, provider, payload, log_path FROM handoffs WHERE task_id = ? ORDER BY id ASC",
+      "SELECT role, provider, payload, log_path, schema_validation FROM handoffs WHERE task_id = ? ORDER BY id ASC",
     ).all(taskId);
     return Promise.resolve(rows.map((r) => ({
       role: r.role,
       provider: r.provider,
       payload: JSON.parse(r.payload),
       log_path: r.log_path,
+      ...(r.schema_validation == null ? {} : { schema_validation: JSON.parse(r.schema_validation) }),
     })));
   }
 

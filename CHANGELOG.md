@@ -47,6 +47,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Manifest & stage I/O contracts (SP1)** — a shared, declarative vocabulary
+  for reliable pipelines.
+  - **Schema registry** (`src/schemas/`): 10 canonical named JSON Schemas
+    (draft 2020-12) — `implementation`, `static_analysis`, `review`,
+    `threat_model`, `edge_cases`, `tests`, `evaluation`, `regression`,
+    `scoring`, `stage_event` — compiled once with ajv. API: `getSchema`,
+    `listSchemas`, `validatePayload`, `validateInline`, `resolveRoleSchema`.
+  - **Workflow manifest v2**: roles may declare `output_schema` (registry name
+    or inline JSON Schema) or `output_schema_ref` (relative path), plus a
+    top-level `gates` block (`min_coverage`, `no_high_severity_findings`,
+    `all_regressions_pass`, `min_overall_confidence`). `DEFAULT_WORKFLOW` is now
+    `version: 2`; v1 workflows stay valid. Gates are validated now; enforcement
+    is a later sub-project.
+  - **Validation**: `validateWorkflow` reports `unknown_output_schema`,
+    `bad_output_schema`, `bad_gates` (errors) and `missing_output_schema`
+    (warning for verifier-named roles without a schema). Still pure / no I/O.
+  - **Soft runtime validation**: when an agent emits a `MAESTRO_HANDOFF` and the
+    role resolves a schema, `schema_validation: { ok, errors, schema }` is
+    recorded in `priorHandoffs`, `handoff.<role>.json`, and the DB `handoffs`
+    row (new nullable `schema_validation` column in both SQLite and Postgres).
+    Additive evidence only — routing is never changed.
+  - **YAML authoring**: workflows may be authored as `.maestro/workflows/<name>.yaml`
+    or `.maestro/workflow.yaml`; JSON wins (with a `workflow_format_precedence`
+    warning) when both exist for a slot.
+  - Adds `ajv` as a direct dependency.
 - **Multi-workflow selection (SP0a)** — a single state dir can hold multiple
   named workflows under `.maestro/workflows/<name>.json`, selectable per task.
   The legacy `.maestro/workflow.json` is treated as the `default` workflow (no

@@ -67,7 +67,7 @@ function buildLocalWorkflow() {
 function buildSoloWorkflow() {
   const base = structuredClone(DEFAULT_WORKFLOW);
   return {
-    version: 1,
+    version: 2,
     initial: "executor",
     roles: { executor: base.roles.executor },
     transitions: {

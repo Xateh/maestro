@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -189,6 +189,144 @@ test("makeRoleNode: returns done and records handoff when agent emits MAESTRO_HA
 
   } finally {
     db?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── makeRoleNode: soft schema validation (SP1) ───────────────────────────────────
+
+const IMPL_OK = {
+  summary: "did the thing",
+  files_changed: ["a.js"],
+  assumptions: [],
+  risks: [],
+};
+
+async function runNodeWithSchema({ roleDef, stdout, runDir = null }) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-schema-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  const taskId = "20260614-000001-schema";
+  await db.createTask({
+    id: taskId,
+    status: "running",
+    prompt: "do work",
+    cwd: dir,
+    mode: "task",
+    run_dir: runDir,
+    planner_policy: "on",
+  });
+  const stubRunner = {
+    runStep: async () => ({ stdout, stderr: "", stdoutPath: null, stderrPath: null }),
+  };
+  const node = makeRoleNode(roleDef, {
+    db,
+    runner: stubRunner,
+    providerDef: DEFAULT_CONFIG.providers.codex,
+  });
+  const result = await node({ task: { id: taskId, run_dir: runDir }, priorHandoffs: [], event: null, currentState: null });
+  const handoffs = await db.getHandoffs(taskId);
+  return { dir, db, result, handoffs };
+}
+
+test("makeRoleNode: conformant payload records schema_validation.ok === true", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.equal(result.priorHandoffs[0].schema_validation.schema, "implementation");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: non-conformant payload records ok:false but routing unchanged", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "missing arrays" })}`,
+  });
+  try {
+    assert.equal(result.event, "done"); // routing NOT blocked
+    const sv = result.priorHandoffs[0].schema_validation;
+    assert.equal(sv.ok, false);
+    assert.ok(sv.errors.length > 0);
+    // DB carries schema_validation too.
+    assert.equal(handoffs[0].schema_validation.ok, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: schema_validation written to handoff.<role>.json on disk", async () => {
+  const runDir = await mkdtemp(path.join(tmpdir(), "maestro-schema-run-"));
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+    runDir,
+  });
+  try {
+    const onDisk = JSON.parse(await readFile(path.join(runDir, "handoff.executor.json"), "utf8"));
+    assert.equal(onDisk.schema_validation.ok, true);
+    assert.equal(onDisk.schema_validation.schema, "implementation");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+    await rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: no MAESTRO_HANDOFF emitted → schema_validation omitted", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+    stdout: "just some text, no marker",
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].schema_validation, undefined);
+    assert.equal(handoffs[0].schema_validation, undefined);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: role with no schema → schema_validation omitted", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor }; // no output_schema
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+  });
+  try {
+    assert.equal(result.priorHandoffs[0].schema_validation, undefined);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: inline output_schema validated via validateInline", async () => {
+  const roleDef = {
+    ...DEFAULT_WORKFLOW.roles.executor,
+    output_schema: { type: "object", required: ["x"], properties: { x: { type: "number" } } },
+  };
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ x: "not a number" })}`,
+  });
+  try {
+    const sv = result.priorHandoffs[0].schema_validation;
+    assert.equal(sv.schema, "inline");
+    assert.equal(sv.ok, false);
+  } finally {
+    db.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
