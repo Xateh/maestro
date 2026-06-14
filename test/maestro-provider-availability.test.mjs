@@ -7,6 +7,8 @@ import {
 } from "../src/provider-availability.mjs";
 import { isUsageLimitFailure } from "../src/markers.mjs";
 import { buildUnblockOptions } from "../src/cli/action-requests.mjs";
+import { planRoleFallbacks } from "../src/setup/local.mjs";
+import { validateWorkflow } from "../src/workflow-validate.mjs";
 
 // Config with two providers; codex is the "primary" most roles want.
 const CONFIG = {
@@ -196,4 +198,42 @@ test("buildUnblockOptions omits availability options for unrelated blockers", ()
   assert.ok(!types.includes("switch_provider"));
   assert.ok(!types.includes("skip_role"));
   assert.ok(!types.includes("approve_substitution"));
+});
+
+test("planRoleFallbacks proposes installed providers for missing-provider roles", () => {
+  const workflow = {
+    roles: {
+      planner: { provider: "claude" },
+      executor: { provider: "codex" },
+      reviewer: { provider: "codex", fallback: ["claude"] },
+    },
+  };
+  const results = [
+    { provider: "claude", found: true },
+    { provider: "codex", found: false },
+    { provider: "gemini", found: true },
+  ];
+  const plans = planRoleFallbacks(workflow, results);
+  // planner(claude) is installed → no plan. reviewer already has installed
+  // fallback(claude) → no plan. executor(codex) missing, no covered fallback.
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].role, "executor");
+  assert.deepEqual(plans[0].candidates.sort(), ["claude", "gemini"]);
+});
+
+test("validateWorkflow flags bad and unknown fallback entries", () => {
+  const config = { providers: { codex: {}, claude: {} } };
+  const bad = validateWorkflow({
+    initial: "executor",
+    roles: { executor: { provider: "codex", fallback: "claude" } },
+    transitions: { executor: { done: "$complete" } },
+  }, { config });
+  assert.ok(bad.errors.some((e) => e.code === "bad_fallback"));
+
+  const unknown = validateWorkflow({
+    initial: "executor",
+    roles: { executor: { provider: "codex", fallback: ["nope"] } },
+    transitions: { executor: { done: "$complete" } },
+  }, { config });
+  assert.ok(unknown.warnings.some((w) => w.code === "unknown_fallback"));
 });
