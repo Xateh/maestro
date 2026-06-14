@@ -108,7 +108,8 @@ CREATE INDEX tasks_created_at ON tasks(created_at);
 | `src/router.mjs` | `buildStepPrompt()`, `evaluatePlannerDecision()`, `resolveAgentFlow()` | Builds per-role prompts from handoffs; evaluates planner output to decide next step. |
 | `src/state-machine.mjs` | `transition(state, event)` | Pure next-state resolver. No I/O. Sink strings: `$halt`, `$ask_user`, `$complete`. |
 | `src/task-store.mjs` | `LocalTaskStore`, `DEFAULT_WORKFLOW`, `DEFAULT_LOCAL_STATE_DIR` | Legacy JSON task files in `.maestro/tasks/*.json`. `DEFAULT_WORKFLOW` is the inline default `workflow.json` object. |
-| `src/workflow.mjs` | `WorkflowStore`, `parseCliArgs()`, `renderPrompt()` | Loads and validates `workflow.json`; Liquid renders prompt templates. |
+| `src/setup/server-config.mjs` | `resolveServerConfig()`, `validateServerConfig()`, `renderPrompt()` | Resolves the `server` block of `config.json`; Liquid renders the intake prompt template. |
+| `src/task-graph-runner.mjs` | `TaskGraphRunner` | Orchestrator runner: maps each polled issue to a single graph task (idempotent via `source_issue_id`) and runs it through the shared graph engine. |
 | `src/workspace.mjs` | `WorkspaceManager` | Git worktree creation, checkout, merge, cleanup. |
 | `src/markers.mjs` | `parseAgentHandoff()`, `parseAgentQuestion()`, `parseReviewerOutput()`, `parseAgentActionRequests()` | Pure parsers for agent output markers. No I/O. Used by nodes.mjs and tests. |
 
@@ -204,5 +205,5 @@ Select it in `src/langgraph/engine.mjs` `_getRunner()`.
 ### Add a new workflow role / state
 
 1. Edit `.maestro/workflow.json`: add a role entry and wire transitions.
-2. Add a prompt template in `WORKFLOW.md` (or inline in `workflow.json`).
+2. Add a `roles.<role>.prompt_template` (Liquid) in `workflow.json`.
 3. Update `src/router.mjs` `buildStepPrompt()` if the new role needs custom context injection.

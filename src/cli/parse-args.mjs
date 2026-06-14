@@ -362,3 +362,53 @@ export function parseProjectArgs(args, cwd) {
 export function findUnknownFlags(args, knownFlags) {
   return args.filter((a) => a.startsWith("--") && !knownFlags.has(a));
 }
+
+function serverArgsError(code, message = code) {
+  const error = new Error(`${code}: ${message}`);
+  error.code = code;
+  return error;
+}
+
+// Parse `maestro serve` flags. The server's tracker/workflow now come from
+// config.json's `server` block, so there is no legacy dispatch-file flag or
+// positional dispatch-file surface — only --config, --state-dir, --port.
+export function parseServerArgs(argv = process.argv) {
+  const args = argv.slice(2);
+  let configPath = null;
+  let stateDir = null;
+  let port = null;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--port") {
+      const value = args[index + 1];
+      index += 1;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        throw serverArgsError("invalid_port", String(value));
+      }
+      port = parsed;
+      continue;
+    }
+    if (arg === "--config") {
+      const value = args[index + 1];
+      index += 1;
+      if (!value) throw serverArgsError("missing_config_path");
+      configPath = value;
+      continue;
+    }
+    if (arg === "--state-dir") {
+      const value = args[index + 1];
+      index += 1;
+      if (!value) throw serverArgsError("missing_state_dir");
+      stateDir = value;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw serverArgsError("unknown_cli_arg", arg);
+    }
+    throw serverArgsError("unexpected_cli_arg", arg);
+  }
+
+  return { configPath, stateDir, port };
+}

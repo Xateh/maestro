@@ -17,6 +17,7 @@ import {
   showTask,
   showRun,
   validateWorkflowTool,
+  readWorkflow,
 } from "../src/mcp/server.mjs";
 
 import { safeRunnerEnv } from "../src/agent-runner.mjs";
@@ -160,6 +161,12 @@ test("validateWorkflowTool: returns {ok, errors, warnings} shape", async () => {
   assert.equal(typeof result.ok, "boolean");
   assert.ok(Array.isArray(result.errors));
   assert.ok(Array.isArray(result.warnings));
+});
+
+test("readWorkflow: returns only workflow_json (no dropped front-matter field)", async () => {
+  const result = await readWorkflow();
+  assert.ok(Object.hasOwn(result, "workflow_json"));
+  assert.equal(Object.hasOwn(result, "workflow_md"), false);
 });
 
 // ── showTask / showRun: id validation ─────────────────────────────────────────

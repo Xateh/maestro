@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **Dispatch consolidation & WORKFLOW.md removal (SP0b)** — the server (Linear
+  poll → auto-dispatch) now runs issues through the *same* LangGraph task engine
+  as `maestro task`. The standalone dispatch front-matter file and its bespoke
+  Codex client are gone; configuration moves into `config.json`'s `server`
+  block, and dispatched issues become graph tasks (one per issue, idempotent via
+  a new `source_issue_id` field).
+  - **Removed:** the dispatch front-matter file and its loader (`src/workflow.mjs`),
+    the dispatch-only Codex client (`src/codex-client.mjs`), the
+    `--workflow-path` flag, the positional dispatch-file argument to
+    `maestro serve`, and the deprecated `maestro <file>.md` entry point.
+  - **`maestro serve` surface:** now `maestro serve [--config <path>]
+    [--state-dir <dir>] [--port <n>]` only. The tracker/workspace/agent settings
+    come from `config.json`.
+  - **Live config reload dropped:** `config.json` is read once at server start;
+    changes require a restart.
+  - **Cancellation is bookkeeping-only:** a terminal/stalled issue clears the
+    orchestrator's running/retry maps; an in-flight graph run is left to finish
+    (real mid-run engine cancellation is deferred).
+  - **MCP `maestro_read_workflow`** no longer returns `workflow_md` (only
+    `workflow_json`). Export bundles no longer include a dispatch front-matter
+    file.
+  - **Migration (manual):** move your old dispatch front-matter into
+    `config.json` under `server`:
+
+    | Old front-matter           | New `config.json` location                  |
+    | -------------------------- | ------------------------------------------- |
+    | `tracker.*`                | `server.tracker.*`                          |
+    | `polling.*`                | `server.polling.*`                          |
+    | `workspace.*`              | `server.workspace.*`                        |
+    | `hooks.*`                  | `server.hooks.*`                            |
+    | `agent.*`                  | `server.agent.*`                            |
+    | `codex.stall_timeout_ms`   | `server.agent.stall_timeout_ms`             |
+    | `codex.*` (sandbox)        | **dropped** (graph engine adapters own sandboxing) |
+    | prompt body (Markdown)     | `server.intake_template` (Liquid string)    |
+    | *(new)*                    | `server.workflow` (named graph workflow to run) |
+
 ### Added
 
 - **Multi-workflow selection (SP0a)** — a single state dir can hold multiple

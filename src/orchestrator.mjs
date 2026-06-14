@@ -275,7 +275,7 @@ export class MaestroOrchestrator {
       });
     }
 
-    const stallTimeoutMs = Number(this.config.codex.stallTimeoutMs);
+    const stallTimeoutMs = Number(this.config.agent.stallTimeoutMs);
     if (Number.isFinite(stallTimeoutMs) && stallTimeoutMs > 0) {
       for (const [issueId, running] of this.runtime.running.entries()) {
         if (Date.now() - running.last_event_at_ms <= stallTimeoutMs) continue;

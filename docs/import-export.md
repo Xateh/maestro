@@ -137,8 +137,7 @@ maestro export --single-file --out ./my-flow     # one .maestro-bundle.json
 Bundle contents: `manifest.json` (name, credits, sha256 per file),
 `workflow.json` (with `instruction_paths` docs inlined under `prompts/` —
 the target machine won't have your local paths), `providers.json`
-(config.json providers only, secret-shaped values redacted), `WORKFLOW.md`
-if present.
+(config.json providers only, secret-shaped values redacted).
 
 **Never exported:** `config.local.json`, `secrets.local.json`, tasks, runs,
 the SQLite db. Personal aliases and keys cannot leak into a bundle.

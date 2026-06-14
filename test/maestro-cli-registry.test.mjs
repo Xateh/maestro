@@ -75,39 +75,34 @@ test("usageError carries cli_usage code and scoped help", () => {
 });
 
 test("routeCli matrix", () => {
-  const noFile = { fileExists: () => false };
-  const withFile = { fileExists: () => true };
+  assert.equal(routeCli([]).kind, "server");
+  assert.equal(routeCli(["--port", "4100"]).kind, "server");
+  assert.equal(routeCli(["status"]).kind, "local");
+  assert.equal(routeCli(["init"]).kind, "local");
 
-  assert.equal(routeCli([], noFile).kind, "server");
-  assert.equal(routeCli(["--port", "4100"], noFile).kind, "server");
-  assert.equal(routeCli(["status"], noFile).kind, "local");
-  assert.equal(routeCli(["init"], noFile).kind, "local");
-
-  const serve = routeCli(["serve", "wf.md", "--port", "4100"], noFile);
+  const serve = routeCli(["serve", "--config", "ops/config.json", "--port", "4100"]);
   assert.equal(serve.kind, "serve");
-  assert.deepEqual(serve.serverArgs, ["wf.md", "--port", "4100"]);
+  assert.deepEqual(serve.serverArgs, ["--config", "ops/config.json", "--port", "4100"]);
 
-  const deprecated = routeCli(["wf.md"], withFile);
-  assert.equal(deprecated.kind, "server-deprecated");
-  assert.equal(deprecated.workflowPath, "wf.md");
-  assert.equal(routeCli(["wf.md"], noFile).kind, "error");
+  // A bare positional (no longer a deprecated .md route) is a usage error.
+  assert.equal(routeCli(["wf.md"]).kind, "error");
 
-  const typo = routeCli(["stauts"], noFile);
+  const typo = routeCli(["stauts"]);
   assert.equal(typo.kind, "error");
   assert.equal(typo.exitCode, 1);
   assert.match(typo.text, /Did you mean: status\?/);
 
-  const scopedHelp = routeCli(["project", "--help"], noFile);
+  const scopedHelp = routeCli(["project", "--help"]);
   assert.equal(scopedHelp.kind, "help");
   assert.equal(scopedHelp.exitCode, 0);
   assert.match(scopedHelp.text, /Usage: maestro project <subcommand>/);
 
-  const helpCmd = routeCli(["help", "project", "create"], noFile);
+  const helpCmd = routeCli(["help", "project", "create"]);
   assert.equal(helpCmd.kind, "help");
   assert.match(helpCmd.text, /Usage: maestro project create <id>/);
 
   // --help after "--" is literal prompt text, not a help request
-  const literal = routeCli(["task", "--", "--help in prompt"], noFile);
+  const literal = routeCli(["task", "--", "--help in prompt"]);
   assert.equal(literal.kind, "local");
 });
 

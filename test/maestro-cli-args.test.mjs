@@ -12,6 +12,7 @@ import {
   parseEditActionArgs,
   parseInspectArgs,
   parseProjectArgs,
+  parseServerArgs,
   parseTaskArgs,
 } from "../src/cli/parse-args.mjs";
 
@@ -33,6 +34,25 @@ function captureWriter() {
 }
 
 // --- findUnknownFlags utility -------------------------------------------------
+
+test("parseServerArgs accepts --config, --state-dir, and --port", () => {
+  assert.deepEqual(
+    parseServerArgs(["node", "maestro", "--config", "ops/config.json", "--state-dir", "st", "--port", "8080"]),
+    { configPath: "ops/config.json", stateDir: "st", port: 8080 },
+  );
+  assert.deepEqual(parseServerArgs(["node", "maestro"]), {
+    configPath: null,
+    stateDir: null,
+    port: null,
+  });
+});
+
+test("parseServerArgs rejects the removed workflow-path flag, positional files, and bad ports", () => {
+  // The old dispatch flag and positional dispatch file are no longer accepted.
+  assert.throws(() => parseServerArgs(["node", "maestro", `--workflow${"-"}path`, "x.md"]), /unknown_cli_arg/);
+  assert.throws(() => parseServerArgs(["node", "maestro", "ops/flow.md"]), /unexpected_cli_arg/);
+  assert.throws(() => parseServerArgs(["node", "maestro", "--port", "nope"]), /invalid_port/);
+});
 
 test("findUnknownFlags returns only unrecognized --flags", () => {
   const result = findUnknownFlags(

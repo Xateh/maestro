@@ -88,7 +88,7 @@ Current workflow definition.
 
 **Input** none
 
-**Output** `{ workflow_json: object, workflow_md: string|null }`
+**Output** `{ workflow_json: object|null }`
 
 ---
 

@@ -8,8 +8,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-import { resolveWorkspaceLocalInvocation } from "../bin/maestro.mjs";
-import { parseCliArgs } from "../src/workflow.mjs";
+import { parseServerArgs, resolveWorkspaceLocalInvocation } from "../bin/maestro.mjs";
 
 // PACKAGE_ROOT is bin/../ == the maestro repo root
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,10 +16,10 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 test("package contains the standalone Maestro implementation", async () => {
   const entry = await readFile(new URL("../bin/maestro.mjs", import.meta.url), "utf8");
 
-  assert.match(entry, /from "\.\.\/src\/workflow\.mjs"/);
+  assert.match(entry, /from "\.\.\/src\/cli\/parse-args\.mjs"/);
   assert.doesNotMatch(entry, /digital-twin-research/);
   assert.doesNotMatch(entry, /from "\.\/maestro\//); // no old-layout imports
-  await access(new URL("../src/workflow.mjs", import.meta.url));
+  await access(new URL("../src/setup/server-config.mjs", import.meta.url));
   await access(new URL("../src/tui.mjs", import.meta.url));
 });
 
@@ -43,9 +42,9 @@ test("package.json carries publish metadata", async () => {
 });
 
 test("Maestro modules load from package paths", () => {
-  const parsed = parseCliArgs(["node", "bin/maestro.mjs", "ops/WORKFLOW.md", "--port", "0"]);
+  const parsed = parseServerArgs(["node", "bin/maestro.mjs", "--config", "ops/config.json", "--port", "0"]);
 
-  assert.equal(parsed.workflowPath, path.resolve("ops/WORKFLOW.md"));
+  assert.equal(parsed.configPath, "ops/config.json");
   assert.equal(parsed.port, 0);
 });
 

@@ -113,15 +113,49 @@ Key fields:
     "close_tab_on": "success"     // "success" | "terminal" | "never"
   },
 
-  // HTTP server (maestro serve)
+  // Server mode (maestro serve) — see "Server-mode Config" below
   "server": {
-    "port": 4000                  // set to null to disable
+    "workflow": "default",        // named graph workflow to run per issue
+    "port": 4000,                 // HTTP API port; null disables
+    "tracker": { "kind": "linear", "api_key": "$LINEAR_API_KEY", "project_slug": "team" },
+    "polling": { "interval_ms": 30000 },
+    "workspace": { "root": "/maestro_workspaces" },
+    "agent": { "max_concurrent_agents": 10, "stall_timeout_ms": 300000 },
+    "intake_template": "..."      // Liquid → dispatched task prompt
   },
 
   // Security
   "host_command_allow": []        // exact basenames; network binaries hard-denied
 }
 ```
+
+### Server-mode Config
+
+`maestro serve` polls a tracker and dispatches each eligible issue as a graph
+task (the same LangGraph engine `maestro task` uses). All of its settings live
+in the `server` block of `config.json`; the block is read **once** at startup
+(edits require a restart). One graph task is created per issue, keyed by a
+`source_issue_id` field so repeated polls re-run the same task rather than
+duplicating it.
+
+| Field | Meaning |
+|---|---|
+| `server.workflow` | Named graph workflow (`.maestro/workflows/<name>.json`) run for each dispatched issue. |
+| `server.port` | HTTP API port; `null` disables the HTTP server. The `--port` flag overrides this. |
+| `server.tracker` | `{ kind: "linear", endpoint?, api_key, project_slug, active_states?, terminal_states? }`. `api_key` accepts a `$VAR` reference. |
+| `server.polling.interval_ms` | Poll cadence (default 30000). |
+| `server.workspace.root` | Base dir for per-issue workspaces (`~`, `$VAR`, and relative paths expand). |
+| `server.hooks` | `after_create` / `before_run` / `after_run` / `before_remove` shell hooks + `timeout_ms`. |
+| `server.agent` | `max_concurrent_agents`, `max_turns`, `max_retry_backoff_ms`, `stall_timeout_ms`, `max_concurrent_agents_by_state`. |
+| `server.intake_template` | Liquid template rendered into each dispatched task's prompt. Context: `{ issue, attempt }`. |
+
+> **Migration:** earlier releases configured the server through a dispatch
+> front-matter file. That file and its loader have been removed — move
+> `tracker`/`polling`/`workspace`/`hooks`/`agent` under `server.*`, put the old
+> prompt body in `server.intake_template`, and map
+> `codex.stall_timeout_ms` → `server.agent.stall_timeout_ms`. The old `codex.*`
+> sandbox keys are dropped (the graph engine's adapters own sandboxing). See the
+> BREAKING entry in `CHANGELOG.md`.
 
 ### Herdr Tab Lifecycle
 
@@ -152,7 +186,7 @@ multiple workers share a database, or for persisting state outside the project
 directory.
 
 ```bash
-DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve workflow.json
+DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve
 ```
 
 The schema is created automatically on first connection. Both backends expose
@@ -312,10 +346,9 @@ forced migration, so existing setups keep working unchanged.
 }
 ```
 
-The workflow can also be accompanied by a `WORKFLOW.md` file in the same
-`.maestro/` directory (`.maestro/WORKFLOW.md`), which defines per-role Liquid
-prompt templates in human-readable Markdown. A legacy `WORKFLOW.md` at the repo
-root is still read when no `.maestro/WORKFLOW.md` exists.
+Per-role prompt templates live inline in `workflow.json` under
+`roles.<role>.prompt_template` (Liquid syntax). See
+[Custom Workflow Templates](#custom-workflow-templates) below.
 
 ### Role fields for imported/custom roles
 
@@ -371,8 +404,8 @@ Full guide: [local-llm.md](local-llm.md).
 
 ## Custom Workflow Templates
 
-Override the default prompt for any role by editing `workflow.json` `roles.<role>.prompt_template`
-or by defining a `## <Role>` section in `WORKFLOW.md`. Templates are rendered with
+Override the default prompt for any role by editing `workflow.json` `roles.<role>.prompt_template`.
+Templates are rendered with
 [LiquidJS](https://liquidjs.com) and receive context variables:
 
 | Variable | Description |

@@ -24,11 +24,6 @@ import {
 import { collectNewTaskForm, defaultCommandExists, filterTasksForView, formatPageHeader, formatProjectDetails, formatProjectList, formatSettingsList, formatTaskDetails, formatTaskDraft, formatTaskList, resolveTaskSelection, runMaestroTui } from "../src/tui.mjs";
 
 import {
-  loadEffectiveWorkflow,
-  parseCliArgs,
-  renderPrompt,
-} from "../src/workflow.mjs";
-import {
   LinearTrackerClient,
   normalizeLinearIssue,
 } from "../src/linear-tracker.mjs";
@@ -37,9 +32,6 @@ import {
   sanitizeWorkspaceKey,
 } from "../src/workspace.mjs";
 import {
-  CodexAppServerClient,
-} from "../src/codex-client.mjs";
-import {
   MaestroOrchestrator,
   computeRetryDelay,
   createRuntimeState,
@@ -47,6 +39,8 @@ import {
   sortIssuesForDispatch,
 } from "../src/orchestrator.mjs";
 import { createMaestroHttpHandler } from "../src/http-server.mjs";
+import { TaskGraphRunner } from "../src/task-graph-runner.mjs";
+import { resolveServerConfig } from "../src/setup/server-config.mjs";
 import {
   parseAgentHandoff,
   REVIEW_MAX_CONTINUATIONS,
@@ -177,140 +171,6 @@ function issue(overrides = {}) {
     ...overrides,
   };
 }
-
-test("workflow loading parses front matter, resolves env-backed config, and applies defaults", async () => {
-  await withTempDir(async (dir) => {
-    const workflowPath = path.join(dir, "WORKFLOW.md");
-    await writeFile(workflowPath, `---
-tracker:
-  kind: linear
-  api_key: "$LINEAR_TEST_KEY"
-  project_slug: twin-ops
-polling:
-  interval_ms: 77
-workspace:
-  root: ./agent workspaces
-agent:
-  max_concurrent_agents: 3
-  max_concurrent_agents_by_state:
-    Todo: 1
-    Bad: 0
-codex:
-  command: codex app-server --listen stdio://
-server:
-  port: 0
----
-Implement {{ issue.identifier }} with attempt {{ attempt }}.
-`);
-
-    const loaded = await loadEffectiveWorkflow(workflowPath, {
-      env: { LINEAR_TEST_KEY: "linear-token" },
-    });
-
-    assert.equal(loaded.workflow.promptTemplate, "Implement {{ issue.identifier }} with attempt {{ attempt }}.");
-    assert.equal(loaded.config.tracker.kind, "linear");
-    assert.equal(loaded.config.tracker.apiKey, "linear-token");
-    assert.equal(loaded.config.tracker.projectSlug, "twin-ops");
-    assert.equal(loaded.config.polling.intervalMs, 77);
-    assert.equal(loaded.config.workspace.root, path.join(dir, "agent workspaces"));
-    assert.equal(loaded.config.agent.maxConcurrentAgents, 3);
-    assert.deepEqual(loaded.config.agent.maxConcurrentAgentsByState, { todo: 1 });
-    assert.equal(loaded.config.agent.maxTurns, 20);
-    assert.equal(loaded.config.agent.maxRetryBackoffMs, 300_000);
-    assert.equal(loaded.config.codex.command, "codex app-server --listen stdio://");
-    assert.equal(loaded.config.codex.approvalPolicy, "never");
-    assert.deepEqual(loaded.config.codex.turnSandboxPolicy, {
-      type: "workspaceWrite",
-      networkAccess: false,
-      writableRoots: [path.join(dir, "agent workspaces")],
-    });
-    assert.equal(loaded.config.server.port, 0);
-  });
-});
-
-test("workflow loading returns typed errors for bad files and strict prompt rendering fails unknown variables", async () => {
-  await withTempDir(async (dir) => {
-    const missing = path.join(dir, "missing-WORKFLOW.md");
-    await assert.rejects(
-      () => loadEffectiveWorkflow(missing, { env: {} }),
-      /missing_workflow_file/,
-    );
-
-    const badYaml = path.join(dir, "WORKFLOW.md");
-    await writeFile(badYaml, "---\n- not-a-map\n---\nBody");
-    await assert.rejects(
-      () => loadEffectiveWorkflow(badYaml, { env: {} }),
-      /workflow_front_matter_not_a_map/,
-    );
-
-    const rendered = await renderPrompt("Issue {{ issue.identifier }} labels {{ issue.labels | join: ',' }}", {
-      issue: issue({ labels: ["ops", "safety"] }),
-      attempt: null,
-    });
-    assert.equal(rendered, "Issue OPS-1 labels ops,safety");
-
-    await assert.rejects(
-      () => renderPrompt("Bad {{ issue.missing }}", { issue: issue(), attempt: 2 }),
-      /template_render_error/,
-    );
-  });
-});
-
-test("CLI parser supports default workflow path, explicit path, and --port override", () => {
-  // With no WORKFLOW.md on disk the default resolves to the .maestro/ location.
-  assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs"]), {
-    workflowPath: path.resolve(".maestro/WORKFLOW.md"),
-    port: null,
-  });
-  assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs", "ops/WORKFLOW.md", "--port", "0"]), {
-    workflowPath: path.resolve("ops/WORKFLOW.md"),
-    port: 0,
-  });
-  assert.throws(
-    () => parseCliArgs(["node", "scripts/maestro.mjs", "--port", "nope"]),
-    /invalid_port/,
-  );
-});
-
-test("CLI parser honors --workflow-path and --state-dir flags", () => {
-  assert.equal(
-    parseCliArgs(["node", "maestro", "--workflow-path", "ops/flow.md"]).workflowPath,
-    path.resolve("ops/flow.md"),
-  );
-  assert.equal(
-    parseCliArgs(["node", "maestro", "--state-dir", "custom-state"]).workflowPath,
-    path.resolve("custom-state/WORKFLOW.md"),
-  );
-});
-
-test("resolveServerWorkflowPath prefers .maestro/, then legacy root", async () => {
-  const { resolveServerWorkflowPath } = await import("../src/workflow.mjs");
-  await withTempDir(async (dir) => {
-    // Nothing on disk → canonical .maestro/ location.
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, ".maestro", "WORKFLOW.md"),
-    );
-    // Legacy root file present, no .maestro/ copy → fall back to root.
-    await writeFile(path.join(dir, "WORKFLOW.md"), "x");
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, "WORKFLOW.md"),
-    );
-    // .maestro/ copy present → it wins over the legacy root file.
-    await mkdir(path.join(dir, ".maestro"), { recursive: true });
-    await writeFile(path.join(dir, ".maestro", "WORKFLOW.md"), "y");
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, ".maestro", "WORKFLOW.md"),
-    );
-    // Explicit path always wins, resolved against cwd.
-    assert.equal(
-      resolveServerWorkflowPath({ explicit: "a/b.md", cwd: dir }),
-      path.join(dir, "a", "b.md"),
-    );
-  });
-});
 
 test("workspace manager sanitizes identifiers, runs hooks, and enforces root containment", async () => {
   await withTempDir(async (dir) => {
@@ -514,8 +374,8 @@ test("orchestrator dispatches eligible issues and schedules continuation retry a
         maxConcurrentAgentsByState: {},
         maxRetryBackoffMs: 300_000,
         maxTurns: 1,
+        stallTimeoutMs: 300_000,
       },
-      codex: { stallTimeoutMs: 300_000 },
     },
     tracker,
     runner,
@@ -533,6 +393,53 @@ test("orchestrator dispatches eligible issues and schedules continuation retry a
   assert.equal(snapshot.counts.retrying, 1);
   assert.equal(snapshot.retrying[0].issue_identifier, "OPS-2");
   assert.equal(snapshot.retrying[0].attempt, 1);
+});
+
+test("orchestrator reconcile cancels stalled run and reschedules with stall_timeout reason", async () => {
+  const cancelled = [];
+  const tracker = {
+    fetchIssuesByStates: async () => [],
+    fetchIssueStatesByIds: async () => [],
+    fetchCandidateIssues: async () => [],
+  };
+  const runner = {
+    run: async () => ({ status: "succeeded" }),
+    cancel: (id) => cancelled.push(id),
+  };
+  const orchestrator = new MaestroOrchestrator({
+    config: {
+      tracker: { activeStates: ["Todo"], terminalStates: ["Done"], kind: "linear" },
+      polling: { intervalMs: 30_000 },
+      agent: {
+        maxConcurrentAgents: 1,
+        maxConcurrentAgentsByState: {},
+        maxRetryBackoffMs: 300_000,
+        maxTurns: 1,
+        stallTimeoutMs: 10,
+      },
+    },
+    tracker,
+    runner,
+    workspaceManager: { removeForIssue: async () => {} },
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    timers: { setTimeout: () => ({ fake: true }), clearTimeout: () => {} },
+  });
+
+  const stalled = issue({ id: "stall-1", identifier: "OPS-STALL" });
+  orchestrator.runtime.running.set("stall-1", {
+    issue: stalled,
+    issue_identifier: "OPS-STALL",
+    started_at: new Date().toISOString(),
+    attempt: 0,
+    last_event_at_ms: Date.now() - 1_000,
+  });
+
+  await orchestrator.reconcileRunningIssues();
+
+  assert.deepEqual(cancelled, ["stall-1"]);
+  assert.equal(orchestrator.runtime.running.size, 0);
+  assert.equal(orchestrator.runtime.retrying.size, 1);
+  assert.equal(orchestrator.runtime.retrying.get("stall-1").reason, "stall_timeout");
 });
 
 test("orchestrator retry timer can relaunch its own claimed issue", async () => {
@@ -559,8 +466,8 @@ test("orchestrator retry timer can relaunch its own claimed issue", async () => 
         maxConcurrentAgentsByState: {},
         maxRetryBackoffMs: 300_000,
         maxTurns: 1,
+        stallTimeoutMs: 300_000,
       },
-      codex: { stallTimeoutMs: 300_000 },
     },
     tracker,
     runner,
@@ -646,119 +553,116 @@ test("HTTP extension serves state, issue details, refresh trigger, and JSON erro
   assert.equal((await invoke("GET", "/api/v1/refresh")).status, 405);
 });
 
-test("Codex client launches in workspace cwd, tracks thread and turn, and fails interactive requests fast", async () => {
-  await withTempDir(async (dir) => {
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    const stdin = new PassThrough();
-    const writes = [];
-    const child = {
-      pid: 12345,
-      stdin,
-      stdout,
-      stderr,
-      killed: false,
-      kill: () => {
-        child.killed = true;
+test("HTTP /state and /refresh reflect the unified TaskGraphRunner dispatch path", async () => {
+  // Wire a real orchestrator onto a TaskGraphRunner with mocked store/tracker so
+  // /refresh drives poll→dispatch→createTask→runTask and /state then mirrors it.
+  const serverConfig = resolveServerConfig(
+    {
+      server: {
+        workflow: "default",
+        tracker: { kind: "linear", api_key: "tok", project_slug: "team" },
+        workspace: { root: "/tmp/maestro-http-parity" },
+        intake_template: "Issue {{ issue.identifier }}.",
       },
-      on: () => child,
-      once: () => child,
-    };
-    const events = [];
-    const client = new CodexAppServerClient({
-      command: "codex app-server",
-      cwd: dir,
-      readTimeoutMs: 5_000,
-      turnTimeoutMs: 5_000,
-      spawnProcess: (command, args, options) => {
-        assert.equal(command, "bash");
-        assert.deepEqual(args, ["-lc", "codex app-server"]);
-        assert.equal(options.cwd, dir);
-        return child;
-      },
-      onEvent: (event) => events.push(event),
-    });
+    },
+    { env: { LINEAR_API_KEY: "tok" }, baseDir: "/tmp/maestro-http-parity" },
+  );
 
-    stdin.on("data", (chunk) => {
-      for (const line of chunk.toString("utf8").trim().split(/\n/).filter(Boolean)) {
-        const message = JSON.parse(line);
-        writes.push(message);
-        if (message.method === "thread/start") {
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            id: message.id,
-            result: {
-              thread: { id: "thread-1" },
-              approvalPolicy: "never",
-              approvalsReviewer: "user",
-              cwd: dir,
-              model: "gpt-5.4",
-              modelProvider: "openai",
-              sandbox: { type: "workspaceWrite", networkAccess: false, writableRoots: [dir] },
-            },
-          })}\n`);
-        }
-        if (message.method === "turn/start") {
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            method: "turn/started",
-            params: { threadId: "thread-1", turn: { id: "turn-1" } },
-          })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            id: "server-request-1",
-            method: "item/tool/requestUserInput",
-            params: { questions: [] },
-          })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            method: "thread/tokenUsage/updated",
-            params: {
-              threadId: "thread-1",
-              inputTokens: 10,
-              outputTokens: 4,
-              totalTokens: 14,
-            },
-          })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            method: "turn/completed",
-            params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
-          })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            id: message.id,
-            result: { turn: { id: "turn-1" } },
-          })}\n`);
-        }
-      }
-    });
+  const tasks = [];
+  let counter = 0;
+  const taskStore = {
+    async listTasks() {
+      return tasks.map((task) => ({ ...task }));
+    },
+    async createTask(input) {
+      counter += 1;
+      const task = {
+        id: `task-${counter}`,
+        status: "queued",
+        ...input,
+        source_issue_id: input.source_issue_id ?? input.sourceIssueId ?? null,
+      };
+      tasks.push(task);
+      return { ...task };
+    },
+  };
 
-    const session = await client.startSession({
-      approvalPolicy: "never",
-      threadSandbox: "workspace-write",
-      turnSandboxPolicy: { type: "workspaceWrite", networkAccess: false, writableRoots: [dir] },
-    });
-    const result = await client.runTurn({ threadId: session.threadId, prompt: "Do work" });
+  const candidate = { id: "issue-77", identifier: "OPS-77", state: "Todo" };
+  let dispatched = false;
+  const tracker = {
+    async fetchCandidateIssues() {
+      // Only offer the candidate once so the second tick doesn't double-dispatch.
+      if (dispatched) return [];
+      return [candidate];
+    },
+    async fetchIssueStatesByIds() {
+      return [];
+    },
+  };
+  const workspaceManager = {
+    async createForIssue(identifier) {
+      return { path: `/tmp/ws/${identifier}` };
+    },
+    async removeForIssue() {},
+  };
 
-    assert.equal(session.threadId, "thread-1");
-    assert.equal(result.turnId, "turn-1");
-    assert.equal(result.status, "completed");
-    assert.equal(client.metrics.inputTokens, 10);
-    assert.equal(client.metrics.outputTokens, 4);
-    assert.equal(client.metrics.totalTokens, 14);
-    assert.ok(writes.some((message) => message.id === "server-request-1" && message.result.answers));
-    assert.deepEqual(events.map((event) => event.event), [
-      "session_started",
-      "turn_started",
-      "input_required",
-      "token_usage",
-      "turn_completed",
-    ]);
-
-    await client.stop();
-    assert.equal(child.killed, true);
+  let runCalls = 0;
+  const runner = new TaskGraphRunner({
+    taskStore,
+    serverConfig,
+    workspaceManager,
+    runTask: async (taskId) => {
+      runCalls += 1;
+      dispatched = true;
+      return { task: { id: taskId, status: "succeeded" } };
+    },
   });
+
+  const orchestrator = new MaestroOrchestrator({
+    config: serverConfig,
+    tracker,
+    runner,
+    workspaceManager,
+  });
+
+  const handler = createMaestroHttpHandler({ orchestrator });
+  const invoke = async (method, url) => {
+    let statusCode = null;
+    let body = "";
+    await handler(
+      { method, url },
+      {
+        writeHead: (status) => {
+          statusCode = status;
+        },
+        end: (payload) => {
+          body = payload ?? "";
+        },
+      },
+    );
+    return { status: statusCode, json: () => JSON.parse(body) };
+  };
+
+  // Before refresh: nothing dispatched.
+  assert.equal((await invoke("GET", "/api/v1/state")).json().counts.running, 0);
+
+  const refresh = await invoke("POST", "/api/v1/refresh");
+  assert.equal(refresh.status, 202);
+  // Let the coalesced refresh tick + async dispatch settle.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(runCalls, 1, "unified path invoked runTask once");
+  assert.equal(tasks.length, 1, "exactly one graph task created");
+  assert.equal(tasks[0].source_issue_id, "issue-77");
+  assert.equal(tasks[0].workflow, "default");
+  assert.equal(tasks[0].mode, "task");
+
+  // The completed run is reflected in the snapshot the /state route serves.
+  const state = await invoke("GET", "/api/v1/state");
+  assert.equal(state.status, 200);
+  assert.equal(state.json().counts.completed, 1);
+
+  await orchestrator.stop();
 });
 
 test("root package exposes Maestro scripts and dependencies", async () => {

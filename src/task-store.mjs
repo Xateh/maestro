@@ -14,6 +14,10 @@ export function isValidWorkflowName(name) {
   return typeof name === "string" && WORKFLOW_NAME_RE.test(name);
 }
 
+// Tracker state defaults for the server (Linear poll → graph task) path.
+export const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"];
+export const DEFAULT_TERMINAL_STATES = ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"];
+
 // Provider definitions. Optional `enabled: false` (typically set in
 // config.local.json) marks a provider unavailable everywhere — Maestro then
 // treats it like a missing CLI and applies the role's fallback. See
@@ -154,6 +158,44 @@ export const DEFAULT_WORKFLOW = {
   },
 };
 
+// Default intake prompt rendered (liquid) into the task prompt for issues the
+// server picks up from the tracker. Replaces the old dispatch prompt body.
+export const DEFAULT_INTAKE_TEMPLATE =
+  "You are working on an issue from the tracker.\n\n{{ issue.title }}\n\n{{ issue.description }}";
+
+// Server-mode config (Linear poll → graph task). Replaces the old dispatch
+// front matter. codex.* sandbox config is intentionally dropped — execution now
+// goes through the graph engine's runner/adapters, which own sandboxing.
+export const DEFAULT_SERVER_CONFIG = {
+  workflow: DEFAULT_WORKFLOW_NAME,
+  port: null,
+  tracker: {
+    kind: null,
+    endpoint: null,
+    api_key: "$LINEAR_API_KEY",
+    project_slug: null,
+    active_states: DEFAULT_ACTIVE_STATES,
+    terminal_states: DEFAULT_TERMINAL_STATES,
+  },
+  polling: { interval_ms: 30_000 },
+  workspace: { root: "/maestro_workspaces" },
+  hooks: {
+    after_create: null,
+    before_run: null,
+    after_run: null,
+    before_remove: null,
+    timeout_ms: 60_000,
+  },
+  agent: {
+    max_concurrent_agents: 10,
+    max_turns: 20,
+    max_retry_backoff_ms: 300_000,
+    stall_timeout_ms: 300_000,
+    max_concurrent_agents_by_state: {},
+  },
+  intake_template: DEFAULT_INTAKE_TEMPLATE,
+};
+
 export const DEFAULT_LOCAL_CONFIG_V2 = {
   version: 2,
   cwd: process.cwd(),
@@ -188,6 +230,7 @@ export const DEFAULT_LOCAL_CONFIG_V2 = {
     models_by_provider: {},
     efforts_by_provider: {},
   },
+  server: DEFAULT_SERVER_CONFIG,
 };
 
 
@@ -460,6 +503,7 @@ export class LocalTaskStore {
     worktreePath = null,
     writePaths = [],
     pathConflict = null,
+    sourceIssueId = null,
   }) {
     await this.init();
     if (!isValidWorkflowName(workflow)) {
@@ -501,6 +545,7 @@ export class LocalTaskStore {
       worktree_path: worktreePath,
       write_paths: writePaths,
       path_conflict: pathConflict,
+      source_issue_id: sourceIssueId,
       start_head: null,
       created_at: createdAt,
       updated_at: createdAt,

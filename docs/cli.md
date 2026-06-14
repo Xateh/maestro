@@ -17,7 +17,7 @@ npm run maestro <command> [args...]
 | Flag | Description |
 |---|---|
 | `--state-dir <path>` | Override the `.maestro/` directory (default: nearest `.maestro/` at or above the caller's cwd, else `PACKAGE_ROOT/.maestro`) |
-| `--workflow-path <path>` | Override `WORKFLOW.md` / `workflow.json` path |
+| `--config <path>` | Path to the state dir whose `config.json` the server reads (server mode) |
 | `--port <n>` | HTTP API port (0 = disable) |
 
 ---
@@ -99,22 +99,24 @@ maestro doctor --json     # machine-readable result
 
 ## Server Mode
 
-### `serve [WORKFLOW.md]`
+### `serve [--config <path>] [--state-dir <dir>] [--port <n>]`
 
-Start server mode: poll Linear and auto-dispatch issues. Also starts the
-HTTP server, which serves the **interactive web dashboard** at `/` and a
-JSON API at `/api/v1/*`.
+Start server mode: poll Linear and auto-dispatch issues as graph tasks (the same
+LangGraph engine `maestro task` uses). Also starts the HTTP server, which serves
+the **interactive web dashboard** at `/` and a JSON API at `/api/v1/*`.
 
 ```bash
-maestro serve                       # default .maestro/WORKFLOW.md (legacy ./WORKFLOW.md still honored)
-maestro serve ./ops/WORKFLOW.md --port 4100
-maestro serve --workflow-path .maestro/WORKFLOW.md
-maestro serve --state-dir ./alt     # reads <state-dir>/WORKFLOW.md
+maestro serve                       # reads ./.maestro/config.json
+maestro serve --port 4100
+maestro serve --config ./.maestro   # explicit state dir for config.json
+maestro serve --state-dir ./alt     # reads ./alt/config.json
 ```
 
-The server-mode workflow file lives in the `.maestro/` state directory
-(`.maestro/WORKFLOW.md`). For backward compatibility a `WORKFLOW.md` at the
-repo root is still used when no `.maestro/WORKFLOW.md` is present.
+All server settings (tracker, polling, workspace, hooks, agent limits, intake
+template, and which named workflow to run) come from the `server` block in
+`config.json`. There is no separate dispatch file. `config.json` is read **once**
+at startup — edits require a restart. See
+[configuration.md](configuration.md#server-mode-config) for the `server` schema.
 
 **Dashboard** (`http://localhost:<port>/`): Linear-inspired browser UI with
 live task polling (5 s when tasks are active, 30 s when idle), filter tabs

@@ -12,7 +12,7 @@ export const COMMAND_TREE = {
   synopsis: "maestro <command> [args]",
   flags: [
     STATE_DIR_FLAG,
-    { flag: "--workflow-path <path>", desc: "workflow file (server mode)" },
+    { flag: "--config <path>", desc: "config.json path (server mode)" },
     { flag: "--port <n>", desc: "HTTP port (server mode)" },
   ],
   subcommands: [
@@ -342,11 +342,12 @@ export const COMMAND_TREE = {
     {
       name: "serve",
       kind: "server",
-      synopsis: "maestro serve [WORKFLOW.md]",
+      synopsis: "maestro serve [--config <path>] [--state-dir <dir>] [--port <n>]",
       summary: "server mode: poll Linear, auto-dispatch issues",
       flags: [
+        { flag: "--config <path>", desc: "config.json path" },
+        STATE_DIR_FLAG,
         { flag: "--port <n>", desc: "HTTP port" },
-        { flag: "--workflow-path <path>", desc: "workflow file" },
       ],
     },
   ],
@@ -482,9 +483,8 @@ function commandTokens(args) {
   return tokens;
 }
 
-// Pure routing decision for main(). `fileExists` is injected so the routing
-// stays testable without touching the filesystem.
-export function routeCli(rawArgs = [], { fileExists = () => false } = {}) {
+// Pure routing decision for main().
+export function routeCli(rawArgs = []) {
   const dashIndex = rawArgs.indexOf("--");
   const preDashDash = dashIndex === -1 ? rawArgs : rawArgs.slice(0, dashIndex);
   const first = rawArgs[0];
@@ -511,9 +511,6 @@ export function routeCli(rawArgs = [], { fileExists = () => false } = {}) {
   }
   if (first === undefined || first.startsWith("-")) {
     return { kind: "server" };
-  }
-  if (first.endsWith(".md") && fileExists(first)) {
-    return { kind: "server-deprecated", workflowPath: first };
   }
   return { kind: "error", text: usageError([first]).cliHelp, exitCode: 1 };
 }
