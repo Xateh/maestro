@@ -5,6 +5,15 @@ import { deepMergeConfig } from "./config-local.mjs";
 
 export const DEFAULT_LOCAL_STATE_DIR = ".maestro";
 
+// Workflow names live in .maestro/workflows/<name>.json. The legacy single
+// .maestro/workflow.json is treated as the "default" workflow (back-compat).
+export const DEFAULT_WORKFLOW_NAME = "default";
+export const WORKFLOW_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+export function isValidWorkflowName(name) {
+  return typeof name === "string" && WORKFLOW_NAME_RE.test(name);
+}
+
 // Provider definitions. Optional `enabled: false` (typically set in
 // config.local.json) marks a provider unavailable everywhere — Maestro then
 // treats it like a missing CLI and applies the role's fallback. See
@@ -314,9 +323,12 @@ function buildMigratedV2(v1) {
 }
 
 export class LocalTaskStore {
-  constructor({ root = DEFAULT_LOCAL_STATE_DIR, clock = () => new Date() } = {}) {
+  constructor({ root = DEFAULT_LOCAL_STATE_DIR, clock = () => new Date(), onWarn = null } = {}) {
     this.root = path.resolve(root);
     this.clock = clock;
+    // Sink for non-fatal warnings (e.g. workflow precedence). Defaults to a
+    // guarded stderr write so library callers can stay silent or capture them.
+    this.onWarn = onWarn ?? ((message) => { try { process.stderr.write(`${message}\n`); } catch {} });
     this._cachedConfig = null;
     this._cachedWorkflow = null;
     // Serializes concurrent updateTask calls per task id within this process.
@@ -348,6 +360,17 @@ export class LocalTaskStore {
 
   get workflowPath() {
     return path.join(this.root, "workflow.json");
+  }
+
+  get workflowsDir() {
+    return path.join(this.root, "workflows");
+  }
+
+  workflowFilePath(name) {
+    if (!isValidWorkflowName(name)) {
+      throw new Error(`invalid_workflow_name: ${name}`);
+    }
+    return path.join(this.workflowsDir, `${name}.json`);
   }
 
   get localConfigPath() {
@@ -414,6 +437,7 @@ export class LocalTaskStore {
   async createTask({
     prompt,
     mode = "task",
+    workflow = DEFAULT_WORKFLOW_NAME,
     cwd = null,
     plannerPolicy = "auto",
     plannerDecision = null,
@@ -438,6 +462,9 @@ export class LocalTaskStore {
     pathConflict = null,
   }) {
     await this.init();
+    if (!isValidWorkflowName(workflow)) {
+      throw new Error(`invalid_workflow_name: ${workflow}`);
+    }
     const baseId = createTaskId({ prompt, clock: this.clock });
     let id = baseId;
     let suffix = 2;
@@ -450,6 +477,7 @@ export class LocalTaskStore {
       id,
       prompt,
       mode,
+      workflow,
       status: "queued",
       cwd,
       planner_policy: plannerPolicy,
@@ -586,23 +614,124 @@ export class LocalTaskStore {
     return shimLegacyKeys(deepMergeConfig(base, local), DEFAULT_WORKFLOW);
   }
 
-  async readWorkflow() {
+  // Read one named workflow file (no fallbacks). Returns the merged-over-default
+  // object, or null when the file is absent/unreadable. Preserves the legacy
+  // ENOENT/SyntaxError swallow.
+  async _readWorkflowFile(filePath) {
     try {
-      const text = await fs.readFile(this.workflowPath, "utf8");
+      const text = await fs.readFile(filePath, "utf8");
       const parsed = JSON.parse(text);
       return { ...DEFAULT_WORKFLOW, ...parsed };
     } catch (error) {
       if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
-      return structuredClone(DEFAULT_WORKFLOW);
+      return null;
     }
   }
 
-  async writeWorkflow(workflow) {
+  // Resolve a named workflow.
+  //  - "default": prefers workflows/default.json, falls back to the legacy
+  //    workflow.json, then DEFAULT_WORKFLOW. Warns once when both files exist.
+  //  - other names: only workflows/<name>.json; missing → null (no fallback).
+  async readWorkflow(name = DEFAULT_WORKFLOW_NAME) {
+    if (!isValidWorkflowName(name)) {
+      throw new Error(`invalid_workflow_name: ${name}`);
+    }
+    const named = await this._readWorkflowFile(this.workflowFilePath(name));
+    if (name !== DEFAULT_WORKFLOW_NAME) {
+      return named; // null when missing — caller decides how to surface it
+    }
+    if (named) {
+      // Legacy file also present? Named wins; warn so the user can reconcile.
+      if (await pathExists(this.workflowPath)) {
+        this.onWarn(`workflow_precedence: both ${this.workflowFilePath(name)} and ${this.workflowPath} exist; using the named file`);
+      }
+      return named;
+    }
+    const legacy = await this._readWorkflowFile(this.workflowPath);
+    if (legacy) return legacy;
+    return structuredClone(DEFAULT_WORKFLOW);
+  }
+
+  // Overloaded:
+  //   writeWorkflow(workflow)        → default write (legacy single-arg form)
+  //   writeWorkflow(name, workflow)  → named write to workflows/<name>.json
+  // The legacy "default" path keeps writing workflow.json unless a
+  // workflows/default.json already exists. Named writes merge over the current
+  // named workflow (or DEFAULT_WORKFLOW when absent) and bypass _cachedWorkflow.
+  async writeWorkflow(nameOrWorkflow, maybeWorkflow) {
     await this.init();
-    const next = { ...await this.readWorkflow(), ...workflow };
-    await writeJsonAtomic(this.workflowPath, next);
-    this._cachedWorkflow = next;
+
+    const named = typeof nameOrWorkflow === "string";
+    const name = named ? nameOrWorkflow : DEFAULT_WORKFLOW_NAME;
+    const patch = named ? maybeWorkflow : nameOrWorkflow;
+    if (named && !isValidWorkflowName(name)) {
+      throw new Error(`invalid_workflow_name: ${name}`);
+    }
+
+    if (name === DEFAULT_WORKFLOW_NAME) {
+      // Stay on whichever file already represents the default workflow: the
+      // named slot if it exists, else the legacy root file (no forced migration).
+      const namedPath = this.workflowFilePath(DEFAULT_WORKFLOW_NAME);
+      const useNamedSlot = await pathExists(namedPath);
+      const targetPath = useNamedSlot ? namedPath : this.workflowPath;
+      const next = { ...await this.readWorkflow(DEFAULT_WORKFLOW_NAME), ...patch };
+      await writeJsonAtomic(targetPath, next);
+      this._cachedWorkflow = next;
+      return next;
+    }
+
+    const current = (await this.readWorkflow(name)) ?? structuredClone(DEFAULT_WORKFLOW);
+    const next = { ...current, ...patch };
+    await writeJsonAtomic(this.workflowFilePath(name), next);
+    // _cachedWorkflow is default-scoped; never serve a named workflow from it.
+    this._cachedWorkflow = null;
     return next;
+  }
+
+  // Enumerate available workflows as [{name, path, source}], source ∈
+  // {"named","legacy"}. Includes workflows/*.json (skipping bad stems / non-json
+  // / unreadable files) plus the legacy default only when workflows/default.json
+  // is absent and workflow.json exists. Sorted, with "default" first.
+  async listWorkflows() {
+    await this.init();
+    const byName = new Map();
+    let entries = [];
+    try {
+      entries = await fs.readdir(this.workflowsDir);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const stem = entry.replace(/\.json$/, "");
+      if (!isValidWorkflowName(stem)) continue;
+      byName.set(stem, { name: stem, path: path.join(this.workflowsDir, entry), source: "named" });
+    }
+    if (!byName.has(DEFAULT_WORKFLOW_NAME) && await pathExists(this.workflowPath)) {
+      byName.set(DEFAULT_WORKFLOW_NAME, {
+        name: DEFAULT_WORKFLOW_NAME,
+        path: this.workflowPath,
+        source: "legacy",
+      });
+    }
+    return [...byName.values()].sort((a, b) => {
+      if (a.name === DEFAULT_WORKFLOW_NAME) return -1;
+      if (b.name === DEFAULT_WORKFLOW_NAME) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  // Write a built-in template into a named slot. Dynamic-imports
+  // resolveWorkflowTemplate to avoid a circular import (workflow-templates
+  // imports DEFAULT_WORKFLOW from this module).
+  async applyWorkflowTemplate({ name, as = name }) {
+    if (!isValidWorkflowName(as)) {
+      throw new Error(`invalid_workflow_name: ${as}`);
+    }
+    const { resolveWorkflowTemplate } = await import("./setup/workflow-templates.mjs");
+    const template = resolveWorkflowTemplate(name);
+    const workflow = await this.writeWorkflow(as, template);
+    return { name, as, workflow, path: this.workflowFilePath(as) };
   }
 
   async writeConfig(config) {

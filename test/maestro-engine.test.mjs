@@ -701,3 +701,66 @@ test("formatDurationMs and formatBytes edge cases", async () => {
   assert.equal(formatBytes(18_432), "18.0KB");
   assert.equal(formatBytes(2_097_152), "2.0MB");
 });
+
+// ── runLangGraphTask: per-task workflow selection (SP0a) ─────────────────────
+
+test("runLangGraphTask runs the task's named workflow (solo = executor only)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-wf-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.applyWorkflowTemplate({ name: "solo", as: "solo" });
+    const task = await store.createTask({ prompt: "do it", cwd: dir, workflow: "solo" });
+
+    const roles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        roles.push(role);
+        return {
+          stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "done" })}`,
+          stderr: "",
+          stdoutPath: null,
+          stderrPath: null,
+        };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "succeeded");
+    assert.deepEqual([...new Set(roles)], ["executor"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runLangGraphTask surfaces unknown_workflow as waiting_user", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-wf-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do it", cwd: dir, workflow: "nope" });
+
+    let ran = false;
+    const stubRunner = { runStep: async () => { ran = true; return { stdout: "", stderr: "", stdoutPath: null, stderrPath: null }; } };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "waiting_user");
+    assert.equal(finalTask.blockers[0].code, "unknown_workflow");
+    assert.equal(finalTask.blockers[0].workflow, "nope");
+    assert.equal(ran, false, "graph must not build for an unknown workflow");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

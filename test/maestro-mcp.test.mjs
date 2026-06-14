@@ -9,6 +9,8 @@ import {
   assertInsideDir,
   redactConfig,
   VALID_MODES,
+  WORKFLOW_NAME_RE,
+  buildTaskArgv,
   resolveValidModes,
   createTask,
   listTasks,
@@ -133,6 +135,17 @@ test("createTask: rejects invalid mode strings", async () => {
   await assert.rejects(() => createTask({ prompt: "x", mode: "exec" }), /invalid_mode/);
   await assert.rejects(() => createTask({ prompt: "x", mode: "" }), /invalid_mode/);
   await assert.rejects(() => createTask({ prompt: "x", mode: "task; rm -rf /" }), /invalid_mode/);
+});
+
+test("createTask: rejects an invalid workflow name shape", async () => {
+  await assert.rejects(() => createTask({ prompt: "x", workflow: "Bad name" }), /invalid_workflow/);
+  await assert.rejects(() => createTask({ prompt: "x", workflow: "_x" }), /invalid_workflow/);
+});
+
+test("buildTaskArgv: includes --workflow and ends options with --", () => {
+  const argv = buildTaskArgv("/bin/maestro.mjs", { mode: "task", workflow: "solo", prompt: "do it" });
+  assert.deepEqual(argv, ["/bin/maestro.mjs", "task", "--mode", "task", "--workflow", "solo", "--", "do it"]);
+  assert.ok(WORKFLOW_NAME_RE.test("solo"));
 });
 
 test("resolveValidModes: always includes base modes", async () => {

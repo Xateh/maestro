@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore, slugifyTaskTitle } from "../task-store.mjs";
+import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore, WORKFLOW_NAME_RE, slugifyTaskTitle } from "../task-store.mjs";
 
 import { normalizeGitActionArgs } from "./git-intent.mjs";
 import { sanitizeEnvObject } from "./util.mjs";
@@ -26,6 +26,7 @@ export function makeStore(parsed, store) {
 
 export function parseTaskArgs(args, cwd) {
   let mode = "task";
+  let workflow = "default";
   let stateDir = path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);
   let taskCwd = null;
   let timeoutMs = null;
@@ -53,6 +54,14 @@ export function parseTaskArgs(args, cwd) {
       mode = args[index] ?? "";
       if (!/^[a-z0-9_-]+$/.test(mode)) {
         throw new Error(`invalid_mode: ${mode}`);
+      }
+      continue;
+    }
+    if (arg === "--workflow") {
+      index += 1;
+      workflow = args[index] ?? "";
+      if (!WORKFLOW_NAME_RE.test(workflow)) {
+        throw new Error(`invalid_workflow: ${workflow}`);
       }
       continue;
     }
@@ -126,6 +135,7 @@ export function parseTaskArgs(args, cwd) {
   }
   return {
     mode,
+    workflow,
     prompt,
     stateDir,
     taskCwd,

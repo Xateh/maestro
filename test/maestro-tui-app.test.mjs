@@ -430,18 +430,29 @@ test("edit-core: patch builders are pure and overlay-safe", async () => {
 function makeEditStore({ rawProviders, effectiveProviders, workflow = structuredClone(DEFAULT_WORKFLOW) } = {}) {
   const configWrites = [];
   const workflowWrites = [];
+  const workflowWriteNames = [];
   let wf = workflow;
   return {
     root: "/tmp/.maestro",
     configWrites,
     workflowWrites,
+    workflowWriteNames,
     listTasks: async () => [],
+    listWorkflows: async () => [{ name: "default", path: "/tmp/.maestro/workflow.json", source: "legacy" }],
     readConfig: async () => ({ providers: structuredClone(effectiveProviders), timeout_ms: 1000 }),
     readConfigRaw: async () => ({ providers: structuredClone(rawProviders) }),
+    // App now reads by name; honor the two-arg signature but the mock keeps one wf.
     readWorkflow: async () => structuredClone(wf),
     readTask: async () => null,
     writeConfig: async (patch) => { configWrites.push(structuredClone(patch)); },
-    writeWorkflow: async (patch) => { workflowWrites.push(structuredClone(patch)); wf = { ...wf, ...patch }; },
+    // Two-arg form: writeWorkflow(name, patch). Capture both.
+    writeWorkflow: async (nameOrPatch, maybePatch) => {
+      const named = typeof nameOrPatch === "string";
+      const patch = named ? maybePatch : nameOrPatch;
+      workflowWriteNames.push(named ? nameOrPatch : "default");
+      workflowWrites.push(structuredClone(patch));
+      wf = { ...wf, ...patch };
+    },
   };
 }
 
@@ -522,6 +533,9 @@ test("app: role editor edits fields, transitions, and add role from graph", asyn
   for (let i = 0; i < permIdx; i += 1) await app.handleKey(key("down"));
   await app.handleKey(key("enter"));
   assert.equal(store.workflowWrites.at(-1).roles.planner.permission, "read");
+  // SP0a: app model carries workflowName and writes target the selected name.
+  assert.equal(app.model.workflowName, "default");
+  assert.equal(store.workflowWriteNames.at(-1), "default");
 
   // add transition via chained inputs: pause → $pause
   await app.handleKey(key("char", "a"));

@@ -176,6 +176,18 @@ standalone modes created by `setup import` for imported subagents.
 maestro task --mode system_evaluator "evaluate the markers module"
 ```
 
+### `task --workflow <name> "<prompt>"`
+
+Run the task with a named workflow. Named workflows live in
+`.maestro/workflows/<name>.json`; the name `default` is the legacy
+`.maestro/workflow.json`. The name must match `^[a-z0-9][a-z0-9_-]{0,63}$`
+(invalid shapes throw `invalid_workflow`); an unknown non-`default` name throws
+`unknown_workflow`. Defaults to `default`.
+
+```bash
+maestro task --workflow solo "ship the hotfix"
+```
+
 ### `run-task <id>`
 
 Re-run or continue an existing task by ID.
@@ -350,15 +362,29 @@ invalid limits) and warnings (unreachable roles, unknown providers, cycles
 without termination clauses). Exit 1 on errors, or on warnings with
 `--strict`.
 
-### `workflow use <name>`
+### `workflow list`
 
-Switch `workflow.json` to a built-in template (`default | extended | local |
-solo`). Prompt-free: the previous file is always backed up to
-`workflow.json.bak` first, then fully replaced (not merged — keys from the
-old workflow do not survive the switch).
+List available workflows as `<name> (<source>)`, where `source` is `named`
+(a `.maestro/workflows/<name>.json` slot) or `legacy` (the root
+`.maestro/workflow.json`, surfaced as `default`). `--json` emits the raw
+`[{name, path, source}]` array. `default` is always sorted first.
+
+```bash
+maestro workflow list
+maestro workflow list --json
+```
+
+### `workflow use <name> [--as <slot>]`
+
+Apply a built-in template (`default | extended | local | solo`). Without
+`--as`, it switches the default `workflow.json` (the previous file is backed up
+to `workflow.json.bak`, then fully replaced — keys from the old workflow do not
+survive the switch). With `--as <slot>`, it writes the template into the named
+slot `.maestro/workflows/<slot>.json` instead, leaving the default untouched.
 
 ```bash
 maestro workflow use solo
+maestro workflow use solo --as fast
 maestro workflow validate
 ```
 

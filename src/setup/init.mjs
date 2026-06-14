@@ -113,6 +113,9 @@ export async function runInitWizard({
       config.cwd = path.dirname(root);
       await writeJsonAtomic(file.path, config);
     } else {
+      // Writes the legacy .maestro/workflow.json — the "default" workflow slot.
+      // Named workflows (SP0a) live in .maestro/workflows/<name>.json and are
+      // created via `maestro workflow use <name> --as <slot>`.
       await writeJsonAtomic(file.path, workflowTemplate);
     }
     created.push(file.name);

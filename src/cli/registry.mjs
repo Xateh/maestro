@@ -24,6 +24,7 @@ export const COMMAND_TREE = {
       flags: [
         { flag: "--plan-only", desc: "planner only; stops at the plan handoff" },
         { flag: "--mode <name>", desc: "run any mode defined in workflow.json" },
+        { flag: "--workflow <name>", desc: "named workflow to run (default: default)" },
         { flag: "--cwd <path>", desc: "working directory for the task" },
         { flag: "--timeout-ms <n>", desc: "per-step timeout (-1 = none)" },
         { flag: "--planner auto|on|off", desc: "planner policy override" },
@@ -295,10 +296,22 @@ export const COMMAND_TREE = {
           ],
         },
         {
+          name: "list",
+          synopsis: "maestro workflow list",
+          summary: "list available workflows (named + legacy default)",
+          flags: [
+            { flag: "--json", desc: "JSON output" },
+            STATE_DIR_FLAG,
+          ],
+        },
+        {
           name: "use",
-          synopsis: "maestro workflow use <name>",
-          summary: "switch workflow.json to a built-in template (backs up the old file)",
-          flags: [STATE_DIR_FLAG],
+          synopsis: "maestro workflow use <name> [--as <slot>]",
+          summary: "apply a built-in template (default slot, or --as a named slot)",
+          flags: [
+            { flag: "--as <name>", desc: "write into workflows/<name>.json instead of the default" },
+            STATE_DIR_FLAG,
+          ],
         },
       ],
     },

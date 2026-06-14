@@ -84,6 +84,32 @@ test("parseTaskArgs still accepts recognized flags", () => {
   assert.equal(parsed.prompt, "ship it");
 });
 
+// --- parseTaskArgs --workflow (SP0a) -----------------------------------------
+
+test("parseTaskArgs parses --workflow", () => {
+  const parsed = parseTaskArgs(["task", "--workflow", "solo", "do", "it"], CWD);
+  assert.equal(parsed.workflow, "solo");
+  assert.equal(parsed.prompt, "do it");
+});
+
+test("parseTaskArgs defaults workflow to 'default'", () => {
+  const parsed = parseTaskArgs(["task", "do", "it"], CWD);
+  assert.equal(parsed.workflow, "default");
+});
+
+test("parseTaskArgs rejects an invalid --workflow name", () => {
+  assert.throws(
+    () => parseTaskArgs(["task", "--workflow", "Bad Name", "x"], CWD),
+    /invalid_workflow/,
+  );
+});
+
+test("parseTaskArgs treats --workflow after -- as literal prompt text", () => {
+  const parsed = parseTaskArgs(["task", "--", "use", "--workflow", "solo"], CWD);
+  assert.equal(parsed.workflow, "default");
+  assert.equal(parsed.prompt, "use --workflow solo");
+});
+
 // --- collecting parsers expose unknownFlags ----------------------------------
 
 test("parseActionArgs collects unknown flags and keeps positionals separate", () => {

@@ -94,6 +94,7 @@ export async function createLocalTaskFromParsed({ parsed, taskStore, defaults, c
   const task = await taskStore.createTask({
     prompt: parsed.prompt,
     mode: parsed.mode,
+    workflow: parsed.workflow ?? "default",
     cwd: taskCwd,
     plannerPolicy,
     plannerDecision: plannerDecision.decision,
@@ -278,6 +279,7 @@ export async function startDetachedLocalTask({
   const task = await createLocalTaskFromParsed({
     parsed: {
       mode: form.mode,
+      workflow: form.workflow ?? "default",
       prompt: form.prompt,
       taskCwd: form.cwd,
       timeoutMs: form.timeout_ms,

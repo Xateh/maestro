@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Multi-workflow selection (SP0a)** — a single state dir can hold multiple
+  named workflows under `.maestro/workflows/<name>.json`, selectable per task.
+  The legacy `.maestro/workflow.json` is treated as the `default` workflow (no
+  forced migration; named `default.json` takes precedence with a
+  `workflow_precedence` warning when both exist).
+  - Store API: `readWorkflow(name)`, `writeWorkflow(name, workflow)` (back-compat
+    single-arg default write retained), `listWorkflows()`,
+    `applyWorkflowTemplate({name, as})`, plus `isValidWorkflowName` and the
+    `^[a-z0-9][a-z0-9_-]{0,63}$` name rule.
+  - Tasks carry a `workflow` field (default `"default"`); the engine loads the
+    selected workflow and surfaces a typed `unknown_workflow` blocker for an
+    unknown name instead of falling back silently.
+  - CLI: `maestro task --workflow <name>`, `maestro workflow list`, and
+    `maestro workflow use <name> --as <slot>`.
+  - MCP: optional `workflow` param on `maestro_create_task` (name shape
+    validated; existence checked by the spawned CLI).
+  - TUI: workflow picker on task creation and a workflows list/edit view
+    (defaults to `default`).
+
 ## [0.1.0] - 2026-06-14
 
 Initial release.

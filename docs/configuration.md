@@ -236,6 +236,25 @@ Both `maestro import` and `maestro workflow use` back up the previous file to
 `workflow.json.bak` before writing (`workflow use` fully replaces the file;
 `import` merges).
 
+### Named workflows (multi-workflow selection)
+
+A single state dir can hold multiple named workflows under
+`.maestro/workflows/<name>.json`, selectable per task. The legacy
+`.maestro/workflow.json` is treated as the **`default`** workflow — there is no
+forced migration, so existing setups keep working unchanged.
+
+- Names must match `^[a-z0-9][a-z0-9_-]{0,63}$`.
+- Precedence: if both `.maestro/workflows/default.json` and the legacy
+  `.maestro/workflow.json` exist, the named file wins and a
+  `workflow_precedence` warning is emitted so you can reconcile them.
+- Create a named slot from a template with
+  `maestro workflow use <template> --as <name>`, list them with
+  `maestro workflow list`, and run one with `maestro task --workflow <name>`.
+- A task records its workflow name in its task JSON (`workflow` field, default
+  `"default"`). At run time an unknown non-`default` name surfaces a typed
+  `unknown_workflow` blocker (the task waits for the user rather than falling
+  back silently).
+
 ```jsonc
 {
   "version": 1,

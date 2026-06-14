@@ -55,13 +55,14 @@ All files in one run dir. JSON files returned fully; log files tailed to last 8 
 ---
 
 ## `maestro_create_task`
-Spawns `bin/maestro.mjs task --mode <mode> -- "<prompt>"` via the bundled bin (self-contained, no npm script required). Non-blocking.
+Spawns `bin/maestro.mjs task --mode <mode> --workflow <workflow> -- "<prompt>"` via the bundled bin (self-contained, no npm script required). Non-blocking.
 
 **Input**
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `prompt` | string | — | Task description (required) |
 | `mode` | string | `"task"` | `"task"`, `"plan-only"`, or any custom mode defined in `workflow.json` `modes` (e.g. standalone modes created by `maestro setup import`). Must match `^[a-z0-9_-]+$`. Throws `invalid_mode` otherwise. |
+| `workflow` | string | `"default"` | Named workflow to run (a `.maestro/workflows/<name>.json` slot; `"default"` is the legacy `workflow.json`). Name shape validated here against `^[a-z0-9][a-z0-9_-]{0,63}$` (throws `invalid_workflow`); existence is checked by the spawned CLI, which raises `unknown_workflow`. |
 
 **Output** `{ exitCode, taskId, stdout }` — `taskId` is parsed from CLI output; may be `null` if unparseable.
 

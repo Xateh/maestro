@@ -14,7 +14,13 @@ import { buildClaudeCommand } from "../src/adapters/claude.mjs";
 import { buildAntigravityCommand } from "../src/adapters/antigravity.mjs";
 import { TerminalAgentRunner } from "../src/agent-runner.mjs";
 import { buildStepPrompt, evaluatePlannerDecision, resolveAgentFlow } from "../src/router.mjs";
-import { LocalTaskStore, DEFAULT_WORKFLOW } from "../src/task-store.mjs";
+import {
+  LocalTaskStore,
+  DEFAULT_WORKFLOW,
+  DEFAULT_WORKFLOW_NAME,
+  WORKFLOW_NAME_RE,
+  isValidWorkflowName,
+} from "../src/task-store.mjs";
 import { collectNewTaskForm, defaultCommandExists, filterTasksForView, formatPageHeader, formatProjectDetails, formatProjectList, formatSettingsList, formatTaskDetails, formatTaskDraft, formatTaskList, resolveTaskSelection, runMaestroTui } from "../src/tui.mjs";
 
 import {
@@ -4053,6 +4059,89 @@ test("workflow use switches templates via the CLI and backs up the old file", as
   });
 });
 
+test("workflow use --as writes a named slot", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await runLocalMaestroCommand({
+      args: ["workflow", "use", "solo", "--as", "fast", "--state-dir", store.root],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+    });
+    const wf = await store.readWorkflow("fast");
+    assert.deepEqual(Object.keys(wf.roles), ["executor"]);
+  });
+});
+
+test("workflow list prints name + source", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify(DEFAULT_WORKFLOW));
+    await store.applyWorkflowTemplate({ name: "solo", as: "fast" });
+    const lines = [];
+    await runLocalMaestroCommand({
+      args: ["workflow", "list", "--state-dir", store.root],
+      cwd: dir,
+      stdout: { write: (text) => lines.push(text) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const output = lines.join("");
+    assert.match(output, /default \(legacy\)/);
+    assert.match(output, /fast \(named\)/);
+  });
+});
+
+test("task --workflow runs the named workflow and stamps it", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({
+      root: path.join(dir, ".maestro"),
+      clock: () => new Date("2026-05-13T12:34:56.000Z"),
+    });
+    await store.applyWorkflowTemplate({ name: "solo", as: "solo" });
+    const roles = [];
+    const runner = {
+      runStep: async ({ role }) => {
+        roles.push(role);
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "done" })}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const result = await runLocalMaestroCommand({
+      args: ["task", "--state-dir", store.root, "--workflow", "solo", "--planner", "off", "--review", "off", "Do it"],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+      runner,
+      availabilityProbe: () => true,
+    });
+    assert.equal(result.task.workflow, "solo");
+    assert.deepEqual([...new Set(roles)], ["executor"]);
+    const persisted = await store.readTask(result.task.id);
+    assert.equal(persisted.workflow, "solo");
+  });
+});
+
+test("task --workflow rejects an unknown workflow name", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await assert.rejects(
+      () => runLocalMaestroCommand({
+        args: ["task", "--state-dir", store.root, "--workflow", "nope", "do", "it"],
+        cwd: dir,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+        store,
+      }),
+      /unknown_workflow: nope/,
+    );
+  });
+});
+
 test("local task CLI records agent failure as recoverable waiting_user state", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
@@ -4798,7 +4887,7 @@ test("local task store persists Maestro defaults for TUI and CLI reuse", async (
 test("native TUI helpers collect task settings and format task history", async () => {
   const answers = [
     "Build TUI",
-    "4",
+    "5",
     "-1",
     "s",
   ];
@@ -4815,8 +4904,24 @@ test("native TUI helpers collect task settings and format task history", async (
     prompt: "Build TUI",
     cwd: "/repo",
     mode: "task",
+    workflow: "default",
     timeout_ms: -1,
   });
+
+  // SP0a: the workflow picker (field 4) sets form.workflow; Enter keeps default.
+  const pickAnswers = ["Build TUI", "4", "solo", "s"];
+  const picked = await collectNewTaskForm({
+    ask: async () => pickAnswers.shift(),
+    defaults: { cwd: "/repo", mode: "task", timeout_ms: -1 },
+  });
+  assert.equal(picked.workflow, "solo");
+
+  const keepAnswers = ["Build TUI", "s"];
+  const kept = await collectNewTaskForm({
+    ask: async () => keepAnswers.shift(),
+    defaults: { cwd: "/repo", mode: "task", timeout_ms: -1 },
+  });
+  assert.equal(kept.workflow, "default");
 
   const rows = formatTaskList([
     {
@@ -5176,7 +5281,7 @@ test("TUI new task asks prompt first then uses a draft picker", async () => {
   const answers = [
     "1",
     "Fix label overflow",
-    "4",
+    "5",
     "-1",
     "s",
     "q",
@@ -5302,7 +5407,7 @@ test("TUI task form supports per-role skip override", async () => {
   const answers = [
     "1",
     "Design workflow",
-    "5",      // field 5 = planner skip (after 4 static fields)
+    "6",      // field 6 = planner skip (after 5 static fields)
     "always",
     "s",
     "q",
@@ -6799,4 +6904,194 @@ test("CLI: unknown subcommand rejects with cli_usage and scoped help", async () 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ── multi-workflow store (SP0a) ───────────────────────────────────────────────
+
+test("isValidWorkflowName accepts and rejects per the spec regex", () => {
+  for (const ok of ["default", "solo", "a", "a_b-c", "a".repeat(64)]) {
+    assert.equal(isValidWorkflowName(ok), true, `expected ${ok} valid`);
+  }
+  for (const bad of ["Default", "_x", "-x", "", "a".repeat(65), "a/b", "a.b"]) {
+    assert.equal(isValidWorkflowName(bad), false, `expected ${JSON.stringify(bad)} invalid`);
+  }
+  assert.ok(WORKFLOW_NAME_RE.test("default"));
+  assert.equal(DEFAULT_WORKFLOW_NAME, "default");
+});
+
+test("readWorkflow returns a clone of DEFAULT_WORKFLOW when no files exist", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const wf = await store.readWorkflow();
+    assert.deepEqual(wf, DEFAULT_WORKFLOW);
+    assert.notEqual(wf, DEFAULT_WORKFLOW);
+  });
+});
+
+test("readWorkflow resolves the legacy workflow.json as default", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "executor" }));
+    assert.equal((await store.readWorkflow()).initial, "executor");
+    assert.equal((await store.readWorkflow("default")).initial, "executor");
+  });
+});
+
+test("readWorkflow resolves workflows/default.json", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    await writeFile(store.workflowFilePath("default"), JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "reviewer" }));
+    assert.equal((await store.readWorkflow("default")).initial, "reviewer");
+  });
+});
+
+test("readWorkflow precedence: workflows/default.json wins and warns", async () => {
+  await withTempDir(async (dir) => {
+    const warnings = [];
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: (m) => warnings.push(m) });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "legacy_wins" }));
+    await mkdir(store.workflowsDir, { recursive: true });
+    await writeFile(store.workflowFilePath("default"), JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "named_wins" }));
+    assert.equal((await store.readWorkflow("default")).initial, "named_wins");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /workflow_precedence/);
+  });
+});
+
+test("onWarn fires only when both default sources exist", async () => {
+  await withTempDir(async (dir) => {
+    const warnings = [];
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: (m) => warnings.push(m) });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify(DEFAULT_WORKFLOW));
+    await store.readWorkflow("default");
+    assert.equal(warnings.length, 0);
+  });
+});
+
+test("readWorkflow reads named workflows; missing non-default returns null", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    await writeFile(store.workflowFilePath("solo"), JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "executor" }));
+    assert.equal((await store.readWorkflow("solo")).initial, "executor");
+    assert.equal(await store.readWorkflow("missing"), null);
+  });
+});
+
+test("readWorkflow throws on a bad name", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await assert.rejects(() => store.readWorkflow("Bad"), /invalid_workflow_name/);
+  });
+});
+
+test("writeWorkflow named write round-trips deep-equal", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const written = await store.writeWorkflow("solo", { initial: "executor" });
+    const readBack = await store.readWorkflow("solo");
+    assert.deepEqual(readBack, written);
+    assert.equal(readBack.initial, "executor");
+  });
+});
+
+test("writeWorkflow legacy single-arg still updates the default slot", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.writeWorkflow({ initial: "executor" });
+    assert.equal((await store.readWorkflow()).initial, "executor");
+    // Default stays on the legacy path (no forced migration).
+    assert.ok((await readFile(store.workflowPath, "utf8")).length > 0);
+  });
+});
+
+test("writeWorkflow rejects a bad name", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await assert.rejects(() => store.writeWorkflow("Bad", {}), /invalid_workflow_name/);
+  });
+});
+
+test("listWorkflows: empty store has nothing", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    assert.deepEqual(await store.listWorkflows(), []);
+  });
+});
+
+test("listWorkflows: mixed named + legacy default", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify(DEFAULT_WORKFLOW));
+    await store.writeWorkflow("solo", { initial: "executor" });
+    const list = await store.listWorkflows();
+    assert.deepEqual(list.map((w) => w.name), ["default", "solo"]);
+    assert.equal(list.find((w) => w.name === "default").source, "legacy");
+    assert.equal(list.find((w) => w.name === "solo").source, "named");
+  });
+});
+
+test("listWorkflows: skips non-json and invalid-stem files", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    await store.writeWorkflow("solo", { initial: "executor" });
+    await writeFile(path.join(store.workflowsDir, "README.md"), "not a workflow");
+    await writeFile(path.join(store.workflowsDir, "Bad Name.json"), "{}");
+    const list = await store.listWorkflows();
+    assert.deepEqual(list.map((w) => w.name), ["solo"]);
+  });
+});
+
+test("listWorkflows: both default sources dedupe to a single named default", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify(DEFAULT_WORKFLOW));
+    await mkdir(store.workflowsDir, { recursive: true });
+    await writeFile(store.workflowFilePath("default"), JSON.stringify(DEFAULT_WORKFLOW));
+    const list = await store.listWorkflows();
+    const defaults = list.filter((w) => w.name === "default");
+    assert.equal(defaults.length, 1);
+    assert.equal(defaults[0].source, "named");
+  });
+});
+
+test("store.applyWorkflowTemplate writes a named slot from a template", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const result = await store.applyWorkflowTemplate({ name: "solo", as: "fast" });
+    assert.equal(result.as, "fast");
+    const wf = await store.readWorkflow("fast");
+    assert.deepEqual(Object.keys(wf.roles), ["executor"]);
+  });
+});
+
+test("store.applyWorkflowTemplate rejects unknown template + bad target name", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await assert.rejects(() => store.applyWorkflowTemplate({ name: "nope" }), /unknown_workflow_template/);
+    await assert.rejects(() => store.applyWorkflowTemplate({ name: "solo", as: "Bad" }), /invalid_workflow_name/);
+  });
+});
+
+test("createTask records workflow field with default + validation", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "x" });
+    assert.equal(task.workflow, "default");
+    const readBack = await store.readTask(task.id);
+    assert.equal(readBack.workflow, "default");
+    const solo = await store.createTask({ prompt: "y", workflow: "solo" });
+    assert.equal(solo.workflow, "solo");
+    await assert.rejects(() => store.createTask({ prompt: "z", workflow: "Bad" }), /invalid_workflow_name/);
+  });
 });

@@ -255,8 +255,13 @@ export async function runLocalMaestroCommand({
     const parsed = parseTaskArgs(args, cwd);
     const taskStore = makeStore(parsed, store);
     const defaults = await taskStore.readConfig();
+    const workflowName = parsed.workflow ?? "default";
+    const workflow = await taskStore.readWorkflow(workflowName);
+    // Non-default names have no implicit fallback — a missing file is an error.
+    if (!workflow) {
+      throw new Error(`unknown_workflow: ${workflowName}`);
+    }
     if (parsed.mode !== "task") {
-      const workflow = await taskStore.readWorkflow();
       if (!workflow.modes?.[parsed.mode]) {
         throw new Error(`unknown_mode: ${parsed.mode} (defined modes: ${Object.keys(workflow.modes ?? {}).join(", ")})`);
       }
@@ -747,10 +752,52 @@ export async function runLocalMaestroCommand({
       }
       return result;
     }
+    if (action === "list") {
+      warnFlags(findUnknownFlags(rest, new Set(["--json"])), "workflow list", stderr);
+      const taskStore = makeStore(parsed, store);
+      const workflows = await taskStore.listWorkflows();
+      if (rest.includes("--json")) {
+        writeLine(stdout, JSON.stringify(workflows, null, 2));
+      } else if (workflows.length === 0) {
+        writeLine(stdout, "no workflows (run 'maestro init' or 'maestro workflow use <name>')");
+      } else {
+        for (const wf of workflows) {
+          writeLine(stdout, `${wf.name} (${wf.source})`);
+        }
+      }
+      return { workflows };
+    }
     if (action === "use") {
-      warnFlags(findUnknownFlags(rest, new Set()), "workflow use", stderr);
-      const name = rest.find((arg) => !arg.startsWith("-"));
+      warnFlags(findUnknownFlags(rest, new Set(["--as"])), "workflow use", stderr);
+      const positional = [];
+      let asName = null;
+      let asSeen = false;
+      for (let index = 0; index < rest.length; index += 1) {
+        if (rest[index] === "--as") {
+          asSeen = true;
+          index += 1;
+          asName = rest[index] ?? "";
+          continue;
+        }
+        if (!rest[index].startsWith("-")) positional.push(rest[index]);
+      }
+      // A bare "--as" with no value must error, not silently fall back to the
+      // legacy default-slot path.
+      if (asSeen && !asName) throw usageError(["workflow", "use"]);
+      const name = positional[0];
       if (!name) throw usageError(["workflow", "use"]);
+      // With --as: write into a named slot (workflows/<as>.json). Without:
+      // legacy behavior — replace the default workflow.json via the module path.
+      if (asName) {
+        const taskStore = makeStore(parsed, store);
+        const result = await taskStore.applyWorkflowTemplate({ name, as: asName });
+        const roles = Object.entries(result.workflow.roles)
+          .map(([role, def]) => `${role}(${def.provider})`)
+          .join(" → ");
+        writeLine(stdout, `workflow "${asName}" now uses template "${name}": ${roles}`);
+        writeLine(stdout, `modes: ${Object.keys(result.workflow.modes ?? {}).join(", ")}`);
+        return result;
+      }
       const { applyWorkflowTemplate } = await import("../setup/workflow-templates.mjs");
       const result = await applyWorkflowTemplate({ name, stateDir: parsed.stateDir });
       if (result.backupPath) {
