@@ -22,6 +22,7 @@ import { runProjectCommand } from "./projects.mjs";
 import { attachReceipt, feedbackReceipt, withReceipt, writeResultReceipt } from "./receipts.mjs";
 import {
   handleApproveAction,
+  handleApproveSubstitution,
   handleCancelTask,
   handleDenyAction,
   handleEditAction,
@@ -29,6 +30,8 @@ import {
   handleMarkDone,
   handleRetryTask,
   handleRunAction,
+  handleSkipRole,
+  handleSwitchProvider,
 } from "./task-handlers.mjs";
 import {
   createLocalTaskFromParsed,
@@ -53,6 +56,7 @@ export async function runLocalMaestroCommand({
   stderr = process.stderr,
   store = null,
   runner = null,
+  availabilityProbe = null,
   gitRunner = defaultGitRunner,
   hostRunner = defaultHostRunner,
   onTaskCreated = null,
@@ -261,7 +265,7 @@ export async function runLocalMaestroCommand({
     if (onTaskCreated) {
       onTaskCreated(task);
     }
-    return runCreatedLocalTask({ taskStore, taskId: task.id, cwd, stdout, stderr, runner, gitRunner });
+    return runCreatedLocalTask({ taskStore, taskId: task.id, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
   }
 
   if (command === "run-task") {
@@ -270,7 +274,7 @@ export async function runLocalMaestroCommand({
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
-    return runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner });
+    return runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
   }
 
   if (command === "approve" || command === "deny") {
@@ -285,7 +289,7 @@ export async function runLocalMaestroCommand({
     writeLine(stdout, `task ${task.id} approval ${approved ? "approved" : "denied"}`);
     let result = { task };
     if (task.status === "queued") {
-      result = await runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner });
+      result = await runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
     }
     result = attachReceipt(result, feedbackReceipt({
       kind: command,
@@ -392,7 +396,7 @@ export async function runLocalMaestroCommand({
       continuation_prompt: parsed.note ? `User message:\n${parsed.note}` : null,
     });
     writeLine(stdout, `task ${task.id} queued with message`);
-    const resumed = await runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner });
+    const resumed = await runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
     const result = attachReceipt(resumed, feedbackReceipt({
       kind: "message",
       message: "message queued",
@@ -494,6 +498,48 @@ export async function runLocalMaestroCommand({
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
     const result = await handleCancelTask({ taskStore, taskId, note: parsed.note, stdout });
+    writeResultReceipt(stdout, result);
+    return result;
+  }
+
+  if (command === "approve-substitution") {
+    const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "approve-substitution", stderr);
+    const taskId = parsed.positional[0];
+    if (!taskId) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const result = await handleApproveSubstitution({
+      taskStore, taskId, note: parsed.note, cwd, stdout, stderr, runner, gitRunner, availabilityProbe,
+    });
+    writeResultReceipt(stdout, result);
+    return result;
+  }
+
+  if (command === "skip-role") {
+    const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "skip-role", stderr);
+    const taskId = parsed.positional[0];
+    if (!taskId) throw new Error("missing_task_id");
+    const role = parsed.positional[1] ?? null;
+    const taskStore = makeStore(parsed, store);
+    const result = await handleSkipRole({
+      taskStore, taskId, role, note: parsed.note, cwd, stdout, stderr, runner, gitRunner, availabilityProbe,
+    });
+    writeResultReceipt(stdout, result);
+    return result;
+  }
+
+  if (command === "switch-provider") {
+    const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "switch-provider", stderr);
+    const taskId = parsed.positional[0];
+    if (!taskId) throw new Error("missing_task_id");
+    const provider = parsed.positional[1];
+    if (!provider) throw new Error("missing_provider");
+    const taskStore = makeStore(parsed, store);
+    const result = await handleSwitchProvider({
+      taskStore, taskId, provider, note: parsed.note, cwd, stdout, stderr, runner, gitRunner, availabilityProbe,
+    });
     writeResultReceipt(stdout, result);
     return result;
   }

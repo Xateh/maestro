@@ -3988,6 +3988,7 @@ test("local task CLI creates a task, runs planner/executor/reviewer, and records
       stderr: { write: () => {} },
       store,
       runner,
+      availabilityProbe: () => true, // stub runner; don't probe the host PATH
       onTaskCreated: (task) => {
         createdTaskId = task.id;
       },
@@ -4123,6 +4124,7 @@ test("local task CLI passes configured Claude and Codex command names to runner"
       stderr: { write: () => {} },
       store,
       runner,
+      availabilityProbe: () => true, // custom aliases (pclaude/mycodex) aren't on the host PATH
     });
 
     // LangGraph engine uses role-level fields (alias/effort/permission) from workflow.json
@@ -4171,6 +4173,101 @@ test("local task CLI records planner decisions and supports planner/reviewer ove
     assert.equal(saved.planner_policy, "off");
     assert.equal(saved.planner_decision, "skipped");
     assert.equal(saved.review_enabled, false);
+  });
+});
+
+// ── provider availability: block, skip, and switch recovery (Phase D) ────────────
+
+function recordingRunner(calls) {
+  return {
+    runStep: async (step) => {
+      calls.push(step);
+      return {
+        status: "succeeded",
+        stdout: `${step.role} output`,
+        stderr: "",
+        stdoutPath: path.join(step.logDir, `${step.role}.stdout.log`),
+        stderrPath: path.join(step.logDir, `${step.role}.stderr.log`),
+        command: step.provider,
+        args: [step.role],
+      };
+    },
+  };
+}
+
+async function runBlockedExecutorTask({ dir, store, runner }) {
+  const result = await runLocalMaestroCommand({
+    args: ["task", "--state-dir", store.root, "--cwd", dir, "--planner", "off", "--review", "off", "Do the thing"],
+    cwd: dir,
+    stdout: { write: () => {} },
+    stderr: { write: () => {} },
+    store,
+    runner,
+    availabilityProbe: () => false, // no provider CLI resolves
+  });
+  return result.task.id;
+}
+
+test("missing provider blocks the role with switch/skip unblock options", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const calls = [];
+    const taskId = await runBlockedExecutorTask({ dir, store, runner: recordingRunner(calls) });
+
+    const saved = await store.readTask(taskId);
+    assert.equal(saved.status, "waiting_user");
+    assert.equal(saved.blockers[0].code, "provider_missing");
+    assert.match(saved.blockers[0].message, /not installed/i);
+    const types = (saved.unblock_options ?? []).map((o) => o.type);
+    assert.ok(types.includes("switch_provider"), "offers switch_provider");
+    assert.ok(types.includes("skip_role"), "offers skip_role");
+    assert.equal(calls.length, 0, "agent never ran");
+  });
+});
+
+test("skip-role recovers a task whose provider is unavailable", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const calls = [];
+    const taskId = await runBlockedExecutorTask({ dir, store, runner: recordingRunner(calls) });
+
+    await runLocalMaestroCommand({
+      args: ["skip-role", "--state-dir", store.root, taskId],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+      runner: recordingRunner(calls),
+      availabilityProbe: () => false,
+    });
+
+    const after = await store.readTask(taskId);
+    assert.equal(after.status, "succeeded");
+    assert.equal(after.role_skips?.executor, "always");
+    assert.equal(calls.length, 0, "skipped role never ran");
+  });
+});
+
+test("switch-provider recovers by running the role on an available provider", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const calls = [];
+    const taskId = await runBlockedExecutorTask({ dir, store, runner: recordingRunner(calls) });
+
+    await runLocalMaestroCommand({
+      args: ["switch-provider", "--state-dir", store.root, taskId, "claude"],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+      runner: recordingRunner(calls),
+      availabilityProbe: (alias) => alias === "claude",
+    });
+
+    const after = await store.readTask(taskId);
+    assert.equal(after.status, "succeeded");
+    assert.deepEqual(after.role_overrides?.executor, { provider: "claude" });
+    assert.deepEqual(calls.map((c) => `${c.role}:${c.provider}`), ["executor:claude"]);
   });
 });
 

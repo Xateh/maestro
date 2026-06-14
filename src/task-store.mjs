@@ -5,6 +5,10 @@ import { deepMergeConfig } from "./config-local.mjs";
 
 export const DEFAULT_LOCAL_STATE_DIR = ".maestro";
 
+// Provider definitions. Optional `enabled: false` (typically set in
+// config.local.json) marks a provider unavailable everywhere — Maestro then
+// treats it like a missing CLI and applies the role's fallback. See
+// provider-availability.mjs for resolution.
 export const DEFAULT_PROVIDERS = {
   claude: {
     label: "Claude",
@@ -94,6 +98,10 @@ export const DEFAULT_PROVIDERS = {
 export const DEFAULT_WORKFLOW = {
   version: 1,
   initial: "planner",
+  // Each role may also carry an optional `fallback: ["<provider>", ...]` —
+  // ordered provider keys tried (by live availability) when the role's primary
+  // provider is missing or disabled. `maestro init`/`setup local` can populate
+  // it interactively; resolution happens at run time (provider-availability.mjs).
   roles: {
     planner: {
       label: "Planner",

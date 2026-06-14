@@ -231,6 +231,7 @@ async function runTaskWithPolicy({ policy = null, emitQuestion = false } = {}) {
       runner: stubRunner,
       stdout: silent,
       stderr: silent,
+      availabilityProbe: () => true, // stub runner; don't probe the host PATH
     });
     return { finalTask, closedTabs, taskId: task.id };
   } finally {
@@ -264,6 +265,99 @@ test("runLangGraphTask: waiting_user leaves the tab open as a trail", async () =
   const { finalTask, closedTabs } = await runTaskWithPolicy({ emitQuestion: true });
   assert.equal(finalTask.status, "waiting_user");
   assert.deepEqual(closedTabs, [], "tab kept so the user can read the conversation");
+});
+
+// ── makeRoleNode: provider availability / fallback ───────────────────────────────
+
+const HANDOFF_OUT = { stdout: 'MAESTRO_HANDOFF: {"summary":"ok"}', stderr: "", stdoutPath: null, stderrPath: null };
+
+async function withRoleNode(taskPatch, fn) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-avail-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000001-avail";
+    await db.createTask({ id: taskId, status: "running", prompt: "do it", cwd: dir, mode: "task", run_dir: null, ...taskPatch });
+    return await fn({ db, taskId, dir });
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("makeRoleNode: substitutes an available fallback once confirmed", async () => {
+  await withRoleNode({ auto_fallback_confirmed: true }, async ({ db, taskId }) => {
+    const role = { provider: "codex", fallback: ["claude"], prompt_template: "executor", permission: "write" };
+    const seen = [];
+    const runner = { runStep: async ({ provider }) => { seen.push(provider); return HANDOFF_OUT; } };
+    const node = makeRoleNode(role, {
+      db, runner, providerDef: DEFAULT_CONFIG.providers.codex, config: DEFAULT_CONFIG,
+      availabilityProbe: (alias) => alias === "claude", // codex missing
+    });
+    const result = await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.deepEqual(seen, ["claude"], "ran on the fallback provider");
+    assert.equal(result.priorHandoffs[0].provider, "claude");
+    const saved = await db.getTask(taskId);
+    assert.ok(saved.steps.some((s) => s.status === "substituted"), "records a substituted step");
+  });
+});
+
+test("makeRoleNode: first substitution pauses for confirmation", async () => {
+  await withRoleNode({}, async ({ db, taskId }) => {
+    const role = { provider: "codex", fallback: ["claude"], prompt_template: "executor", permission: "write" };
+    const runner = { runStep: async () => { throw new Error("should not run before approval"); } };
+    const node = makeRoleNode(role, {
+      db, runner, providerDef: DEFAULT_CONFIG.providers.codex, config: DEFAULT_CONFIG,
+      availabilityProbe: (alias) => alias === "claude",
+    });
+    const result = await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "error");
+    const saved = await db.getTask(taskId);
+    assert.equal(saved.status, "waiting_user");
+    assert.equal(saved.blockers[0].code, "provider_substitution_pending");
+    assert.equal(saved.pending_substitution.to, "claude");
+  });
+});
+
+test("makeRoleNode: blocks with provider_missing when nothing resolves", async () => {
+  await withRoleNode({}, async ({ db, taskId }) => {
+    const role = { provider: "codex", prompt_template: "executor", permission: "write" };
+    const runner = { runStep: async () => { throw new Error("should not run"); } };
+    const node = makeRoleNode(role, {
+      db, runner, providerDef: DEFAULT_CONFIG.providers.codex, config: DEFAULT_CONFIG,
+      availabilityProbe: () => false,
+    });
+    const result = await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "error");
+    const saved = await db.getTask(taskId);
+    assert.equal(saved.status, "waiting_user");
+    assert.equal(saved.blockers[0].code, "provider_missing");
+    assert.match(saved.blockers[0].message, /not installed/i);
+  });
+});
+
+test("makeRoleNode: usage-limit failure hops to an available fallback", async () => {
+  await withRoleNode({ auto_fallback_confirmed: true }, async ({ db, taskId }) => {
+    const role = { provider: "codex", fallback: ["claude"], prompt_template: "executor", permission: "write" };
+    const seen = [];
+    const runner = {
+      runStep: async ({ provider }) => {
+        seen.push(provider);
+        if (provider === "codex") { const e = new Error("429 rate limit"); e.stderr = "rate limit exceeded"; throw e; }
+        return HANDOFF_OUT;
+      },
+    };
+    const node = makeRoleNode(role, {
+      db, runner, providerDef: DEFAULT_CONFIG.providers.codex, config: DEFAULT_CONFIG,
+      availabilityProbe: () => true, // both installed; codex just rate-limited
+    });
+    const result = await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.deepEqual(seen, ["codex", "claude"], "retried on the fallback after the limit");
+    assert.equal(result.priorHandoffs[0].provider, "claude");
+    const saved = await db.getTask(taskId);
+    assert.ok(saved.steps.some((s) => s.recovery === "usage_limit_fallback"), "records the usage-limit hop");
+  });
 });
 
 // ── loop support: custom events, visit counting, loop limits ──────────────────
@@ -302,7 +396,7 @@ async function runLoopGraph({ workflow = LOOP_WORKFLOW, runner, resumeCompletedR
   try {
     const taskId = "20260611-000001-loop-test";
     await db.createTask({ id: taskId, status: "running", prompt: "loop it", cwd: dir, mode: "task", run_dir: null });
-    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, resumeCompletedRoles });
+    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, resumeCompletedRoles, availabilityProbe: () => true });
     const finalState = await graph.invoke(
       { task: await db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
       { configurable: { thread_id: taskId }, recursionLimit: 50 },
@@ -415,7 +509,7 @@ test("standalone mode entry: imported role runs alone, default pipeline untouche
       },
     };
     // graph must compile even though planner/executor/reviewer are not on this run's path
-    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, entry: "system_evaluator" });
+    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, entry: "system_evaluator", availabilityProbe: () => true });
     const final = await graph.invoke(
       { task: await db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
       { configurable: { thread_id: taskId }, recursionLimit: 50 },

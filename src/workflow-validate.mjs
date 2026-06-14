@@ -110,6 +110,15 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     if (config?.providers && role?.provider && !config.providers[role.provider]) {
       warnings.push(issue("unknown_provider", `role "${roleName}" uses provider "${role.provider}" which is not configured`));
     }
+    if (role?.fallback !== undefined && !Array.isArray(role.fallback)) {
+      errors.push(issue("bad_fallback", `role "${roleName}" fallback must be an array of provider keys, got ${JSON.stringify(role.fallback)}`));
+    } else if (Array.isArray(role?.fallback) && config?.providers) {
+      for (const key of role.fallback) {
+        if (!config.providers[key]) {
+          warnings.push(issue("unknown_fallback", `role "${roleName}" fallback provider "${key}" is not configured`));
+        }
+      }
+    }
   }
 
   // Reachability from initial + every mode initial.

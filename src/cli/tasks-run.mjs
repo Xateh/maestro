@@ -175,7 +175,7 @@ export async function recoverStaleRunningTasks(taskStore) {
   return recovered;
 }
 
-export async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner }) {
+export async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe = null }) {
   let currentTask = await taskStore.readTask(taskId);
   const continuationPrompt = currentTask.continuation_prompt
     ? sanitizeReviewString(currentTask.continuation_prompt)
@@ -249,6 +249,7 @@ export async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stde
     stdout,
     stderr,
     gitRunner,
+    availabilityProbe,
     ops: {
       buildUnblockOptions,
       canonicalizeActionRequestsForTask,
@@ -334,6 +335,7 @@ export function resumeQueuedTask({
   stderr,
   runner,
   gitRunner,
+  availabilityProbe = null,
   resumeMode = "foreground",
   spawnProcess = spawn,
 }) {
@@ -346,5 +348,5 @@ export function resumeQueuedTask({
       spawnProcess,
     });
   }
-  return runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner });
+  return runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
 }

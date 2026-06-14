@@ -10,6 +10,17 @@ import {
 } from "./git-intent.mjs";
 import { stableJson } from "./util.mjs";
 
+// Blocker codes raised by provider-availability resolution (provider-availability.mjs
+// + the agent-failure classifier in nodes.mjs). Each offers switch/skip recovery.
+export const AVAILABILITY_CODES = [
+  "provider_missing",
+  "provider_disabled",
+  "alias_unresolved",
+  "model_unavailable",
+  "unknown_provider",
+  "usage_limited",
+];
+
 export function actionableActionRequests(task = {}) {
   return (task.action_requests ?? []).filter((request) => ["pending", "failed", "expired"].includes(request.status));
 }
@@ -72,6 +83,17 @@ export function buildUnblockOptions({ task, actionRequests = [], includeAnswer =
   }
   if (taskHasBlocker(task, "agent_timeout")) {
     options.push({ id: `timeout-${task.id}`, type: "extend_timeout", label: "Extend timeout", status: "open" });
+  }
+  // Provider-availability blockers (missing / disabled / alias / model / usage)
+  // and the first-substitution confirmation get their own recovery options.
+  if (AVAILABILITY_CODES.some((code) => taskHasBlocker(task, code))) {
+    options.push({ id: `switch-provider-${task.id}`, type: "switch_provider", label: "Switch provider", status: "open" });
+    options.push({ id: `skip-role-${task.id}`, type: "skip_role", label: "Skip this role", status: "open" });
+  }
+  if (taskHasBlocker(task, "provider_substitution_pending")) {
+    options.push({ id: `approve-substitution-${task.id}`, type: "approve_substitution", label: "Approve substitution", status: "open" });
+    options.push({ id: `switch-provider-${task.id}`, type: "switch_provider", label: "Switch provider", status: "open" });
+    options.push({ id: `skip-role-${task.id}`, type: "skip_role", label: "Skip this role", status: "open" });
   }
   if (includeRetry) {
     options.push({ id: `retry-${task.id}`, type: "retry", label: "Retry", status: "open" });

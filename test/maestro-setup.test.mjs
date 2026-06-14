@@ -9,7 +9,7 @@ import { buildOllamaCommand } from "../src/adapters/ollama.mjs";
 import { resolveAdapter } from "../src/adapters/registry.mjs";
 import { TerminalAgentRunner } from "../src/agent-runner.mjs";
 import { deepMergeConfig } from "../src/config-local.mjs";
-import { buildLocalProviderPatch } from "../src/setup/local.mjs";
+import { buildLocalProviderPatch, runFallbackSetup } from "../src/setup/local.mjs";
 import {
   buildBundle,
   canonicalizeBundle,
@@ -838,6 +838,41 @@ test("readManifest throws loudly on malformed manifest", async () => {
 
 // ── maestro doctor ───────────────────────────────────────────────────────────
 
+test("runFallbackSetup writes a chosen fallback into workflow.json", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    // codex missing, claude present → executor/reviewer (codex) get offered claude.
+    const results = [
+      { provider: "claude", found: true },
+      { provider: "codex", found: false },
+    ];
+    const out = await runFallbackSetup({
+      store,
+      results,
+      ask: async () => "1", // pick the first candidate (claude)
+    });
+    assert.equal(out.written, true);
+    const workflow = JSON.parse(await readFile(store.workflowPath, "utf8"));
+    assert.deepEqual(workflow.roles.executor.fallback, ["claude"]);
+    assert.deepEqual(workflow.roles.reviewer.fallback, ["claude"]);
+    // planner uses claude (installed) → untouched.
+    assert.equal(workflow.roles.planner.fallback, undefined);
+  });
+});
+
+test("runFallbackSetup writes nothing when the user skips", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    const results = [{ provider: "claude", found: true }, { provider: "codex", found: false }];
+    const out = await runFallbackSetup({ store, results, ask: async () => "" });
+    assert.equal(out.written, false);
+    const workflow = await store.readWorkflow();
+    assert.equal(workflow.roles.executor.fallback, undefined);
+  });
+});
+
 test("runDoctor reports pass for a healthy state dir", async () => {
   const { runDoctor } = await import("../src/setup/doctor.mjs");
   const { DEFAULT_WORKFLOW: workflow } = await import("../src/task-store.mjs");
@@ -864,6 +899,48 @@ test("runDoctor reports pass for a healthy state dir", async () => {
     assert.equal(byId.config.status, "pass");
     assert.equal(byId.workflow.status, "pass");
     assert.equal(byId.db.status, "pass");
+  });
+});
+
+test("runDoctor flags per-role provider availability (warn on fallback, fail on none)", async () => {
+  const { runDoctor } = await import("../src/setup/doctor.mjs");
+  const { DEFAULT_WORKFLOW, DEFAULT_PROVIDERS } = await import("../src/task-store.mjs");
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    const store = new LocalTaskStore({ root: stateDir });
+    await store.init();
+    await writeFile(path.join(stateDir, "config.json"), JSON.stringify({ version: 2, providers: DEFAULT_PROVIDERS }));
+
+    // planner (claude) gains a codex fallback; only codex is installed.
+    const workflow = structuredClone(DEFAULT_WORKFLOW);
+    workflow.roles.planner.fallback = ["codex"];
+    await writeFile(path.join(stateDir, "workflow.json"), JSON.stringify(workflow));
+
+    const onlyCodex = await runDoctor({
+      stateDir,
+      commandExists: async (name) => name === "codex",
+      exec: async () => ({ stdout: "1.2.3\n" }),
+      openDb: async () => ({ close() {} }),
+    });
+    const byId = Object.fromEntries(onlyCodex.checks.map((c) => [c.id, c]));
+    assert.equal(byId["role:planner"].status, "warn");
+    assert.match(byId["role:planner"].detail, /falls back to codex/);
+    assert.equal(byId["role:executor"].status, "pass");
+    assert.equal(byId["role:reviewer"].status, "pass");
+    assert.equal(onlyCodex.ok, true, "warnings do not fail the run");
+
+    // No fallback + claude missing → hard fail.
+    await writeFile(path.join(stateDir, "workflow.json"), JSON.stringify(DEFAULT_WORKFLOW));
+    const noClaude = await runDoctor({
+      stateDir,
+      commandExists: async (name) => name === "codex",
+      exec: async () => ({ stdout: "1.2.3\n" }),
+      openDb: async () => ({ close() {} }),
+    });
+    const byId2 = Object.fromEntries(noClaude.checks.map((c) => [c.id, c]));
+    assert.equal(byId2["role:planner"].status, "fail");
+    assert.match(byId2["role:planner"].detail, /not installed/i);
+    assert.equal(noClaude.ok, false);
   });
 });
 
