@@ -287,6 +287,7 @@ export async function runLangGraphTask(taskId, {
   stdout = process.stdout,
   stderr = process.stderr,
   ops = {},
+  availabilityProbe = null,
 } = {}) {
   const write = (stream, msg) => { try { stream.write(`${msg}\n`); } catch {} };
 
@@ -304,6 +305,8 @@ export async function runLangGraphTask(taskId, {
   const INPUT_SYNC_FIELDS = [
     "prompt", "question_answers", "approval_decisions", "continuation_prompt",
     "action_requests", "review_enabled", "timeout_ms", "role_skips",
+    // Provider-availability recovery inputs (switch_provider / approve_substitution).
+    "role_overrides", "auto_fallback_confirmed",
     "planner_policy", "cwd", "branch", "run_dir", "mode", "worktree_path",
     "project_id", "start_head", "stream_tail_bytes",
     // User-visible audit trail — readable by prompts and callers via result.task.
@@ -392,6 +395,7 @@ export async function runLangGraphTask(taskId, {
     ops: graphOps,
     entry: resolveInitialState(workflow, { mode: task.mode }),
     resumeCompletedRoles: new Set(priorHandoffs.map((h) => h.role)),
+    availabilityProbe,
   });
 
   // ── run the graph ─────────────────────────────────────────────────────────

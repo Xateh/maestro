@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 import { executeApprovedAction } from "./action-execute.mjs";
 import {
+  AVAILABILITY_CODES,
   actionableActionRequests,
   buildUnblockOptions,
   canApproveAction,
@@ -543,6 +544,111 @@ export async function handleMarkDone({
     });
   }
   return { task: settled };
+}
+
+// ── provider-availability recovery ───────────────────────────────────────────
+
+const AVAILABILITY_BLOCKER_CODES = new Set([...AVAILABILITY_CODES, "provider_substitution_pending"]);
+
+// The role a provider-availability blocker is attached to (falls back to the
+// task's current state).
+function blockedRole(task) {
+  const blocker = (task.blockers ?? []).find((b) => AVAILABILITY_BLOCKER_CODES.has(b.code) && b.role);
+  return blocker?.role ?? task.current_state ?? null;
+}
+
+function clearAvailabilityBlockers(task) {
+  return (task.blockers ?? []).filter((b) => !AVAILABILITY_BLOCKER_CODES.has(b.code));
+}
+
+// Approve the first auto-substitution; the rest of the run then proceeds with a
+// note rather than pausing (auto_fallback_confirmed).
+export async function handleApproveSubstitution({
+  taskStore, taskId, note = "", cwd, stdout, stderr, runner, gitRunner,
+  availabilityProbe = null, resumeMode = "foreground", spawnProcess = spawn,
+}) {
+  const before = await taskStore.readTask(taskId);
+  const statusBefore = before.status ?? null;
+  await taskStore.appendInteraction(taskId, { type: "approve_substitution", actor: "user", body: note });
+  const task = await taskStore.incrementContinuationGeneration(taskId, {
+    status: "queued",
+    auto_fallback_confirmed: true,
+    active_step: null,
+    pending_substitution: null,
+    blockers: clearAvailabilityBlockers(before),
+    unblock_options: [],
+    continuation_prompt: note ? `Provider substitution approved:\n${note}` : null,
+  });
+  await markProjectTaskStatus(taskStore, task, "queued");
+  writeLine(stdout, `task ${taskId} substitution approved`);
+  const result = await resumeQueuedTask({
+    task, taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe, resumeMode, spawnProcess,
+  });
+  return attachReceipt(result, feedbackReceipt({
+    kind: "approve-substitution", message: "substitution approved", executed: false,
+    statusBefore, statusAfter: result.task?.status,
+  }));
+}
+
+// Skip the blocked role for the rest of this task (reuses role_skips).
+export async function handleSkipRole({
+  taskStore, taskId, role = null, note = "", cwd, stdout, stderr, runner, gitRunner,
+  availabilityProbe = null, resumeMode = "foreground", spawnProcess = spawn,
+}) {
+  const before = await taskStore.readTask(taskId);
+  const statusBefore = before.status ?? null;
+  const target = role ?? blockedRole(before);
+  if (!target) throw new Error("no_blocked_role");
+  await taskStore.appendInteraction(taskId, { type: "skip_role", actor: "user", body: note, role: target });
+  const task = await taskStore.incrementContinuationGeneration(taskId, {
+    status: "queued",
+    active_step: null,
+    pending_substitution: null,
+    role_skips: { ...(before.role_skips ?? {}), [target]: "always" },
+    blockers: clearAvailabilityBlockers(before),
+    unblock_options: [],
+    continuation_prompt: note ? `Role "${target}" skipped:\n${note}` : null,
+  });
+  await markProjectTaskStatus(taskStore, task, "queued");
+  writeLine(stdout, `task ${taskId} role ${target} skipped`);
+  const result = await resumeQueuedTask({
+    task, taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe, resumeMode, spawnProcess,
+  });
+  return attachReceipt(result, feedbackReceipt({
+    kind: "skip-role", message: `role ${target} skipped`, executed: false,
+    statusBefore, statusAfter: result.task?.status,
+  }));
+}
+
+// Switch the blocked role to a user-chosen provider for this task (role_overrides).
+export async function handleSwitchProvider({
+  taskStore, taskId, provider, role = null, note = "", cwd, stdout, stderr, runner, gitRunner,
+  availabilityProbe = null, resumeMode = "foreground", spawnProcess = spawn,
+}) {
+  if (!provider) throw new Error("missing_provider");
+  const before = await taskStore.readTask(taskId);
+  const statusBefore = before.status ?? null;
+  const target = role ?? blockedRole(before);
+  if (!target) throw new Error("no_blocked_role");
+  await taskStore.appendInteraction(taskId, { type: "switch_provider", actor: "user", body: note, role: target, provider });
+  const task = await taskStore.incrementContinuationGeneration(taskId, {
+    status: "queued",
+    active_step: null,
+    pending_substitution: null,
+    role_overrides: { ...(before.role_overrides ?? {}), [target]: { provider } },
+    blockers: clearAvailabilityBlockers(before),
+    unblock_options: [],
+    continuation_prompt: note ? `Role "${target}" switched to "${provider}":\n${note}` : null,
+  });
+  await markProjectTaskStatus(taskStore, task, "queued");
+  writeLine(stdout, `task ${taskId} role ${target} switched to ${provider}`);
+  const result = await resumeQueuedTask({
+    task, taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe, resumeMode, spawnProcess,
+  });
+  return attachReceipt(result, feedbackReceipt({
+    kind: "switch-provider", message: `role ${target} switched to ${provider}`, executed: false,
+    statusBefore, statusAfter: result.task?.status,
+  }));
 }
 
 export async function handleCancelTask({ taskStore, taskId, note = "", stdout }) {

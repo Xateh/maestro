@@ -186,6 +186,27 @@ export const COMMAND_TREE = {
       flags: [{ flag: "--note <text>", desc: "attach a note" }, STATE_DIR_FLAG],
     },
     {
+      name: "approve-substitution",
+      kind: "local",
+      synopsis: "maestro approve-substitution <id>",
+      summary: "approve an auto provider substitution and continue",
+      flags: [{ flag: "--note <text>", desc: "attach a note" }, STATE_DIR_FLAG],
+    },
+    {
+      name: "skip-role",
+      kind: "local",
+      synopsis: "maestro skip-role <id> [<role>]",
+      summary: "skip a role whose provider is unavailable",
+      flags: [{ flag: "--note <text>", desc: "attach a note" }, STATE_DIR_FLAG],
+    },
+    {
+      name: "switch-provider",
+      kind: "local",
+      synopsis: "maestro switch-provider <id> <provider>",
+      summary: "switch a blocked role to another provider",
+      flags: [{ flag: "--note <text>", desc: "attach a note" }, STATE_DIR_FLAG],
+    },
+    {
       name: "project",
       kind: "local",
       synopsis: "maestro project <subcommand>",
