@@ -32,7 +32,8 @@
   },
   "files": [
     "bin/",
-    "src/"
+    "src/",
+    "scripts/"
   ],
   "scripts": {
     "maestro": "node bin/maestro.mjs",

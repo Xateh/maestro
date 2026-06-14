@@ -111,5 +111,11 @@ Initial release.
 - Captured agent stdout/stderr are stripped of ANSI/VT control sequences before
   entering handoff payloads and the console (on-disk logs stay raw), so CLIs
   that redraw streaming progress no longer leak cursor-move escapes.
+- `scripts/` is now included in the published package, so `maestro setup harden`
+  (which installs a hook backed by `scripts/secret-guard.mjs`), the
+  `agent:ocr` / `agent:eval` example agents, and `headroom:setup` work from an
+  installed package instead of only from a git clone.
+- The `agent:ocr` / `agent:eval` scripts fail fast with an install hint when the
+  Ollama binary is absent, instead of surfacing a raw spawn error mid-run.
 
 [0.1.0]: https://github.com/Xateh/maestro/releases/tag/v0.1.0

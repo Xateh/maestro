@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { TerminalAgentRunner } from "../src/agent-runner.mjs";
+import { TerminalAgentRunner, directCommandExists } from "../src/agent-runner.mjs";
 
 const DEFAULT_OLLAMA_MODEL = "llama3.2";
 
@@ -30,6 +30,21 @@ Env: MAESTRO_OLLAMA_BIN, MAESTRO_OLLAMA_MODEL, MAESTRO_OLLAMA_VISION_MODEL
 const OLLAMA_BIN = process.env.MAESTRO_OLLAMA_BIN || "ollama";
 const TEXT_MODEL = process.env.MAESTRO_OLLAMA_MODEL || DEFAULT_OLLAMA_MODEL;
 const VISION_MODEL = process.env.MAESTRO_OLLAMA_VISION_MODEL || "llama3.2-vision";
+
+function printInstallHint() {
+  process.stderr.write(
+    `Could not run "${OLLAMA_BIN}". Install Ollama (https://ollama.com/download), then:\n` +
+    `  ollama pull ${TEXT_MODEL}\n  ollama pull ${VISION_MODEL}\n`,
+  );
+}
+
+// Fail fast with a friendly hint when the Ollama binary isn't present, instead
+// of letting a raw spawn error (exit 127) surface mid-run.
+async function ensureOllama() {
+  if (await directCommandExists(OLLAMA_BIN, { cwd: process.cwd() })) return;
+  printInstallHint();
+  process.exit(1);
+}
 
 function providerDef() {
   return {
@@ -116,22 +131,22 @@ async function evalAgent() {
 
 async function main() {
   const [, , command, ...rest] = process.argv;
+  if (command !== "ocr" && command !== "eval") {
+    process.stderr.write(USAGE);
+    process.exit(command ? 1 : 0);
+  }
+
   let result;
   try {
+    await ensureOllama();
     if (command === "ocr") {
       result = await ocrAgent(rest[0]);
-    } else if (command === "eval") {
-      result = await evalAgent();
     } else {
-      process.stderr.write(USAGE);
-      process.exit(command ? 1 : 0);
+      result = await evalAgent();
     }
   } catch (error) {
     if (error?.exitCode === 127 || error?.code === "ENOENT") {
-      process.stderr.write(
-        `Could not run "${OLLAMA_BIN}". Install Ollama (https://ollama.com/download), then:\n` +
-        `  ollama pull ${TEXT_MODEL}\n  ollama pull ${VISION_MODEL}\n`,
-      );
+      printInstallHint();
     } else {
       process.stderr.write(`${error.message}\n`);
       if (error.stderr) process.stderr.write(`${error.stderr}\n`);
