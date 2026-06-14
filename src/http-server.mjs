@@ -1,5 +1,46 @@
 import http from "node:http";
 
+import { createRateLimiter } from "./http-rate-limit.mjs";
+
+// Per-route token-bucket budgets. Reads are generous (the dashboard polls
+// /api/v1/state every 5s); writes are tight (refresh triggers real work).
+const RATE_LIMITS = {
+  read: { capacity: 120, refillPerSec: 2 }, // ~120/min, burst 120
+  write: { capacity: 12, refillPerSec: 0.2 }, // ~12/min, burst 12
+};
+// Identifiers come from the URL path. Allow only a bounded, slash-free charset
+// so nothing reaches the orchestrator that could be a traversal or injection.
+const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const MAX_POST_BODY_BYTES = 1024; // refresh carries no body; reject anything large
+
+// Decode + validate a URL path identifier. Returns the clean value, or null
+// when the encoding is malformed or the value is outside the allowed shape.
+export function sanitizeIdentifier(rawSegment) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(rawSegment);
+  } catch {
+    return null;
+  }
+  return IDENTIFIER_PATTERN.test(decoded) ? decoded : null;
+}
+
+function clientKey(request, fallback) {
+  return request.socket?.remoteAddress || fallback || "unknown";
+}
+
+function oversizedPostBody(request) {
+  const len = Number.parseInt(request.headers?.["content-length"] ?? "", 10);
+  return Number.isFinite(len) && len > MAX_POST_BODY_BYTES;
+}
+
+function tooManyRequests(response, retryAfterMs) {
+  const retryAfter = Math.max(1, Math.ceil((retryAfterMs || 1000) / 1000));
+  sendJson(response, 429, {
+    error: { code: "rate_limited", message: "Too many requests — slow down." },
+  }, { "retry-after": String(retryAfter) });
+}
+
 function sendJson(response, status, body, extraHeaders = {}) {
   const payload = JSON.stringify(body);
   response.writeHead(status, {
@@ -454,9 +495,25 @@ function methodNotAllowed(response, allowed) {
   }, { allow: allowed.join(", ") });
 }
 
-export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1" }) {
+export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rateLimit } = {}) {
+  // rateLimit: pass a limiter to inject one (tests), `false`/env to disable,
+  // or omit for the default in-memory token bucket.
+  const limiter = rateLimit === false || process.env.MAESTRO_HTTP_RATELIMIT === "off"
+    ? null
+    : (rateLimit || createRateLimiter());
+
   return async function maestroHttpHandler(request, response) {
     const url = new URL(request.url ?? "/", `http://${host}`);
+
+    // Rate limit every endpoint (including 404s, to blunt enumeration floods).
+    // Writes and reads draw from separate per-client budgets.
+    if (limiter) {
+      const isWrite = request.method === "POST" && url.pathname === "/api/v1/refresh";
+      const cls = isWrite ? "write" : "read";
+      const { allowed, retryAfterMs } = limiter.check(`${clientKey(request, host)}:${cls}`, RATE_LIMITS[cls]);
+      if (!allowed) return tooManyRequests(response, retryAfterMs);
+    }
+
     try {
       if (url.pathname === "/") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
@@ -472,6 +529,11 @@ export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1" }) {
 
       if (url.pathname === "/api/v1/refresh") {
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        if (oversizedPostBody(request)) {
+          return sendJson(response, 413, {
+            error: { code: "payload_too_large", message: "Request body too large." },
+          });
+        }
         sendJson(response, 202, await orchestrator.refresh());
         return;
       }
@@ -479,7 +541,12 @@ export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1" }) {
       const detailMatch = url.pathname.match(/^\/api\/v1\/([^/]+)$/);
       if (detailMatch) {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
-        const identifier = decodeURIComponent(detailMatch[1]);
+        const identifier = sanitizeIdentifier(detailMatch[1]);
+        if (identifier === null) {
+          return sendJson(response, 400, {
+            error: { code: "bad_request", message: "Invalid issue identifier." },
+          });
+        }
         const details = orchestrator.issueDetails(identifier);
         if (!details) {
           sendJson(response, 404, {

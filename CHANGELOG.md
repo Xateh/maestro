@@ -51,6 +51,13 @@ Initial release.
   - Toast notifications and a live pulse indicator in the toolbar.
 - Security model: host-command denylist, env secret stripping, path-traversal
   guards, config redaction.
+- **HTTP endpoint hardening** — the dashboard/API server (`maestro serve`)
+  applies a per-IP token-bucket rate limit (reads ~120/min, writes ~12/min;
+  `429` + `Retry-After` when exceeded) and validates input on every route:
+  issue identifiers are length-capped and charset-restricted (malformed input
+  → `400` instead of `500`), and oversized `POST` bodies are rejected (`413`).
+  Disable with `MAESTRO_HTTP_RATELIMIT=off`. MCP tool inputs (ids, prompt,
+  status, mode) gained matching length/type validation.
 - Headroom context compression for prior-output pipelines.
 - Linear tracker integration (server mode).
 - GitHub Actions CI: lint (Biome), test matrix (Node 22/24 on Linux plus a

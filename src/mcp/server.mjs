@@ -76,9 +76,13 @@ async function tryOpenStore() {
  * Validate that an MCP-supplied id cannot traverse outside its base directory.
  * Accepts only alphanumeric + [._-], no slashes or dots-at-start.
  */
+// Length-bounded so an oversized id can't be used to build huge paths or
+// stress downstream lookups.
 function isValidId(id) {
-  return typeof id === "string" && /^[0-9A-Za-z][0-9A-Za-z._-]*$/.test(id);
+  return typeof id === "string" && /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/.test(id);
 }
+
+const MAX_PROMPT_BYTES = 100_000;
 
 /**
  * Assert that `child` is strictly inside `parent` after path resolution.
@@ -116,6 +120,11 @@ async function listDir(dir) {
 // ── Tool implementations ──────────────────────────────────────────────────────
 
 async function listTasks({ limit = 20, status } = {}) {
+  // Clamp limit to a sane window; reject a malformed status filter early.
+  limit = Number.isFinite(limit) ? Math.min(100, Math.max(1, Math.trunc(limit))) : 20;
+  if (status !== undefined && (typeof status !== "string" || status.length > 64)) {
+    throw new Error("invalid_status");
+  }
   const { TASKS_DIR } = maestroPaths();
   // DB path: use store if available (SQLite or PG)
   const db = await tryOpenStore();
@@ -227,7 +236,8 @@ async function showRun({ id } = {}) {
 }
 
 async function createTask({ prompt, mode = "task" } = {}) {
-  if (!prompt) throw new Error("prompt required");
+  if (typeof prompt !== "string" || prompt.length === 0) throw new Error("prompt required");
+  if (Buffer.byteLength(prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error("prompt_too_large");
   if (!MODE_NAME_RE.test(mode) || !(await resolveValidModes()).has(mode)) {
     throw new Error(`invalid_mode: ${mode}`);
   }

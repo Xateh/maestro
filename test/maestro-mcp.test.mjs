@@ -11,6 +11,7 @@ import {
   VALID_MODES,
   resolveValidModes,
   createTask,
+  listTasks,
   showTask,
   showRun,
   validateWorkflowTool,
@@ -204,4 +205,23 @@ test("safeRunnerEnv: coerces values to string", () => {
   const out = safeRunnerEnv(env);
   assert.equal(out.MAESTRO_COUNT, "42");
   assert.equal(typeof out.MAESTRO_COUNT, "string");
+});
+
+// ── input validation hardening ──────────────────────────────────────────────
+
+test("isValidId rejects over-long ids (length cap)", () => {
+  assert.equal(isValidId("a".repeat(128)), true);
+  assert.equal(isValidId("a".repeat(129)), false);
+});
+
+test("createTask rejects missing, non-string, and oversized prompts before any side effects", async () => {
+  await assert.rejects(() => createTask({ prompt: "" }), /prompt required/);
+  await assert.rejects(() => createTask({ prompt: 123 }), /prompt required/);
+  await assert.rejects(() => createTask({}), /prompt required/);
+  await assert.rejects(() => createTask({ prompt: "x".repeat(100_001) }), /prompt_too_large/);
+});
+
+test("listTasks rejects a malformed status filter", async () => {
+  await assert.rejects(() => listTasks({ status: 123 }), /invalid_status/);
+  await assert.rejects(() => listTasks({ status: "x".repeat(65) }), /invalid_status/);
 });

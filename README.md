@@ -344,11 +344,16 @@ Extended docs: [docs/mcp.md](docs/mcp.md)
   `NODE_OPTIONS`, `BASH_ENV`, `DYLD_*`, `GIT_PROXY*` are stripped from all
   action-request `env` objects at parse time.
 - **MCP path traversal guard.** `maestro_show_task` and `maestro_show_run`
-  reject IDs that do not match `^[0-9A-Za-z][0-9A-Za-z._-]*$` and verify the
-  resolved path stays inside `.maestro/`.
+  reject IDs that do not match `^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$` and verify
+  the resolved path stays inside `.maestro/`.
 - **Config redaction.** `maestro_get_state` strips keys matching
   `*_key/*_token/*_secret/api_key/apikey/password/passwd` before returning
   config to MCP clients.
+- **HTTP rate limiting + input validation.** The dashboard/API server applies a
+  per-IP token-bucket limit (`429` + `Retry-After` when exceeded) and validates
+  every route: identifiers are length-capped and charset-restricted, malformed
+  encodings return `400`, and oversized bodies return `413`. Toggle with
+  `MAESTRO_HTTP_RATELIMIT`.
 
 Agents themselves run with your user's privileges — review what you approve.
 See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
@@ -467,6 +472,7 @@ Full architecture documentation: [docs/architecture.md](docs/architecture.md)
 | `MAESTRO_OLLAMA_VISION_MODEL` | `"llama3.2-vision"` | Vision model for the OCR agent (multimodal). |
 | `HEADROOM_PROXY_URL` | `http://localhost:8787` | Headroom compression proxy endpoint used for prior-output context compaction. |
 | `NO_COLOR` | unset | Set to any value to disable ANSI color in CLI/TUI output (honors the [NO_COLOR](https://no-color.org) standard). |
+| `MAESTRO_HTTP_RATELIMIT` | on | Set to `off` to disable the dashboard/API per-IP rate limiter (reads ~120/min, writes ~12/min; `429` + `Retry-After` otherwise). |
 
 ---
 
