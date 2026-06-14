@@ -79,15 +79,161 @@ function buildSoloWorkflow() {
   };
 }
 
+// SP2 verification pipeline spine. Nine stages: a forward spine
+// (implementation → static_analysis → review → threat_model → edge_cases →
+// tests → evaluation → regression → human_approval) plus three bounded rework
+// loops from the discovery verifiers back to implementation.
+//
+// CRITICAL: every role sets `prompt_template` to its own state name. The role
+// node derives `roleKey` from `prompt_template`; a unique value per stage keeps
+// handoffs/visits/resume isolated AND falls through to the schema-aware generic
+// prompt (only planner/executor/reviewer are special-cased). Shared/absent
+// prompt_templates would collide roleKeys and corrupt the run.
+function buildFullAuditSweepWorkflow() {
+  const role = (extra) => ({ model: "", effort: "", skip: "never", ...extra });
+  return {
+    version: 2,
+    initial: "implementation",
+    loop_limits: { default_max_visits: 3, on_exceeded: "ask_user" },
+    roles: {
+      implementation: role({
+        label: "Implementation",
+        provider: "codex",
+        alias: "codex",
+        permission: "write",
+        prompt_template: "implementation",
+        output_schema: "implementation",
+        instructions: [
+          "Implement the task. State every assumption you make and every residual",
+          "risk explicitly — the handoff MUST include non-trivial `assumptions` and",
+          "`risks` arrays when any exist. Do not silently paper over uncertainty.",
+        ].join("\n"),
+      }),
+      static_analysis: role({
+        label: "Static Analysis",
+        kind: "stub",
+        provider: null,
+        permission: "read",
+        prompt_template: "static_analysis",
+        output_schema: "static_analysis",
+        instructions: "Pass-through stub (SP3 wires real static-analysis runners).",
+      }),
+      review: role({
+        label: "Review",
+        provider: "claude",
+        alias: "claude",
+        permission: "read",
+        prompt_template: "review",
+        output_schema: "review",
+        verifies: true,
+        instructions: [
+          "Review the implementation for correctness, maintainability, security,",
+          "and contract drift. If rework is required, emit",
+          'MAESTRO_HANDOFF: {"event":"changes_requested", ...} to route back to',
+          "implementation; otherwise emit the review handoff with event done.",
+        ].join("\n"),
+      }),
+      threat_model: role({
+        label: "Threat Model",
+        provider: "claude",
+        alias: "claude",
+        permission: "read",
+        prompt_template: "threat_model",
+        output_schema: "threat_model",
+        verifies: true,
+        instructions: [
+          "Model misuse, adversarial inputs, concurrency hazards, and data",
+          "corruption paths. If a threat demands code changes, emit",
+          'MAESTRO_HANDOFF: {"event":"changes_requested", ...} to loop back.',
+        ].join("\n"),
+      }),
+      edge_cases: role({
+        label: "Edge Cases",
+        provider: "claude",
+        alias: "claude",
+        permission: "read",
+        prompt_template: "edge_cases",
+        output_schema: "edge_cases",
+        verifies: true,
+        instructions: [
+          "STRESS the implementation to discover failure modes — this is failure",
+          "discovery, NOT review. Enumerate boundary, empty, huge, and concurrent",
+          'inputs that break it. If a fix is needed, emit',
+          'MAESTRO_HANDOFF: {"event":"changes_requested", ...} to loop back.',
+        ].join("\n"),
+      }),
+      tests: role({
+        label: "Tests",
+        provider: "codex",
+        alias: "codex",
+        permission: "write",
+        prompt_template: "tests",
+        output_schema: "tests",
+        verifies: true,
+        instructions: [
+          "Synthesize tests from the prior review/threat/edge-case handoffs you",
+          "have received. Forward-only — do not loop back; emit the tests handoff.",
+        ].join("\n"),
+      }),
+      evaluation: role({
+        label: "Evaluation",
+        kind: "stub",
+        provider: null,
+        permission: "read",
+        prompt_template: "evaluation",
+        output_schema: "evaluation",
+        instructions: "Pass-through stub (SP3 wires real evaluation).",
+      }),
+      regression: role({
+        label: "Regression",
+        kind: "stub",
+        provider: null,
+        permission: "read",
+        prompt_template: "regression",
+        output_schema: "regression",
+        instructions: "Pass-through stub (SP4 wires the regression corpus).",
+      }),
+      human_approval: role({
+        label: "Human Approval",
+        provider: "claude",
+        alias: "claude",
+        permission: "read",
+        prompt_template: "human_approval",
+        instructions: [
+          "Summarize all prior stage artifacts into an approval-ready report for a",
+          "human to inspect, then emit the handoff with event done to complete.",
+          "If you need clarification, ask via MAESTRO_QUESTION.",
+        ].join("\n"),
+      }),
+    },
+    transitions: {
+      implementation: { done: "static_analysis", question: "$ask_user", error: "$halt" },
+      static_analysis: { done: "review", error: "$halt" },
+      review: { done: "threat_model", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
+      threat_model: { done: "edge_cases", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
+      edge_cases: { done: "tests", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
+      tests: { done: "evaluation", question: "$ask_user", error: "$halt" },
+      evaluation: { done: "regression", error: "$halt" },
+      regression: { done: "human_approval", error: "$halt" },
+      human_approval: { done: "$complete", question: "$ask_user", error: "$halt" },
+    },
+    modes: {
+      task: { initial: "implementation" },
+    },
+  };
+}
+
 export const EXTENDED_WORKFLOW = buildExtendedWorkflow();
 export const LOCAL_WORKFLOW = buildLocalWorkflow();
 export const SOLO_WORKFLOW = buildSoloWorkflow();
+export const FULL_AUDIT_SWEEP_WORKFLOW = buildFullAuditSweepWorkflow();
 
 export const WORKFLOW_TEMPLATES = {
   default: DEFAULT_WORKFLOW,
   extended: EXTENDED_WORKFLOW,
   local: LOCAL_WORKFLOW,
   solo: SOLO_WORKFLOW,
+  "full-audit-sweep": FULL_AUDIT_SWEEP_WORKFLOW,
 };
 
 export function resolveWorkflowTemplate(name) {

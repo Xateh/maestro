@@ -7,6 +7,8 @@ import {
   validatePayload,
   validateInline,
   resolveRoleSchema,
+  emptyPayloadForSchema,
+  schemaSkeleton,
 } from "../src/schemas/index.mjs";
 
 const EXPECTED_NAMES = [
@@ -172,4 +174,61 @@ test("resolveRoleSchema: unknown name → source unknown, no schema", () => {
 
 test("resolveRoleSchema: no declaration → source none", () => {
   assert.deepEqual(resolveRoleSchema({}), { name: null, schema: null, source: "none" });
+});
+
+// ── emptyPayloadForSchema (SP2) ──────────────────────────────────────────────
+
+test("emptyPayloadForSchema fills required keys by type", () => {
+  assert.deepEqual(emptyPayloadForSchema(getSchema("implementation")), {
+    summary: "",
+    files_changed: [],
+    assumptions: [],
+    risks: [],
+  });
+  assert.deepEqual(emptyPayloadForSchema(getSchema("evaluation")), {
+    pass_rate: 0,
+    failures: [],
+    coverage: {},
+  });
+  assert.deepEqual(emptyPayloadForSchema(getSchema("static_analysis")), {
+    findings: [],
+    tool_results: [],
+  });
+  assert.deepEqual(emptyPayloadForSchema(getSchema("regression")), {
+    regressions_run: [],
+    new_failures: [],
+    promoted_tests: [],
+  });
+});
+
+test("emptyPayloadForSchema uses the first enum member for enum required keys", () => {
+  assert.deepEqual(emptyPayloadForSchema(getSchema("review")), {
+    severity: "none",
+    findings: [],
+    recommendations: [],
+  });
+});
+
+test("emptyPayloadForSchema tolerates falsy / propertyless schemas", () => {
+  assert.deepEqual(emptyPayloadForSchema(null), {});
+  assert.deepEqual(emptyPayloadForSchema(undefined), {});
+  assert.deepEqual(emptyPayloadForSchema({ required: ["x"] }), { x: "" });
+});
+
+// ── schemaSkeleton (SP2) ─────────────────────────────────────────────────────
+
+test("schemaSkeleton emits skeleton + enum notes", () => {
+  const { skeleton, enumNotes } = schemaSkeleton(getSchema("review"));
+  assert.deepEqual(Object.keys(skeleton).sort(), ["findings", "recommendations", "severity"]);
+  assert.ok(enumNotes.includes("severity ∈ {none,low,medium,high,critical}"));
+});
+
+test("schemaSkeleton with no enum required keys → enumNotes empty", () => {
+  const { skeleton, enumNotes } = schemaSkeleton(getSchema("implementation"));
+  assert.deepEqual(skeleton, emptyPayloadForSchema(getSchema("implementation")));
+  assert.deepEqual(enumNotes, []);
+});
+
+test("schemaSkeleton tolerates undefined", () => {
+  assert.deepEqual(schemaSkeleton(undefined), { skeleton: {}, enumNotes: [] });
 });

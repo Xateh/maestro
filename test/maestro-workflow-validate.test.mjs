@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { validateWorkflow, formatValidation } from "../src/workflow-validate.mjs";
+import { validateWorkflow, formatValidation, findCycles, cycleHasTermination } from "../src/workflow-validate.mjs";
 import { DEFAULT_WORKFLOW } from "../src/task-store.mjs";
+import { resolveWorkflowTemplate } from "../src/setup/workflow-templates.mjs";
 
 // Minimal valid v2 base; callers override roles/transitions as needed.
 function baseWorkflow(roles, extra = {}) {
@@ -154,4 +155,70 @@ test("formatValidation surfaces unknown_output_schema verbatim", () => {
   const wf = baseWorkflow({ executor: { provider: "codex", output_schema: "nope" } });
   const text = formatValidation(validateWorkflow(wf));
   assert.ok(text.includes("unknown_output_schema"));
+});
+
+// ── non_independent_role rule (SP2) ──────────────────────────────────────────
+
+test("entry role that also verifies → non_independent_role error", () => {
+  const wf = baseWorkflow(
+    { build: { provider: "codex", verifies: true } },
+    { modes: { task: { initial: "build" } } },
+  );
+  const result = validateWorkflow(wf);
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes("non_independent_role"));
+});
+
+test("distinct verifier role (not an entry role) → no non_independent_role", () => {
+  const wf = baseWorkflow(
+    {
+      build: { provider: "codex" },
+      check: { provider: "codex", verifies: true, output_schema: "review" },
+    },
+    { initial: "build", modes: { task: { initial: "build" } } },
+  );
+  // route build → check so check is reachable.
+  wf.transitions.build = { done: "check", error: "$halt" };
+  const result = validateWorkflow(wf);
+  assert.ok(!codes(result).includes("non_independent_role"));
+});
+
+// ── full-audit-sweep template validity (SP2) ─────────────────────────────────
+
+test("full-audit-sweep template validates with no errors", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  const result = validateWorkflow(template);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.ok, true);
+  for (const code of ["non_independent_role", "unknown_output_schema", "unreachable_role", "unterminated_cycle"]) {
+    assert.ok(!codes(result).includes(code), `unexpected ${code}`);
+  }
+});
+
+test("full-audit-sweep: three rework cycles each terminate", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  const cycles = findCycles(template.transitions);
+  assert.equal(cycles.length, 3, "review/threat_model/edge_cases each loop to implementation");
+  for (const cycle of cycles) {
+    assert.ok(cycleHasTermination(cycle, template), `cycle ${cycle.join("→")} must terminate`);
+  }
+});
+
+test("full-audit-sweep: implementation reaches human_approval which completes", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  // every role reachable from implementation
+  const reachable = new Set();
+  const queue = [template.initial];
+  while (queue.length) {
+    const s = queue.shift();
+    if (reachable.has(s)) continue;
+    reachable.add(s);
+    for (const to of Object.values(template.transitions[s] ?? {})) {
+      if (template.roles[to] && !reachable.has(to)) queue.push(to);
+    }
+  }
+  for (const role of Object.keys(template.roles)) {
+    assert.ok(reachable.has(role), `role ${role} unreachable`);
+  }
+  assert.equal(template.transitions.human_approval.done, "$complete");
 });

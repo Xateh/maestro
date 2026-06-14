@@ -10,6 +10,8 @@
  * as interactions/actions in the legacy builder).
  */
 
+import { schemaSkeleton } from "../schemas/index.mjs";
+
 const RECENT_CAP = 8;
 
 function _priorHandoffText(priorHandoffs = []) {
@@ -106,7 +108,7 @@ function _resumeText(task = {}) {
  * @param {Array}  priorHandoffs - compact typed handoff objects
  * @param {string} handoffMode - "normal" | "strict" (on context retry)
  */
-export function buildPromptFromHandoffs({ role, task, priorHandoffs = [], handoffMode = "normal", roleInstructions = "" }) {
+export function buildPromptFromHandoffs({ role, task, priorHandoffs = [], handoffMode = "normal", roleInstructions = "", outputSchema = null }) {
   const taskText = task?.prompt ?? "";
   const prior = _priorHandoffText(priorHandoffs);
   const answers = _answersText(task?.question_answers ?? []);
@@ -237,6 +239,18 @@ For incomplete_continueable, include continuation: {"prompt":"...","reason":"...
 
   // Fallback for custom roles (e.g. imported subagents). Includes the full
   // marker protocol so custom roles can ask questions, hand off, and loop.
+  // When the role declares a resolvable output_schema, the MAESTRO_HANDOFF
+  // example is rendered from that schema's required-key skeleton (plus enum
+  // notes) so verifier agents reliably emit conforming JSON.
+  let handoffExample = '{"summary":"","details":{}}';
+  let enumBlock = "";
+  if (outputSchema) {
+    const { skeleton, enumNotes } = schemaSkeleton(outputSchema);
+    handoffExample = JSON.stringify(skeleton);
+    if (enumNotes.length > 0) {
+      enumBlock = `\nEnum constraints: ${enumNotes.join("; ")}\n`;
+    }
+  }
   return `Role: ${role}
 ${retryNote}${instructionsBlock}
 
@@ -259,8 +273,8 @@ If you need user input before continuing, output exactly one line starting with:
 MAESTRO_QUESTION: <your question>
 
 When finished, include exactly one line starting with:
-MAESTRO_HANDOFF: {"summary":"","details":{}}
-
+MAESTRO_HANDOFF: ${handoffExample}
+${enumBlock}
 If this role's workflow transitions define custom events (e.g. "revise"), you
 may route the workflow by adding an "event" field to the handoff JSON, e.g.:
 MAESTRO_HANDOFF: {"event":"revise","summary":"why revision is needed"}`;
