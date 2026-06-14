@@ -42,11 +42,20 @@ jobs:
           if [ ! -s release-notes.md ]; then
             echo "_No CHANGELOG.md section found for ${version}._" > release-notes.md
           fi
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md \
-            maestro-orchestrator-*.tgz
+          # Idempotent: a moved tag or a re-run updates the existing release
+          # instead of failing with "a release with the same tag name exists".
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md
+            gh release upload "$GITHUB_REF_NAME" maestro-orchestrator-*.tgz --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md \
+              maestro-orchestrator-*.tgz
+          fi
