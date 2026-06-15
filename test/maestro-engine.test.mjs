@@ -344,9 +344,7 @@ test("makeRoleNode: stub role emits schema-conforming payload", async () => {
   const roleDef = { kind: "stub", prompt_template: "static_analysis", output_schema: "static_analysis", permission: "read" };
   const { dir, db, result, handoffs } = await runNodeWithSchema({
     roleDef,
-    stdout: "ignored",
   });
-  // swap in a throwing runner is not possible via runNodeWithSchema; assert via a direct node below.
   try {
     assert.equal(result.event, "done");
     assert.deepEqual(result.priorHandoffs[0].payload, emptyPayloadForSchema(getSchema("static_analysis")));
