@@ -1,6 +1,6 @@
 {
   "name": "maestro-orchestrator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-agent plan→execute→review orchestrator built on LangGraph",
   "repository": {
     "type": "git",
