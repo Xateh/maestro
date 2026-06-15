@@ -421,7 +421,7 @@ Two additive role fields drive the SP2 verification spine:
 
 | Field | Description |
 |---|---|
-| `kind` | `"agent"` (default; absent ⇒ agent) runs the role's provider as usual. `"stub"` skips provider resolution and the agent call entirely, emitting a minimal payload conforming to the role's `output_schema` (empty/zero values; first enum member for enum keys) with `event: "done"`. A stub never invokes a provider, so it cannot fail on availability. |
+| `kind` | `"agent"` (default; absent ⇒ agent) runs the role's provider as usual. `"stub"` skips provider resolution and the agent call entirely, emitting a minimal payload conforming to the role's `output_schema` (empty/zero values; first enum member for enum keys) with `event: "done"`. `"command"` (SP3) runs declared shell commands instead of an LLM (see below). Neither a stub nor a command role invokes a provider, so neither can fail on availability. |
 | `verifies` | `true` marks the role a verification stage. Inert at runtime in SP2; it is read by the independence rule (below) and reserved for later scoring. |
 
 For a role that is **not** planner/executor/reviewer (i.e. uses the generic
@@ -448,9 +448,11 @@ rework loops (event: changes_requested):
   review / threat_model / edge_cases → implementation
 ```
 
-`static_analysis`, `evaluation`, and `regression` are `kind: "stub"`
-pass-throughs (real logic arrives in later sub-projects); the rest are agent
-roles, each with an `output_schema`. Rework loops are bounded by
+`static_analysis` and `regression` are `kind: "stub"` pass-throughs (real logic
+arrives in later sub-projects); `evaluation` is a `kind: "command"` stage (SP3,
+below) shipped with an empty `commands: []` (a vacuous no-op until you populate
+it); the rest are agent roles, each with an `output_schema`. Rework loops are
+bounded by
 `loop_limits.default_max_visits: 3` (escalates to the user on exceed).
 `human_approval` summarizes the recorded artifacts for a human to inspect, then
 completes.
@@ -461,6 +463,77 @@ It is **opt-in** (not scaffolded by `maestro init`). Install and run it with:
 maestro workflow use full-audit-sweep --as full-audit-sweep
 maestro task "…" --workflow full-audit-sweep
 ```
+
+#### `kind: "command"` — the automated evaluation stage (SP3)
+
+A `kind: "command"` role is a **non-LLM** stage that runs declared shell
+commands in the task's working tree (`worktree_path ?? cwd`), collects their
+results, and maps them to the `evaluation` schema `{pass_rate, failures,
+coverage}`. It is evidence-gathering only — **no gating**: every command runs
+and the stage always emits `event: "done"` (a failing command lowers
+`pass_rate` but never halts the run). The agent runner is never invoked.
+
+The role declares a `commands` array. Each command:
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Unique within the role. |
+| `run` | yes | Shell string, executed via `sh -lc`. |
+| `category` | no | Free-form label (e.g. `lint`, `typecheck`, `unit`, `integration`, `e2e`, `security`). Permissive — unknown values are not rejected. |
+| `timeout_ms` | no | Per-command timeout. Falls back to `config.command_timeout_ms`, then `120000`. On timeout the child is killed (`SIGTERM`), `timed_out: true`. |
+| `allow_failure` | no | `true` ⇒ the command still runs and is recorded, but is excluded from both `pass_rate` and `failures`. |
+| `parser` | no | `{passed?, failed?, total?}` of regex strings (below). |
+
+**`pass_rate` (hybrid).** Each non-`allow_failure` command contributes
+`(passed, total)`:
+
+- No parser, or parser did not produce a derivable total ⇒ exit-code
+  granularity: `total = 1`, `passed = (exit_code === 0 && !timed_out &&
+  !spawn_error) ? 1 : 0`.
+- Parser produced counts ⇒ those `total`/`passed`.
+
+`pass_rate = round4(Σpassed / Σtotal)`, defined as `1.0` when `Σtotal === 0`
+(no commands). Empty `commands: []` ⇒ `pass_rate: 1.0`, `failures: []`.
+
+**`parser` sufficiency rule (never fabricate a pass-rate).** The first capture
+group of each regex is parsed as an integer against `stdout + "\n" + stderr`. A
+total is used only when it is *derivable*: either a `total` regex matched, OR
+**both** `passed` and `failed` matched (then `total = passed + failed`). A
+parser that yields only `passed`, only `failed`, or nothing returns no counts —
+the command falls back to exit-code granularity. (A failing run still lowers
+`pass_rate` through its non-zero exit.)
+
+**`failures[]`.** One entry per non-`allow_failure` command that did not fully
+pass (`exit_code !== 0`, `timed_out`, a spawn error, or `parsed.passed <
+parsed.total`): `{name, run, category, exit_code, signal, timed_out,
+output_tail, parsed?}`. `output_tail` is the bounded combined output (last
+`config.stream_tail_bytes` bytes, default 65536). A spawn error (missing `sh`,
+bad cwd, thrown/absent runner) is captured as `exit_code: 127`.
+
+**`coverage`** is always `{}` in SP3 (coverage parsing is a future concern).
+
+Validation (`maestro workflow validate`) adds `bad_command_spec`: a command
+missing a non-empty `name` or `run`, a duplicate `name`, or a non-array
+`commands` is rejected. An empty `commands: []` is valid.
+
+The shipped `full-audit-sweep` `evaluation` role declares `commands: []`, so the
+default runner is never invoked by the shipped manifest until you opt in:
+
+```jsonc
+"evaluation": {
+  "kind": "command",
+  "output_schema": "evaluation",
+  "commands": [
+    { "name": "lint", "run": "npm run lint", "category": "lint" },
+    { "name": "unit", "run": "npm test", "category": "unit",
+      "parser": { "passed": "# pass (\\d+)", "failed": "# fail (\\d+)" } }
+  ]
+}
+```
+
+Relevant config knobs (both optional, read with fallbacks — neither is added to
+the default config): `command_timeout_ms` (default `120000`) and
+`stream_tail_bytes` (default `65536`, already used for agent output).
 
 ### YAML authoring
 

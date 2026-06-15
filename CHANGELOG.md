@@ -47,6 +47,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automated evaluation stage (SP3)** — the `full-audit-sweep` `evaluation`
+  stage is now real. Additive only; the default workflow, SP2 `kind: "stub"`
+  behavior, and `static_analysis`/`regression` (still stubs) are unchanged.
+  - **Role `kind: "command"`**: a non-LLM stage that runs declared shell
+    commands in the task tree (`worktree_path ?? cwd`) and maps results to the
+    `evaluation` schema `{pass_rate, failures, coverage}`. Evidence-only — **no
+    gating**: every command runs and the stage always emits `event: "done"`; the
+    agent runner is never invoked and a command failure never throws (a spawn
+    error / timeout / thrown runner is captured as `exit_code: 127`).
+  - **Hybrid `pass_rate`**: exit-code granularity by default; an optional
+    per-command `parser` (`{passed, failed, total}` regexes) contributes finer
+    test counts. A pass-rate is never fabricated — counts are used only when a
+    total is derivable (a `total` regex, or both `passed`+`failed`); otherwise
+    the command falls back to its exit code. `pass_rate` is `1.0` for empty
+    `commands: []`. `coverage` is always `{}` in SP3.
+  - **`commandRunner` op**: a new injectable runner (`src/command-runner.mjs`,
+    wired into the CLI ops bundle) wrapping `sh -lc` with a timeout and a bounded
+    output tail; tests inject a fake.
+  - **`bad_command_spec` validation**: `validateWorkflow` rejects a command
+    missing a non-empty `name`/`run`, a duplicate `name`, or a non-array
+    `commands`. Empty `commands: []` is valid.
+  - **Template**: `full-audit-sweep` `evaluation` converts from `kind: "stub"`
+    to `kind: "command"` with `commands: []` (a vacuous no-op until populated).
+    Honors optional `command_timeout_ms` (default `120000`) and existing
+    `stream_tail_bytes` (default `65536`) config knobs without adding new
+    default-config keys.
 - **Verification pipeline spine (SP2)** — the 9-stage reliability pipeline as a
   runnable, opt-in named workflow. Additive only; the default
   planner→executor→reviewer workflow is unchanged.

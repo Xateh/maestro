@@ -232,3 +232,120 @@ test("schemaSkeleton with no enum required keys → enumNotes empty", () => {
 test("schemaSkeleton tolerates undefined", () => {
   assert.deepEqual(schemaSkeleton(undefined), { skeleton: {}, enumNotes: [] });
 });
+
+// ── SP3 evaluation math (src/evaluation.mjs) ─────────────────────────────────
+
+import {
+  parseCommandCounts,
+  computeEvaluation,
+  buildEvaluationPayload,
+} from "../src/evaluation.mjs";
+
+const okResult = (over = {}) => ({ name: "c", run: "x", category: null, exit_code: 0, signal: null, timed_out: false, spawn_error: false, output_tail: "", allow_failure: false, parser: null, ...over });
+
+test("computeEvaluation: all commands pass → pass_rate 1, no failures", () => {
+  const out = computeEvaluation([okResult(), okResult()]);
+  assert.equal(out.pass_rate, 1);
+  assert.deepEqual(out.failures, []);
+});
+
+test("computeEvaluation: one of two fails → pass_rate 0.5 + one failure", () => {
+  const out = computeEvaluation([okResult({ name: "ok" }), okResult({ name: "bad", exit_code: 1 })]);
+  assert.equal(out.pass_rate, 0.5);
+  assert.equal(out.failures.length, 1);
+  assert.equal(out.failures[0].name, "bad");
+  assert.equal(out.failures[0].exit_code, 1);
+});
+
+test("computeEvaluation: empty results → pass_rate 1, no failures", () => {
+  const out = computeEvaluation([]);
+  assert.equal(out.pass_rate, 1);
+  assert.deepEqual(out.failures, []);
+});
+
+test("parseCommandCounts: passed+failed regex on '# pass 8 # fail 2' → {total:10,passed:8}", () => {
+  const parser = { passed: "# pass (\\d+)", failed: "# fail (\\d+)" };
+  assert.deepEqual(parseCommandCounts(parser, "# pass 8 # fail 2"), { total: 10, passed: 8, onlyTotal: false });
+});
+
+test("computeEvaluation: parser path '# pass 8 # fail 2' → 0.8 + failure with parsed", () => {
+  const parser = { passed: "# pass (\\d+)", failed: "# fail (\\d+)" };
+  const out = computeEvaluation([okResult({ exit_code: 1, output_tail: "# pass 8 # fail 2", parser })]);
+  assert.equal(out.pass_rate, 0.8);
+  assert.equal(out.failures.length, 1);
+  assert.deepEqual(out.failures[0].parsed, { total: 10, passed: 8 });
+});
+
+test("computeEvaluation: parser that does not match → exit-code fallback", () => {
+  const parser = { passed: "# pass (\\d+)", failed: "# fail (\\d+)" };
+  // exit 0, no match → total 1 passed 1
+  const pass = computeEvaluation([okResult({ output_tail: "no counts here", parser })]);
+  assert.equal(pass.pass_rate, 1);
+  // exit 1, no match → total 1 passed 0
+  const fail = computeEvaluation([okResult({ exit_code: 1, output_tail: "no counts here", parser })]);
+  assert.equal(fail.pass_rate, 0);
+});
+
+test("parseCommandCounts: only-passed parser → null (not derivable)", () => {
+  assert.equal(parseCommandCounts({ passed: "ok (\\d+)" }, "ok 5"), null);
+});
+
+test("computeEvaluation: only-passed parser falls back to exit code", () => {
+  const out = computeEvaluation([okResult({ exit_code: 1, output_tail: "ok 5", parser: { passed: "ok (\\d+)" } })]);
+  assert.equal(out.pass_rate, 0); // null parse → exit1 → 0/1
+});
+
+test("parseCommandCounts: total regex derives total directly", () => {
+  assert.deepEqual(parseCommandCounts({ total: "ran (\\d+)", failed: "fail (\\d+)" }, "ran 10 fail 3"), { total: 10, passed: 7, onlyTotal: false });
+});
+
+test("parseCommandCounts: only-total parser flags onlyTotal (provisional full pass)", () => {
+  assert.deepEqual(parseCommandCounts({ total: "total (\\d+)" }, "total 10"), { total: 10, passed: 10, onlyTotal: true });
+});
+
+test("computeEvaluation: only-total parser + exit 0 → counts as full pass", () => {
+  const parser = { total: "total (\\d+)" };
+  const out = computeEvaluation([okResult({ output_tail: "total 10", parser })]);
+  assert.equal(out.pass_rate, 1); // 10/10
+  assert.deepEqual(out.failures, []);
+});
+
+test("computeEvaluation: only-total parser + non-zero exit → 0 passed AND in failures (consistent)", () => {
+  const parser = { total: "total (\\d+)" };
+  const out = computeEvaluation([okResult({ name: "bad", exit_code: 1, output_tail: "total 10", parser })]);
+  // contributes 0 (not 10) to pass_rate: 0/10 = 0
+  assert.equal(out.pass_rate, 0);
+  // and is still recorded as a failure — no longer contradictory
+  assert.equal(out.failures.length, 1);
+  assert.equal(out.failures[0].name, "bad");
+  assert.deepEqual(out.failures[0].parsed, { total: 10, passed: 10 });
+});
+
+test("computeEvaluation: allow_failure failing command excluded from pass_rate + failures", () => {
+  const out = computeEvaluation([okResult({ name: "ok" }), okResult({ name: "flaky", exit_code: 1, allow_failure: true })]);
+  assert.equal(out.pass_rate, 1);
+  assert.deepEqual(out.failures, []);
+});
+
+test("computeEvaluation: round4 — 1 of 3 passing → 0.3333", () => {
+  const out = computeEvaluation([
+    okResult({ name: "a" }),
+    okResult({ name: "b", exit_code: 1 }),
+    okResult({ name: "c", exit_code: 1 }),
+  ]);
+  assert.equal(out.pass_rate, 0.3333);
+});
+
+test("buildEvaluationPayload: conforms to the evaluation schema + coverage always {}", () => {
+  const payload = buildEvaluationPayload([okResult({ name: "ok" }), okResult({ name: "bad", exit_code: 1 })]);
+  assert.deepEqual(payload.coverage, {});
+  const r = validatePayload("evaluation", payload);
+  assert.equal(r.ok, true);
+});
+
+test("buildEvaluationPayload: empty → vacuous pass + coverage {}", () => {
+  const payload = buildEvaluationPayload([]);
+  assert.equal(payload.pass_rate, 1);
+  assert.deepEqual(payload.failures, []);
+  assert.deepEqual(payload.coverage, {});
+});

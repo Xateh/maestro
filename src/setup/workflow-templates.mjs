@@ -177,12 +177,13 @@ function buildFullAuditSweepWorkflow() {
       }),
       evaluation: role({
         label: "Evaluation",
-        kind: "stub",
+        kind: "command",
         provider: null,
         permission: "read",
         prompt_template: "evaluation",
         output_schema: "evaluation",
-        instructions: "Pass-through stub (SP3 wires real evaluation).",
+        commands: [],
+        instructions: "Runs declared shell commands and records pass_rate/failures. Opt-in: ships with commands:[] (a no-op, pass_rate 1.0) until you populate it.",
       }),
       regression: role({
         label: "Regression",

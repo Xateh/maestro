@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { commandRunner } from "../command-runner.mjs";
 import { runLangGraphTask } from "../langgraph/engine.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { buildRunSummary, formatRunSummary } from "../run-summary.mjs";
@@ -196,6 +197,7 @@ export async function runTaskGraph({ taskStore, taskId, stdout, stderr, runner =
       recordProjectBlocker: (pid, b) => recordProjectBlocker(taskStore, pid, b),
       finalizeProjectTask: (t) => finalizeProjectTask({ taskStore, task: t, gitRunner, stdout }),
       gitRunner,
+      commandRunner,
     },
   });
 }

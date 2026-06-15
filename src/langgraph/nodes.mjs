@@ -29,6 +29,21 @@ import { resolveProviderEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
 import { resolveRoleSchema, validatePayload, validateInline, emptyPayloadForSchema } from "../schemas/index.mjs";
+import { buildEvaluationPayload } from "../evaluation.mjs";
+
+// SP3 kind:"command" output-tail / timeout fallbacks (no new default config key).
+const COMMAND_DEFAULT_TAIL_BYTES = 65_536;
+const COMMAND_DEFAULT_TIMEOUT_MS = 120_000;
+
+// Bound combined command output the same way agent-runner does (last N bytes).
+function _boundedCommandTail(text, maxBytes) {
+  const buffer = Buffer.from(String(text ?? ""), "utf8");
+  if (buffer.length <= maxBytes) return buffer.toString("utf8");
+  return buffer
+    .subarray(buffer.length - maxBytes)
+    .toString("utf8")
+    .replace(/^�/, "");
+}
 
 const INSTRUCTION_FILE_CAP = 16 * 1024;
 const INSTRUCTION_TOTAL_CAP = 64 * 1024;
@@ -168,6 +183,7 @@ export function makeRoleNode(roleDef, {
     recordProjectBlocker = null,
     gitRunner = null,
     markActiveStep = null,
+    commandRunner = null,
   } = ops;
 
   return async function roleNode(state) {
@@ -273,6 +289,112 @@ export function makeRoleNode(roleDef, {
       await db.addHandoff(task.id, {
         role: roleKey,
         provider: "stub",
+        payload,
+        logPath: null,
+        schemaValidation,
+      });
+      return {
+        priorHandoffs: [{
+          role: roleKey,
+          provider: null,
+          payload,
+          log_path: null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
+        event: "done",
+        currentState: roleKey,
+        visits: { [roleKey]: 1 },
+      };
+    }
+
+    // ── command role: non-LLM stage that runs declared shell commands ────────
+    // Sibling to the stub branch: honors resume-skip + loop bounding (above) but
+    // NEVER touches the agent runner or provider availability. Runs every command
+    // as evidence and always emits "done" — a failing command is data, not a halt
+    // (no gating; that is SP5). Builds the SP1 `evaluation` payload.
+    if (roleDef.kind === "command") {
+      const commands = Array.isArray(roleDef.commands) ? roleDef.commands : [];
+      const cwd = currentTask.worktree_path
+        ?? (currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd());
+      const maxTailBytes = config?.stream_tail_bytes ?? COMMAND_DEFAULT_TAIL_BYTES;
+      const env = _maestroEnv(currentTask, roleKey);
+
+      const records = [];
+      for (const command of commands) {
+        const run = command?.run;
+        const timeoutMs = command?.timeout_ms ?? config?.command_timeout_ms ?? COMMAND_DEFAULT_TIMEOUT_MS;
+        // Never let a thrown/absent runner abort the stage — synthesize a
+        // spawn-error result (exit_code 127, matching the engine's convention).
+        let result;
+        try {
+          if (!commandRunner) throw new Error("commandRunner not provided");
+          result = await commandRunner({ run, cwd, timeoutMs, env, maxTailBytes });
+        } catch (err) {
+          result = {
+            exit_code: 127,
+            signal: null,
+            stdout: "",
+            stderr: err?.message ?? String(err),
+            timed_out: false,
+            spawn_error: true,
+          };
+        }
+        const outputTail = _boundedCommandTail(
+          `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+          maxTailBytes,
+        );
+        records.push({
+          name: command?.name ?? null,
+          run: run ?? null,
+          category: command?.category ?? null,
+          exit_code: result.exit_code ?? null,
+          signal: result.signal ?? null,
+          timed_out: result.timed_out === true,
+          spawn_error: result.spawn_error === true,
+          output_tail: outputTail,
+          allow_failure: command?.allow_failure === true,
+          parser: command?.parser ?? null,
+        });
+      }
+
+      const payload = buildEvaluationPayload(records);
+      const resolved = resolveRoleSchema(roleDef);
+      let schemaValidation = null;
+      if (resolved.source === "name" && resolved.schema) {
+        const r = validatePayload(resolved.name, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
+      } else if (resolved.source === "inline" && resolved.schema) {
+        const r = validateInline(resolved.schema, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
+      }
+
+      let handoffPath = null;
+      if (task.run_dir) {
+        try {
+          handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
+            role: roleKey,
+            provider: null,
+            payload,
+            schemaValidation,
+            stdoutPath: null,
+            stderrPath: null,
+          });
+        } catch (err) {
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+        }
+      }
+      // The handoffs.provider column is NOT NULL, so the DB row carries the
+      // "command" sentinel; the engine-visible handoff (state slice + on-disk
+      // file) keeps provider:null since a command stage has no LLM provider.
+      await db.appendStep(task.id, {
+        role: roleKey,
+        provider: "command",
+        status: "succeeded",
+        handoff_path: handoffPath,
+      });
+      await db.addHandoff(task.id, {
+        role: roleKey,
+        provider: "command",
         payload,
         logPath: null,
         schemaValidation,
