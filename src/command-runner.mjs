@@ -6,19 +6,9 @@
 
 import { spawn } from "node:child_process";
 
-const DEFAULT_TAIL_BYTES = 65_536;
+import { appendBoundedTail } from "./bounded-tail.mjs";
 
-// Keep only the last `maxBytes` of UTF-8 output (copied from agent-runner.mjs
-// appendBoundedTail — module-private there, so duplicated here).
-function appendBoundedTail(current, chunk, maxBytes) {
-  const next = `${current}${chunk.toString("utf8")}`;
-  const buffer = Buffer.from(next, "utf8");
-  if (buffer.length <= maxBytes) return next;
-  return buffer
-    .subarray(buffer.length - maxBytes)
-    .toString("utf8")
-    .replace(/^�/, "");
-}
+const DEFAULT_TAIL_BYTES = 65_536;
 
 /**
  * Run a single shell command, capturing a bounded stdout/stderr tail.
