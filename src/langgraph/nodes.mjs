@@ -30,6 +30,7 @@ import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
 import { resolveRoleSchema, validatePayload, validateInline, emptyPayloadForSchema } from "../schemas/index.mjs";
 import { buildEvaluationPayload } from "../evaluation.mjs";
+import { deriveScores, enforceGates } from "../scoring.mjs";
 
 // SP3 kind:"command" output-tail / timeout fallbacks (no new default config key).
 const COMMAND_DEFAULT_TAIL_BYTES = 65_536;
@@ -595,6 +596,93 @@ export function makeRoleNode(roleDef, {
           ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
         }],
         event: outcome, // done | fail_event
+        currentState: roleKey,
+        visits: { [roleKey]: 1 },
+      };
+    }
+
+    // ── scoring role: non-LLM reliability scoring + gate engine (SP5) ────────
+    // Sibling to stub/command/regression: honors resume-skip + loop bounding
+    // (above), NEVER touches the agent runner. Reads the accumulated upstream
+    // handoffs, derives the six SP1 `scoring` numbers FROM ACTUAL EVIDENCE
+    // (absent ⇒ 0.0 + missing_evidence + score_inputs.missing), enforces the
+    // manifest's declared `gates:`, and emits an OUTCOME-DEPENDENT event
+    // (pass_event / block_event, default "passed"/"blocked"). It NEVER throws —
+    // missing/garbage evidence is handled by the pure scoring module.
+    if (roleDef.kind === "scoring") {
+      // last-write-wins handoffs-by-role map from the accumulated priorHandoffs.
+      const handoffsByRole = {};
+      for (const h of priorHandoffs) {
+        if (h?.role) handoffsByRole[h.role] = h.payload;
+      }
+
+      const { scores, score_inputs, missing_evidence } = deriveScores(handoffsByRole);
+      const gateResult = enforceGates(
+        workflow?.gates ?? roleDef.gates ?? {},
+        scores,
+        handoffsByRole,
+      );
+      const payload = {
+        ...scores,
+        score_inputs,
+        missing_evidence,
+        gates: gateResult.evaluated,
+        blocked_reasons: gateResult.blocked_reasons,
+      };
+
+      const resolved = resolveRoleSchema(roleDef);
+      let schemaValidation = null;
+      if (resolved.source === "name" && resolved.schema) {
+        const r = validatePayload(resolved.name, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
+      } else if (resolved.source === "inline" && resolved.schema) {
+        const r = validateInline(resolved.schema, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
+      }
+
+      // ── persist (DB sentinel "scoring"; engine-visible provider null) ──────
+      let handoffPath = null;
+      if (task.run_dir) {
+        try {
+          handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
+            role: roleKey,
+            provider: null,
+            payload,
+            schemaValidation,
+            stdoutPath: null,
+            stderrPath: null,
+          });
+        } catch (err) {
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+        }
+      }
+      // The handoffs.provider column is NOT NULL, so the DB row carries the
+      // "scoring" sentinel; the engine-visible handoff keeps provider:null.
+      await db.appendStep(task.id, {
+        role: roleKey,
+        provider: "scoring",
+        status: "succeeded",
+        handoff_path: handoffPath,
+      });
+      await db.addHandoff(task.id, {
+        role: roleKey,
+        provider: "scoring",
+        payload,
+        logPath: null,
+        schemaValidation,
+      });
+      const event = gateResult.passed
+        ? (roleDef.pass_event ?? "passed")
+        : (roleDef.block_event ?? "blocked");
+      return {
+        priorHandoffs: [{
+          role: roleKey,
+          provider: null,
+          payload,
+          log_path: null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
+        event, // passed | blocked (or custom pass_event/block_event)
         currentState: roleKey,
         visits: { [roleKey]: 1 },
       };

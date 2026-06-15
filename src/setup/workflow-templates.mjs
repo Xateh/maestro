@@ -198,6 +198,15 @@ function buildFullAuditSweepWorkflow() {
         fail_event: "regressions_found", // default outcome event
         instructions: "Re-runs the on-disk regression corpus and auto-promotes evaluation failures. Empty corpus ⇒ pass-through (event done).",
       }),
+      scoring: role({
+        label: "Scoring",
+        kind: "scoring",
+        provider: null,
+        permission: "read",
+        prompt_template: "scoring",
+        output_schema: "scoring",
+        instructions: "Derives the six reliability scores from prior stage evidence and enforces declared workflow gates. No gates declared by default ⇒ informational (event passed).",
+      }),
       human_approval: role({
         label: "Human Approval",
         provider: "claude",
@@ -219,7 +228,8 @@ function buildFullAuditSweepWorkflow() {
       edge_cases: { done: "tests", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
       tests: { done: "evaluation", question: "$ask_user", error: "$halt" },
       evaluation: { done: "regression", error: "$halt" },
-      regression: { done: "human_approval", regressions_found: "implementation", error: "$halt" },
+      regression: { done: "scoring", regressions_found: "implementation", error: "$halt" },
+      scoring: { passed: "human_approval", blocked: "$halt", error: "$halt" },
       human_approval: { done: "$complete", question: "$ask_user", error: "$halt" },
     },
     modes: {

@@ -344,3 +344,48 @@ test("full-audit-sweep validates clean — no bad_regression_spec", () => {
   assert.equal(result.ok, true);
   assert.ok(!codes(result).includes("bad_regression_spec"));
 });
+
+// ── SP5 kind:"scoring" role spec validation (bad_scoring_spec) ────────────────
+
+test("scoring role missing blocked transition → bad_scoring_spec", () => {
+  // baseWorkflow auto-adds only {done, error}; "passed"/"blocked" both absent.
+  const wf = baseWorkflow(
+    { s: { kind: "scoring", output_schema: "scoring" } },
+    { transitions: { s: { passed: "$complete", error: "$halt" } } },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(codes(result).includes("bad_scoring_spec"));
+});
+
+test("scoring role missing passed transition → bad_scoring_spec", () => {
+  const wf = baseWorkflow(
+    { s: { kind: "scoring", output_schema: "scoring" } },
+    { transitions: { s: { blocked: "$halt", error: "$halt" } } },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(codes(result).includes("bad_scoring_spec"));
+});
+
+test("scoring role custom events missing transitions → bad_scoring_spec", () => {
+  const wf = baseWorkflow(
+    { s: { kind: "scoring", pass_event: "ok", block_event: "stop", output_schema: "scoring" } },
+    { transitions: { s: { done: "$complete", error: "$halt" } } },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(codes(result).includes("bad_scoring_spec"));
+});
+
+test("well-formed scoring role validates clean — no bad_scoring_spec", () => {
+  const wf = baseWorkflow(
+    { s: { kind: "scoring", output_schema: "scoring" } },
+    { transitions: { s: { passed: "$complete", blocked: "$halt", error: "$halt" } } },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(!codes(result).includes("bad_scoring_spec"));
+});
+
+test("full-audit-sweep validates clean — no bad_scoring_spec", () => {
+  const result = validateWorkflow(resolveWorkflowTemplate("full-audit-sweep"));
+  assert.equal(result.ok, true);
+  assert.ok(!codes(result).includes("bad_scoring_spec"));
+});

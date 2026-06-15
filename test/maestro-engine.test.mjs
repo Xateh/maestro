@@ -1043,8 +1043,8 @@ test("full-audit-sweep: e2e runs the spine to human_approval, one handoff per st
     });
 
     assert.equal(finalTask.status, "succeeded");
-    // non-agent stages never reach the runner (stub / command / regression)
-    for (const stub of ["static_analysis", "evaluation", "regression"]) {
+    // non-agent stages never reach the runner (stub / command / regression / scoring)
+    for (const stub of ["static_analysis", "evaluation", "regression", "scoring"]) {
       assert.ok(!ranRoles.includes(stub), `non-agent stage ${stub} must not call the runner`);
     }
 
@@ -1055,7 +1055,7 @@ test("full-audit-sweep: e2e runs the spine to human_approval, one handoff per st
       for (const role of Object.keys(template.roles)) {
         assert.ok(byRole.has(role), `missing handoff for ${role}`);
       }
-      assert.equal(handoffs.length, 9, "exactly one handoff per stage");
+      assert.equal(handoffs.length, 10, "exactly one handoff per stage");
       for (const h of handoffs) {
         if (h.schema_validation) assert.equal(h.schema_validation.ok, true, `${h.role} not conforming`);
       }
@@ -1843,7 +1843,8 @@ test("full-audit-sweep template: regression is kind:regression with loop-back tr
   const template = resolveWorkflowTemplate("full-audit-sweep");
   assert.equal(template.roles.regression.kind, "regression");
   assert.equal(template.transitions.regression.regressions_found, "implementation");
-  assert.equal(template.transitions.regression.done, "human_approval");
+  // SP5 repoints regression.done from human_approval to the new scoring stage.
+  assert.equal(template.transitions.regression.done, "scoring");
 });
 
 test("full-audit-sweep: clean-corpus e2e → succeeded, regression handoff clean, runner untouched", async () => {
@@ -1883,6 +1884,296 @@ test("full-audit-sweep: clean-corpus e2e → succeeded, regression handoff clean
       assert.deepEqual(regression.payload.new_failures, []);
       assert.equal(regression.payload.outcome, "clean");
       assert.equal(regression.provider, "regression");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── SP5 kind:"scoring" node branch ───────────────────────────────────────────
+
+function scoringRoleDef(overrides = {}) {
+  return {
+    label: "Scoring",
+    kind: "scoring",
+    provider: null,
+    permission: "read",
+    prompt_template: "scoring",
+    output_schema: "scoring",
+    ...overrides,
+  };
+}
+
+// Full conforming upstream handoffs (priorHandoffs shape) → all scores 1.0.
+function fullPriorHandoffs() {
+  return [
+    { role: "evaluation", provider: null, payload: { pass_rate: 1.0, failures: [], coverage: {} } },
+    { role: "tests", provider: null, payload: { tests_created: ["a.test.js"], coverage_targets: [] } },
+    { role: "review", provider: null, payload: { severity: "none", findings: [], recommendations: [] } },
+    { role: "threat_model", provider: null, payload: { threats: [], mitigations: [] } },
+    { role: "regression", provider: null, payload: { regressions_run: [], new_failures: [], promoted_tests: [] } },
+  ];
+}
+
+async function runScoringNode(roleDef, { priorHandoffs = [], workflow = null } = {}) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-score-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  const taskId = `20260615-score-${Math.random().toString(36).slice(2, 8)}`;
+  await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+  const node = makeRoleNode(roleDef, {
+    db, runner: THROWING_RUNNER, providerDef: null, stateName: "scoring", workflow,
+  });
+  const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs, event: null, currentState: null });
+  return { result, db, dir, taskId };
+}
+
+test("scoring node: full handoffs, no gates ⇒ six scores, passed, schema ok, sentinel scoring, runner untouched", async () => {
+  const { result, db, dir, taskId } = await runScoringNode(scoringRoleDef(), {
+    priorHandoffs: fullPriorHandoffs(),
+  });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.correctness_score, 1.0);
+    assert.equal(p.review_score, 1.0);
+    assert.equal(p.security_score, 1.0);
+    assert.equal(p.test_score, 1.0);
+    assert.equal(p.regression_score, 1.0);
+    assert.equal(p.overall_confidence, 1.0);
+    assert.deepEqual(p.missing_evidence, []);
+    assert.deepEqual(p.gates, {});
+    assert.deepEqual(p.blocked_reasons, []);
+    assert.equal(result.event, "passed");
+    assert.equal(result.priorHandoffs[0].provider, null);
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    const handoffs = await db.getHandoffs(taskId);
+    assert.equal(handoffs[0].provider, "scoring");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: missing evidence ⇒ 0 + flagged + overall 0", async () => {
+  const prior = fullPriorHandoffs().filter((h) => h.role !== "threat_model");
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), { priorHandoffs: prior });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.security_score, 0.0);
+    assert.ok(p.missing_evidence.includes("threat_model"));
+    assert.equal(p.score_inputs.security_score.missing, true);
+    assert.equal(p.overall_confidence, 0.0);
+    assert.equal(result.event, "passed"); // no gates ⇒ informational
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: blocking gate ⇒ blocked event + blocked_reasons + gate.passed false", async () => {
+  const prior = fullPriorHandoffs().filter((h) => h.role !== "threat_model"); // overall 0
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), {
+    priorHandoffs: prior,
+    workflow: { gates: { min_overall_confidence: 0.99 } },
+  });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(result.event, "blocked");
+    assert.equal(p.gates.min_overall_confidence.passed, false);
+    assert.ok(p.blocked_reasons.length >= 1);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: passing gate ⇒ passed event", async () => {
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), {
+    priorHandoffs: fullPriorHandoffs(),
+    workflow: { gates: { min_overall_confidence: 0.5 } },
+  });
+  try {
+    assert.equal(result.event, "passed");
+    assert.equal(result.priorHandoffs[0].payload.gates.min_overall_confidence.passed, true);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: custom pass_event/block_event honored", async () => {
+  // passing custom
+  const pass = await runScoringNode(scoringRoleDef({ pass_event: "ok", block_event: "stop" }), {
+    priorHandoffs: fullPriorHandoffs(),
+  });
+  try {
+    assert.equal(pass.result.event, "ok");
+  } finally {
+    pass.db.close();
+    await rm(pass.dir, { recursive: true, force: true });
+  }
+  // blocking custom
+  const block = await runScoringNode(scoringRoleDef({ pass_event: "ok", block_event: "stop" }), {
+    priorHandoffs: fullPriorHandoffs(),
+    workflow: { gates: { min_overall_confidence: 1.1 } },
+  });
+  try {
+    assert.equal(block.result.event, "stop");
+  } finally {
+    block.db.close();
+    await rm(block.dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: role-level gates override (no workflow gates)", async () => {
+  const { result, db, dir } = await runScoringNode(
+    scoringRoleDef({ gates: { min_overall_confidence: 1.1 } }),
+    { priorHandoffs: fullPriorHandoffs(), workflow: {} },
+  );
+  try {
+    assert.equal(result.event, "blocked");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: last-write-wins for duplicate review handoffs", async () => {
+  const prior = [
+    ...fullPriorHandoffs(),
+    { role: "review", provider: null, payload: { severity: "critical", findings: [], recommendations: [] } },
+  ];
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), { priorHandoffs: prior });
+  try {
+    // last review (critical → 0.0) wins over the earlier none (1.0)
+    assert.equal(result.priorHandoffs[0].payload.review_score, 0.0);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: resume skip when scoring handoff already present ⇒ done, runner untouched", async () => {
+  const node = makeRoleNode(scoringRoleDef(), {
+    db: { getTask: async () => { throw new Error("getTask must not run on resume-skip"); } },
+    runner: THROWING_RUNNER,
+    providerDef: null,
+    stateName: "scoring",
+  });
+  const result = await node({
+    task: { id: "t", run_dir: null },
+    priorHandoffs: [{ role: "scoring", provider: null, payload: {} }],
+    event: null,
+    currentState: null,
+  });
+  assert.equal(result.event, "done");
+});
+
+test("scoring node: empty priorHandoffs ⇒ all 0, passed (totality, no throw)", async () => {
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), { priorHandoffs: [] });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.overall_confidence, 0.0);
+    assert.equal(p.correctness_score, 0.0);
+    assert.equal(result.event, "passed");
+    assert.equal(p.missing_evidence.length, 5);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── SP5 template insertion + e2e ──────────────────────────────────────────────
+
+test("full-audit-sweep template: scoring kind + repointed transitions", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  assert.equal(template.roles.scoring.kind, "scoring");
+  assert.equal(template.transitions.regression.done, "scoring");
+  assert.equal(template.transitions.scoring.passed, "human_approval");
+  assert.equal(template.transitions.scoring.blocked, "$halt");
+});
+
+test("full-audit-sweep: no gates ⇒ scoring routes to human_approval, six scores in handoff", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-score-e2e-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const ranRoles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        ranRoles.push(role);
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner, regressionStore },
+    });
+    assert.equal(finalTask.status, "succeeded");
+    assert.ok(!ranRoles.includes("scoring"), "scoring must not call the agent runner");
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const scoring = handoffs.find((h) => h.role === "scoring");
+      assert.ok(scoring, "scoring handoff present");
+      assert.equal(scoring.provider, "scoring");
+      assert.equal(typeof scoring.payload.overall_confidence, "number");
+      assert.deepEqual(scoring.payload.gates, {});
+      assert.ok(handoffs.find((h) => h.role === "human_approval"), "reached human_approval");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: blocking gate ⇒ scoring routes to $halt, no human_approval", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-score-block-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    template.gates = { min_overall_confidence: 0.99 }; // empty tests_created ⇒ test_score 0 ⇒ overall 0
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner, regressionStore },
+    });
+    // blocked → $halt: task does not complete via human_approval
+    assert.notEqual(finalTask.status, "succeeded");
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const scoring = handoffs.find((h) => h.role === "scoring");
+      assert.ok(scoring, "scoring handoff present");
+      assert.ok(scoring.payload.blocked_reasons.length >= 1);
+      assert.equal(scoring.payload.gates.min_overall_confidence.passed, false);
+      assert.ok(!handoffs.find((h) => h.role === "human_approval"), "must NOT reach human_approval");
     } finally {
       db.close();
     }

@@ -209,6 +209,24 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
       }
     }
 
+    // ── scoring role spec (SP5 kind:"scoring") ─────────────────────────────
+    // A scoring role must declare both its effective pass_event (default
+    // "passed") and block_event (default "blocked") transitions so an unmapped
+    // event cannot throw inside LangGraph at runtime.
+    if (role?.kind === "scoring") {
+      const passEvent = role.pass_event ?? "passed";
+      const blockEvent = role.block_event ?? "blocked";
+      const t = transitions[roleName] ?? {};
+      if (!(passEvent in t)) {
+        errors.push(issue("bad_scoring_spec",
+          `role "${roleName}" (kind:"scoring") must declare its pass_event "${passEvent}" transition`));
+      }
+      if (!(blockEvent in t)) {
+        errors.push(issue("bad_scoring_spec",
+          `role "${roleName}" (kind:"scoring") must declare its block_event "${blockEvent}" transition`));
+      }
+    }
+
     // ── output schema declaration (manifest v2) ─────────────────────────────
     const resolved = resolveRoleSchema(role ?? {});
     if (resolved.source === "unknown") {
