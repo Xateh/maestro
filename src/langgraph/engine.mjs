@@ -19,6 +19,7 @@ import { resolveInitialState, isTerminalAfterState } from "../state-machine.mjs"
 import { findCycles, validateWorkflow } from "../workflow-validate.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
 import { REVIEW_MAX_CONTINUATIONS, skippedReview } from "../markers.mjs";
+import { emitOtelStageEvent, getStageEvents } from "../stage-events.mjs";
 
 // maestroRoot = taskStore.root = resolved .maestro/ directory
 function _dbPath(maestroRoot) {
@@ -419,6 +420,13 @@ export async function runLangGraphTask(taskId, {
   };
 
   let finalState = null;
+  // ── OTel seam: one place, every return path ──────────────────────────────
+  // Wrap the stream consumption through every final return in an OUTER try so
+  // a finally can mirror the recorded steps as `maestro.stage` spans exactly
+  // once per run. The emit is fully guarded (re-read + iterate in its own
+  // try/catch); observability never breaks a run, and it is a no-op when no
+  // OTel SDK is registered.
+  try {
   try {
     const stream = await graph.stream(
       { task, priorHandoffs, currentState: initialState, event: null },
@@ -514,4 +522,10 @@ export async function runLangGraphTask(taskId, {
   }
 
   return { task: await db.getTask(taskId) };
+  } finally {
+    try {
+      const endTaskForEvents = await db.getTask(taskId);
+      for (const event of getStageEvents(endTaskForEvents)) emitOtelStageEvent(event);
+    } catch { /* observability never breaks a run */ }
+  }
 }

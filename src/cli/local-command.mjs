@@ -5,6 +5,8 @@ import { usageError } from "./registry.mjs";
 import { loadLocalSecrets, runKeysWizard } from "../setup/keys.mjs";
 import { runLocalSetup } from "../setup/local.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
+import { formatDurationMs } from "../run-summary.mjs";
+import { getStageEvents } from "../stage-events.mjs";
 import { formatTaskDetails, runMaestroTui } from "../tui.mjs";
 import { formatValidation, validateWorkflow } from "../workflow-validate.mjs";
 
@@ -574,6 +576,32 @@ export async function runLocalMaestroCommand({
       ? JSON.stringify(task, null, 2)
       : formatTaskDetails(task, { color: parsed.color, sections: true }));
     return { task };
+  }
+
+  if (command === "events") {
+    const parsed = parseInspectArgs(args, cwd, stdout);
+    warnFlags(parsed.unknownFlags, "events", stderr);
+    const id = parsed.positional[0];
+    if (!id) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const task = await taskStore.readTask(id);
+    const events = getStageEvents(task);
+    if (parsed.json) {
+      writeLine(stdout, JSON.stringify(events, null, 2));
+    } else {
+      for (const event of events) {
+        const artifacts = event.artifacts.length > 0 ? `  ${event.artifacts.join(" ")}` : "";
+        writeLine(stdout, [
+          String(event.stage).padEnd(12),
+          String(event.status).padEnd(10),
+          String(event.model || "-").padEnd(16),
+          `${event.tokens}t`.padStart(8),
+          formatDurationMs(event.duration_ms).padStart(6),
+          artifacts,
+        ].join(" "));
+      }
+    }
+    return { task, events };
   }
 
   if (command === "init") {

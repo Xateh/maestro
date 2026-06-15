@@ -47,6 +47,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-stage event emission (SP6a)** — every stage execution is exposed as a
+  structured `stage_event` (`{workflow_id, stage, model, tokens, duration_ms,
+  status, artifacts}` + additive `role`/`provider`), derived as a **projection
+  over the steps maestro already records** — no events table, no second write
+  path, so the stream can never diverge from the record it describes.
+  - **`maestro events <id> [--json]`** — read-only inspection of the projected
+    stream (`stage status model tokens duration_ms [artifacts]`, or a raw
+    `stage_event` JSON array with `--json`).
+  - **OpenTelemetry**: each event is mirrored as a `maestro.stage` span (fields
+    as `maestro.*` attributes) when a collector is configured
+    (`OTEL_EXPORTER_OTLP_ENDPOINT`); a fully-guarded no-op otherwise — emission
+    never breaks a run.
+  - **Real tokens**: a per-provider `parseUsage` reads the structured usage each
+    CLI emits (claude stream-json `result.usage`; codex `--json`;
+    copilot/antigravity/gemini JSON incl. gemini `usageMetadata`); ollama /
+    unknown / parse-miss / truncated-tail ⇒ `0`. Parsed once at the
+    agent-success step and stored on the step.
+  - **Fixed `duration_ms` for non-LLM stages**: `stub`/`command`/`regression`/
+    `scoring` branches now stamp `started_at`, so their projected duration is
+    real instead of `0`. `model` stays empty (`""`) for non-LLM stages.
+  - Additive only: no schema/kind/template change; the default 3-role workflow
+    stays byte-identical. A persisted/indexed events table is deferred to SP6b.
+
 - **Reliability scoring + gates engine (SP5)** — the `full-audit-sweep` gains a
   real, deterministic scoring stage. Additive only; the default 3-role workflow
   stays byte-identical.
