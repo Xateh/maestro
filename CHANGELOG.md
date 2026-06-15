@@ -47,6 +47,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reproducible re-runs (SP6c)** — captures a run's *inputs* so it can be
+  replayed and compared. Reproducible inputs, not bit-identical output: LLM
+  stages stay non-deterministic, so `stdout`/`handoff` artifacts differ across
+  runs while the deterministic `command`/`prompt` inputs match when the replay
+  is faithful — exactly what `compare` surfaces.
+  - **`run-manifest.json`** — written by the engine to `run_dir` at run start
+    (best-effort; a write failure is logged to stderr and never breaks a run).
+    Self-contained: embeds the *resolved workflow snapshot* inline, an explicit
+    allow-list of the 19 replayable task input knobs (identity/derived fields
+    like `id`/`steps`/`branch` are excluded), `git.start_head`, and the maestro
+    version. A later edit to the named workflow cannot change what a replay runs.
+  - **`maestro rerun <id>`** — recreate + run a clean task from the manifest.
+    Pins the captured snapshot as a `rerun-<id>` workflow file (name sanitized to
+    the 64-char limit, `isValidWorkflowName`-checked) and creates a new task via
+    the unchanged by-name load path. `--dry-run` prints the manifest + resolved
+    inputs and writes nothing; `--no-run` creates the task queued and prints its
+    id (run later via `run-task`). A task with no manifest (pre-SP6c) ⇒
+    `no_run_manifest`. Each rerun writes its own manifest, so reruns are
+    themselves reproducible.
+  - **`maestro compare <id1> <id2> [--json]`** — diffs the two runs' per-artifact
+    `sha256`s, joining by `(role, kind)` → `MATCH` / `DIFFER` / `ONLY-1` /
+    `ONLY-2`. Matching `command`/`prompt` artifacts are the reproducibility
+    signal; `stdout`/`handoff` legitimately `DIFFER`.
+  - Pure helpers `buildRunManifest` / `manifestToTaskInputs` (`src/run-manifest.mjs`)
+    and `compareArtifactIndexes` (`src/artifacts.mjs`) are total and unit-tested.
+    The manifest is an internal artifact (shape-tested, not a registered schema);
+    no schema/kind/template change and `DEFAULT_WORKFLOW` is byte-identical.
+
 - **Artifact store + inspection (SP6b)** — every run's artifacts are now
   discoverable and the stage-event stream is persisted for cross-task history.
   - **Derived artifact index** — `buildArtifactIndex(task)` scans `run_dir` and

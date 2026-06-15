@@ -89,6 +89,27 @@ export const COMMAND_TREE = {
       ],
     },
     {
+      name: "rerun",
+      kind: "local",
+      synopsis: "maestro rerun <id> [--dry-run | --no-run]",
+      summary: "recreate + run a task from its run-manifest (pinning the captured workflow snapshot)",
+      flags: [
+        { flag: "--dry-run", desc: "print the manifest + resolved inputs; create nothing" },
+        { flag: "--no-run", desc: "create the task queued and print its id (run later via run-task)" },
+        STATE_DIR_FLAG,
+      ],
+    },
+    {
+      name: "compare",
+      kind: "local",
+      synopsis: "maestro compare <id1> <id2> [--json]",
+      summary: "diff two runs' artifact sha256s per (role, kind): MATCH / DIFFER / ONLY-1 / ONLY-2",
+      flags: [
+        { flag: "--json", desc: "JSON output (array of {role, kind, result, sha256_1, sha256_2})" },
+        STATE_DIR_FLAG,
+      ],
+    },
+    {
       name: "tui",
       kind: "local",
       synopsis: "maestro tui",

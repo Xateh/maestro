@@ -372,6 +372,46 @@ export function parseEventsArgs(args, cwd) {
   return { stateDir, all, json, stage, status, workflow, positional, unknownFlags };
 }
 
+export function parseRerunArgs(args, cwd) {
+  let stateDir = path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);
+  let dryRun = false;
+  let noRun = false;
+  const positional = [];
+  const unknownFlags = [];
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--state-dir") {
+      index += 1;
+      stateDir = path.resolve(cwd, args[index] ?? "");
+      continue;
+    }
+    if (arg === "--dry-run") { dryRun = true; continue; }
+    if (arg === "--no-run") { noRun = true; continue; }
+    if (arg.startsWith("--")) { unknownFlags.push(arg); continue; }
+    positional.push(arg);
+  }
+  return { stateDir, dryRun, noRun, positional, unknownFlags };
+}
+
+export function parseCompareArgs(args, cwd) {
+  let stateDir = path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);
+  let json = false;
+  const positional = [];
+  const unknownFlags = [];
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--state-dir") {
+      index += 1;
+      stateDir = path.resolve(cwd, args[index] ?? "");
+      continue;
+    }
+    if (arg === "--json") { json = true; continue; }
+    if (arg.startsWith("--")) { unknownFlags.push(arg); continue; }
+    positional.push(arg);
+  }
+  return { stateDir, json, positional, unknownFlags };
+}
+
 export function parseProjectArgs(args, cwd) {
   const action = args[1];
   let stateDir = path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);

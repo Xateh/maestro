@@ -9,6 +9,7 @@ import { test } from "node:test";
 
 import { canonicalizeActionRequestsForTask, parseReviewerOutput, runLocalMaestroCommand } from "../bin/maestro.mjs";
 import { SqliteTaskStore } from "../src/db/store.mjs";
+import { buildRunManifest } from "../src/run-manifest.mjs";
 import { buildCodexCommand } from "../src/adapters/codex.mjs";
 import { buildCopilotCommand } from "../src/adapters/copilot.mjs";
 import { buildClaudeCommand } from "../src/adapters/claude.mjs";
@@ -7209,5 +7210,174 @@ test("events --all queries the materialised table with filters; events <id> stay
     });
     assert.equal(liveResult.events.length, 1);
     assert.equal(liveResult.events[0].stage, "executor");
+  });
+});
+
+// ── SP6c: `maestro rerun` + `maestro compare` ────────────────────────────────
+
+// Seed a source task whose run_dir holds a run-manifest.json built from a
+// representative workflow snapshot. Only --no-run / --dry-run are exercised so
+// no real agent is spawned.
+async function seedRerunSource(store, dir, { snapshot } = {}) {
+  const task = await store.createTask({
+    prompt: "rerun me", cwd: dir, plannerPolicy: "off", reviewEnabled: false,
+    executorModel: "e-model", writePaths: ["src/"],
+  });
+  const runDir = store.runDir(task.id);
+  await mkdir(runDir, { recursive: true });
+  const workflowSnapshot = snapshot ?? { ...DEFAULT_WORKFLOW, _pinned: true };
+  const manifest = buildRunManifest({
+    task, workflow: workflowSnapshot, maestroVersion: "9.9.9", startHead: null,
+  });
+  await writeFile(path.join(runDir, "run-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  return { task, manifest, workflowSnapshot };
+}
+
+test("rerun --no-run pins the snapshot as a workflow file and creates a queued task with the manifest's inputs", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task, workflowSnapshot } = await seedRerunSource(store, dir);
+
+    const out = [];
+    const result = await runLocalMaestroCommand({
+      args: ["rerun", "--state-dir", store.root, task.id, "--no-run"],
+      cwd: dir,
+      stdout: { write: (t) => out.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const newTask = result.task;
+    assert.ok(newTask, "a new task was created");
+    assert.equal(newTask.status, "queued", "task left queued under --no-run");
+    assert.match(out.join(""), new RegExp(newTask.id));
+
+    // Workflow pinned under the sanitized name == snapshot.
+    const name = newTask.workflow;
+    assert.ok(name.startsWith("rerun-"));
+    const pinned = await store.readWorkflow(name);
+    assert.deepEqual(pinned, workflowSnapshot);
+
+    // Inputs carried over from the manifest; workflow set to the pinned name.
+    assert.equal(newTask.prompt, "rerun me");
+    assert.equal(newTask.review_enabled, false);
+    assert.equal(newTask.executor_model, "e-model");
+    assert.deepEqual(newTask.write_paths, ["src/"]);
+  });
+});
+
+test("rerun: a later edit to the original workflow does NOT change the pinned snapshot (reproducibility)", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task, workflowSnapshot } = await seedRerunSource(store, dir);
+
+    const result = await runLocalMaestroCommand({
+      args: ["rerun", "--state-dir", store.root, task.id, "--no-run"],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+    });
+    const name = result.task.workflow;
+
+    // Mutate the *default* workflow after pinning — the pinned file must not move.
+    await store.writeWorkflow("default", { _mutated: true });
+    const pinnedAfter = await store.readWorkflow(name);
+    assert.deepEqual(pinnedAfter, workflowSnapshot, "pinned snapshot is immutable to later edits");
+  });
+});
+
+test("rerun --dry-run prints the manifest + inputs and writes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task } = await seedRerunSource(store, dir);
+    const tasksBefore = (await store.listTasks()).length;
+
+    const out = [];
+    const result = await runLocalMaestroCommand({
+      args: ["rerun", "--state-dir", store.root, task.id, "--dry-run"],
+      cwd: dir,
+      stdout: { write: (t) => out.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const printed = JSON.parse(out.join(""));
+    assert.ok(printed.manifest, "manifest printed");
+    assert.ok(printed.inputs, "resolved inputs printed");
+    assert.ok(!("workflow" in printed.inputs), "inputs omit workflow (caller pins it)");
+    assert.equal(result.manifest.manifest_version, 1);
+
+    // No task created, no pinned workflow written.
+    assert.equal((await store.listTasks()).length, tasksBefore);
+    const name = `rerun-${task.id}`.slice(0, 64);
+    assert.equal(await store.readWorkflow("default") && true, true); // default still readable
+    const pinnedExists = await readFile(path.join(store.root, "workflows", `${name}.json`), "utf8").then(() => true, () => false);
+    assert.equal(pinnedExists, false, "no pinned workflow file written under --dry-run");
+  });
+});
+
+test("rerun on a task with no run-manifest rejects with no_run_manifest", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "old run", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    // run_dir exists but has no run-manifest.json (pre-SP6c run).
+    await mkdir(store.runDir(task.id), { recursive: true });
+    await assert.rejects(
+      () => runLocalMaestroCommand({
+        args: ["rerun", "--state-dir", store.root, task.id, "--no-run"],
+        cwd: dir,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+        store,
+      }),
+      /no_run_manifest/,
+    );
+  });
+});
+
+test("compare reports MATCH / DIFFER / ONLY per (role, kind) over two run_dirs", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const t1 = await store.createTask({ prompt: "run one", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    const t2 = await store.createTask({ prompt: "run two", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    const rd1 = store.runDir(t1.id);
+    const rd2 = store.runDir(t2.id);
+    await mkdir(rd1, { recursive: true });
+    await mkdir(rd2, { recursive: true });
+
+    // impl.command identical (X); impl.stdout differs (Y1 vs Y2); reviewer.stdout only on side 2.
+    await writeFile(path.join(rd1, "impl.command.json"), "X");
+    await writeFile(path.join(rd1, "impl.stdout.log"), "Y1");
+    await writeFile(path.join(rd2, "impl.command.json"), "X");
+    await writeFile(path.join(rd2, "impl.stdout.log"), "Y2");
+    await writeFile(path.join(rd2, "reviewer.stdout.log"), "Z");
+
+    const out = [];
+    const result = await runLocalMaestroCommand({
+      args: ["compare", "--state-dir", store.root, t1.id, t2.id, "--json"],
+      cwd: dir,
+      stdout: { write: (t) => out.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const rows = JSON.parse(out.join(""));
+    const byKey = Object.fromEntries(rows.map((r) => [`${r.role}.${r.kind}`, r.result]));
+    assert.equal(byKey["impl.command"], "MATCH");
+    assert.equal(byKey["impl.stdout"], "DIFFER");
+    assert.equal(byKey["reviewer.stdout"], "ONLY-2");
+    assert.deepEqual(result.rows, rows);
+
+    // Non-json table form.
+    const tableOut = [];
+    await runLocalMaestroCommand({
+      args: ["compare", "--state-dir", store.root, t1.id, t2.id],
+      cwd: dir,
+      stdout: { write: (t) => tableOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const table = tableOut.join("");
+    assert.match(table, /impl\.command\s+MATCH/);
+    assert.match(table, /impl\.stdout\s+DIFFER/);
+    assert.match(table, /reviewer\.stdout\s+ONLY-2/);
   });
 });

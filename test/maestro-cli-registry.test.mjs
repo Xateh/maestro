@@ -109,7 +109,7 @@ test("routeCli matrix", () => {
 test("registry local names stay in sync with known dispatch set", () => {
   // Drift guard: every name the registry says is local must be unique.
   assert.equal(new Set(LOCAL_COMMAND_NAMES).size, LOCAL_COMMAND_NAMES.length);
-  for (const expected of ["project", "task", "run-task", "status", "inspect", "events", "artifacts", "tui",
+  for (const expected of ["project", "task", "run-task", "status", "inspect", "events", "artifacts", "rerun", "compare", "tui",
     "setup", "workflow", "export", "import", "init"]) {
     assert.ok(LOCAL_COMMAND_NAMES.includes(expected), `missing local command ${expected}`);
   }

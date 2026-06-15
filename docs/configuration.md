@@ -829,3 +829,62 @@ query over that table, optionally filtered by `--stage`, `--status`, and
 result rather than crashing.
 
 The `events` table mirrors across both backends (SQLite + PostgreSQL).
+
+## Reproducible re-runs (SP6c)
+
+Each run captures enough of its **inputs** to be replayed and compared. This is
+*reproducible inputs, not bit-identical output*: LLM stages are non-deterministic,
+so `stdout`/`handoff` artifacts differ across runs, while the deterministic
+inputs (`<role>.command.json`, `<role>.prompt.txt`) match when the replay is
+faithful.
+
+### `run-manifest.json`
+
+The engine writes `<run_dir>/run-manifest.json` at run start (best-effort — a
+write failure is logged to stderr and never breaks the run; idempotently
+overwritten on resume). It is **self-contained**:
+
+```jsonc
+{
+  "manifest_version": 1,
+  "maestro_version": "0.1.0",
+  "created_at": "…ISO…",
+  "source_task_id": "<id>",
+  "task": { /* the 19 replayable input knobs only */ },
+  "workflow_snapshot": { /* the full resolved workflow JSON, inlined */ },
+  "git": { "start_head": "<sha|null>" },
+  "run_dir": "<path>"
+}
+```
+
+The `task` block is an explicit allow-list of input knobs (`prompt`, `mode`,
+`workflow`, `cwd`, `planner_policy`, `review_enabled`, `timeout_ms`,
+`stream_tail_bytes`, `context_retry_limit`, `claude_command`, `codex_command`,
+`planner_model`, `claude_effort`, `executor_model`, `executor_effort`,
+`reviewer_model`, `reviewer_effort`, `worktree_mode`, `write_paths`). It
+deliberately omits identity/derived fields (`id`, `status`, `steps`,
+`start_head`, `branch`, `run_dir`, timestamps, …) so a replay is a clean new
+task, not a clone. Because the workflow snapshot is inlined, a later edit to the
+named workflow cannot change what a replay runs. The manifest is an internal
+artifact (shape-tested, not a registered JSON schema).
+
+### `maestro rerun <id> [--dry-run | --no-run]`
+
+Reads `<run_dir>/run-manifest.json` (missing ⇒ `no_run_manifest` — e.g. a
+pre-SP6c run), pins the captured `workflow_snapshot` to a workflow file named
+`rerun-<id>` (sanitized to the 64-char `isValidWorkflowName` limit), then
+`createTask`s a fresh task with the manifest's inputs and `workflow` set to that
+pinned name. Default = recreate + run, printing the new id. `--dry-run` prints
+the manifest + resolved inputs and writes nothing. `--no-run` creates the task
+queued and prints its id (run later via `maestro run-task <id>`). The new run
+writes its own manifest, so reruns are themselves reproducible.
+
+### `maestro compare <id1> <id2> [--json]`
+
+Builds the artifact index for both runs and joins entries by `(role, kind)`,
+classifying each by `sha256`: `MATCH` (both present, equal), `DIFFER` (both
+present, differing/null), or `ONLY-1` / `ONLY-2` (present on one side only).
+Matching `command`/`prompt` rows are the reproducibility signal — they confirm
+the replay fed each stage identical inputs — while LLM `stdout`/`handoff` rows
+legitimately `DIFFER`. The default output is a `role.kind  RESULT` table;
+`--json` emits `[{role, kind, result, sha256_1, sha256_2}]`.

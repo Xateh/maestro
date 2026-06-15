@@ -2,13 +2,14 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { buildArtifactIndex, resolveArtifact } from "../artifacts.mjs";
+import { buildArtifactIndex, compareArtifactIndexes, resolveArtifact } from "../artifacts.mjs";
 import { openStore } from "../db/store.mjs";
 import { tailFile } from "../fs-safe.mjs";
 import { usageError } from "./registry.mjs";
 import { loadLocalSecrets, runKeysWizard } from "../setup/keys.mjs";
 import { runLocalSetup } from "../setup/local.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
+import { manifestToTaskInputs, sanitizeRerunWorkflowName } from "../run-manifest.mjs";
 import { formatDurationMs } from "../run-summary.mjs";
 import { getStageEvents } from "../stage-events.mjs";
 import { formatTaskDetails, runMaestroTui } from "../tui.mjs";
@@ -20,9 +21,11 @@ import {
   makeStore,
   parseActionArgs,
   parseArtifactsArgs,
+  parseCompareArgs,
   parseEditActionArgs,
   parseEventsArgs,
   parseInspectArgs,
+  parseRerunArgs,
   parseSharedStateArgs,
   parseTaskArgs,
 } from "./parse-args.mjs";
@@ -688,6 +691,76 @@ export async function runLocalMaestroCommand({
       writeLine(stdout, text);
     }
     return { entry: resolved.entry, path: resolved.path };
+  }
+
+  if (command === "rerun") {
+    const parsed = parseRerunArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "rerun", stderr);
+    const id = parsed.positional[0];
+    if (!id) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const srcTask = await taskStore.readTask(id).catch(() => null);
+    const runDir = srcTask?.run_dir ?? path.join(taskStore.root, "runs", id);
+    let manifest;
+    try {
+      manifest = JSON.parse(await fs.readFile(path.join(runDir, "run-manifest.json"), "utf8"));
+    } catch {
+      throw new Error(`no_run_manifest: ${id}`);
+    }
+    const inputs = manifestToTaskInputs(manifest);
+
+    if (parsed.dryRun) {
+      // Print the manifest + resolved inputs; create nothing.
+      writeLine(stdout, JSON.stringify({ manifest, inputs }, null, 2));
+      return { manifest, inputs };
+    }
+
+    // Pin the captured workflow snapshot under a sanitized name so a later edit
+    // to the original workflow cannot change what this replay runs. writeWorkflow
+    // shallow-merges over DEFAULT_WORKFLOW; harmless here as the snapshot is a
+    // full resolved workflow object (first pin of a complete snapshot).
+    const name = sanitizeRerunWorkflowName(id);
+    await taskStore.writeWorkflow(name, manifest.workflow_snapshot ?? {});
+    const newTask = await taskStore.createTask({ ...inputs, workflow: name });
+
+    if (parsed.noRun) {
+      writeLine(stdout, newTask.id);
+      return { task: newTask };
+    }
+    writeLine(stdout, newTask.id);
+    return runCreatedLocalTask({
+      taskStore,
+      taskId: newTask.id,
+      cwd,
+      stdout,
+      stderr,
+      runner,
+      gitRunner,
+      availabilityProbe,
+    });
+  }
+
+  if (command === "compare") {
+    const parsed = parseCompareArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "compare", stderr);
+    const [id1, id2] = parsed.positional;
+    if (!id1 || !id2) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const indexFor = async (id) => {
+      const task = await taskStore.readTask(id).catch(() => null);
+      const runDir = task?.run_dir ?? path.join(taskStore.root, "runs", id);
+      return buildArtifactIndex({ ...(task ?? {}), run_dir: runDir });
+    };
+    const [a, b] = await Promise.all([indexFor(id1), indexFor(id2)]);
+    const rows = compareArtifactIndexes(a, b);
+    if (parsed.json) {
+      writeLine(stdout, JSON.stringify(rows, null, 2));
+    } else {
+      for (const r of rows) {
+        writeLine(stdout, `${`${r.role ?? "-"}.${r.kind ?? "-"}`.padEnd(28)} ${r.result}`);
+      }
+    }
+    return { rows };
   }
 
   if (command === "init") {

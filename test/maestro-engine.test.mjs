@@ -2363,3 +2363,104 @@ test("capture seam: agent-success step stores model + parsed tokens", async () =
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── SP6c: engine writes run-manifest.json at run start ───────────────────────
+
+// Drive a full task run with a stub runner (review disabled → reviewer
+// synthesizes "complete"), returning the store + run_dir for manifest asserts.
+async function runForManifest({ store, dir, taskPatch = {} } = {}) {
+  const task = await store.createTask({
+    prompt: "snapshot me", cwd: dir, reviewEnabled: false, plannerPolicy: "off",
+    plannerModel: "p", executorModel: "e", ...taskPatch,
+  });
+  const stubRunner = {
+    runStep: async () => ({
+      stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "done" })}`,
+      stderr: "", stdoutPath: null, stderrPath: null,
+    }),
+    closeTab: async () => {},
+  };
+  const { task: finalTask } = await runLangGraphTask(task.id, {
+    taskStore: store, maestroRoot: store.root, runner: stubRunner,
+    stdout: { write: () => {} }, stderr: { write: () => {} },
+    availabilityProbe: () => true,
+  });
+  return { task, finalTask };
+}
+
+test("runLangGraphTask: writes run-manifest.json with the resolved snapshot + seeded inputs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-manifest-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task } = await runForManifest({ store, dir });
+    const runDir = store.runDir(task.id);
+    const manifest = JSON.parse(await readFile(path.join(runDir, "run-manifest.json"), "utf8"));
+
+    assert.equal(manifest.manifest_version, 1);
+    assert.equal(manifest.source_task_id, task.id);
+    assert.deepEqual(manifest.workflow_snapshot, DEFAULT_WORKFLOW);
+    // allow-listed task block reflects seeded inputs
+    assert.equal(manifest.task.prompt, "snapshot me");
+    assert.equal(manifest.task.review_enabled, false);
+    assert.equal(manifest.task.planner_policy, "off");
+    assert.equal(manifest.task.executor_model, "e");
+    // identity fields excluded
+    assert.ok(!("id" in manifest.task));
+    assert.ok(!("steps" in manifest.task));
+    assert.ok(!("status" in manifest.task));
+    // maestro_version present
+    assert.match(manifest.maestro_version, /^\d/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runLangGraphTask: a forced manifest-write error is swallowed; the run still completes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-manifest-err-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "x", cwd: dir, reviewEnabled: false, plannerPolicy: "off" });
+    // Make run-manifest.json a DIRECTORY so writeFile(run-manifest.json) fails
+    // (run_dir itself stays a valid dir so the engine's mkdir succeeds).
+    const runDir = store.runDir(task.id);
+    await mkdir(path.join(runDir, "run-manifest.json"), { recursive: true });
+    const stubRunner = {
+      runStep: async () => ({ stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "ok" })}`, stderr: "", stdoutPath: null, stderrPath: null }),
+      closeTab: async () => {},
+    };
+    const stderrLines = [];
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store, maestroRoot: store.root, runner: stubRunner,
+      stdout: { write: () => {} }, stderr: { write: (t) => stderrLines.push(t) },
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "succeeded", "run completes despite manifest write failure");
+    assert.ok(stderrLines.join("").includes("run-manifest write failed"), "failure logged to stderr");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runLangGraphTask: resume overwrites the manifest, leaving a single file (no error)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-manifest-resume-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task } = await runForManifest({ store, dir });
+    const runDir = store.runDir(task.id);
+    // Re-run the same task (resume): manifest write is idempotent.
+    const stubRunner = {
+      runStep: async () => ({ stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "again" })}`, stderr: "", stdoutPath: null, stderrPath: null }),
+      closeTab: async () => {},
+    };
+    await runLangGraphTask(task.id, {
+      taskStore: store, maestroRoot: store.root, runner: stubRunner,
+      stdout: { write: () => {} }, stderr: { write: () => {} },
+      availabilityProbe: () => true,
+    });
+    const manifest = JSON.parse(await readFile(path.join(runDir, "run-manifest.json"), "utf8"));
+    assert.equal(manifest.manifest_version, 1);
+    assert.deepEqual(manifest.workflow_snapshot, DEFAULT_WORKFLOW);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { buildArtifactIndex, classifyArtifact, resolveArtifact } from "../src/artifacts.mjs";
+import { buildArtifactIndex, classifyArtifact, compareArtifactIndexes, resolveArtifact } from "../src/artifacts.mjs";
 
 test("classifyArtifact maps every known filename pattern", () => {
   assert.deepEqual(classifyArtifact("handoff.implementation.json"), { role: "implementation", kind: "handoff" });
@@ -117,4 +117,50 @@ test("resolveArtifact returns null for traversal and unknown selectors", async (
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ── compareArtifactIndexes (SP6c) ────────────────────────────────────────────
+
+const ENTRY = (role, kind, sha256) => ({ role, kind, sha256 });
+
+test("compareArtifactIndexes: identical indexes ⇒ all MATCH", () => {
+  const a = [ENTRY("impl", "command", "h1"), ENTRY("impl", "prompt", "h2")];
+  const b = [ENTRY("impl", "command", "h1"), ENTRY("impl", "prompt", "h2")];
+  const rows = compareArtifactIndexes(a, b);
+  assert.deepEqual(rows.map((r) => r.result), ["MATCH", "MATCH"]);
+});
+
+test("compareArtifactIndexes: command/prompt MATCH while stdout DIFFERs", () => {
+  const a = [ENTRY("impl", "command", "X"), ENTRY("impl", "prompt", "P"), ENTRY("impl", "stdout", "Y1")];
+  const b = [ENTRY("impl", "command", "X"), ENTRY("impl", "prompt", "P"), ENTRY("impl", "stdout", "Y2")];
+  const rows = compareArtifactIndexes(a, b);
+  const byKey = Object.fromEntries(rows.map((r) => [`${r.role}.${r.kind}`, r.result]));
+  assert.equal(byKey["impl.command"], "MATCH");
+  assert.equal(byKey["impl.prompt"], "MATCH");
+  assert.equal(byKey["impl.stdout"], "DIFFER");
+});
+
+test("compareArtifactIndexes: one-sided entries ⇒ ONLY-1 / ONLY-2", () => {
+  const a = [ENTRY("planner", "command", "h")];
+  const b = [ENTRY("reviewer", "stdout", "z")];
+  const rows = compareArtifactIndexes(a, b);
+  const byKey = Object.fromEntries(rows.map((r) => [`${r.role}.${r.kind}`, r.result]));
+  assert.equal(byKey["planner.command"], "ONLY-1");
+  assert.equal(byKey["reviewer.stdout"], "ONLY-2");
+});
+
+test("compareArtifactIndexes: null shas ⇒ DIFFER (never throws); empty ⇒ []", () => {
+  assert.deepEqual(compareArtifactIndexes(undefined, null), []);
+  assert.deepEqual(compareArtifactIndexes([], []), []);
+  const rows = compareArtifactIndexes([ENTRY("r", "stdout", null)], [ENTRY("r", "stdout", null)]);
+  assert.equal(rows[0].result, "DIFFER");
+});
+
+test("compareArtifactIndexes: deterministic order (sorted by role then kind)", () => {
+  const a = [ENTRY("z", "stdout", "1"), ENTRY("a", "prompt", "2"), ENTRY("a", "command", "3")];
+  const rows = compareArtifactIndexes(a, a);
+  assert.deepEqual(
+    rows.map((r) => `${r.role}.${r.kind}`),
+    ["a.command", "a.prompt", "z.stdout"],
+  );
 });
