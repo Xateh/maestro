@@ -9,7 +9,7 @@
 // partial, garbage, or null input; missing fields yield schema defaults
 // ("" / 0 / []). Output conforms to the SP1 `stage_event` schema
 // (workflow_id, stage, model, tokens, duration_ms, status, artifacts) plus
-// the additive role/provider cross-reference fields.
+// the additive provider cross-reference field.
 
 import { trace } from "@opentelemetry/api";
 
@@ -38,7 +38,6 @@ export function buildStageEvent({ task, step } = {}) {
     status: typeof s.status === "string" ? s.status : "",
     artifacts,
     // additive (schema allows extras) — for cross-referencing the source step.
-    role: typeof s.role === "string" ? s.role : "",
     provider: typeof s.provider === "string" ? s.provider : "",
   };
 }
