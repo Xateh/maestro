@@ -31,6 +31,7 @@ import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-av
 import { resolveRoleSchema, validatePayload, validateInline, emptyPayloadForSchema } from "../schemas/index.mjs";
 import { buildEvaluationPayload } from "../evaluation.mjs";
 import { deriveScores, enforceGates } from "../scoring.mjs";
+import { parseUsage } from "../usage-parse.mjs";
 
 // SP3 kind:"command" output-tail / timeout fallbacks (no new default config key).
 const COMMAND_DEFAULT_TAIL_BYTES = 65_536;
@@ -254,6 +255,7 @@ export function makeRoleNode(roleDef, {
     // Stubs still honor resume-skip + loop bounding (above) but NEVER touch the
     // runner or provider availability. SP3 extends this seam with kind:"command".
     if (roleDef.kind === "stub") {
+      const stageStartedAt = new Date().toISOString();
       const resolved = resolveRoleSchema(roleDef);
       const payload = resolved.schema ? emptyPayloadForSchema(resolved.schema) : {};
       let schemaValidation = null;
@@ -286,6 +288,7 @@ export function makeRoleNode(roleDef, {
         role: roleKey,
         provider: "stub",
         status: "succeeded",
+        started_at: stageStartedAt,
         handoff_path: handoffPath,
       });
       await db.addHandoff(task.id, {
@@ -315,6 +318,7 @@ export function makeRoleNode(roleDef, {
     // as evidence and always emits "done" — a failing command is data, not a halt
     // (no gating; that is SP5). Builds the SP1 `evaluation` payload.
     if (roleDef.kind === "command") {
+      const stageStartedAt = new Date().toISOString();
       const commands = Array.isArray(roleDef.commands) ? roleDef.commands : [];
       const cwd = currentTask.worktree_path
         ?? (currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd());
@@ -392,6 +396,7 @@ export function makeRoleNode(roleDef, {
         role: roleKey,
         provider: "command",
         status: "succeeded",
+        started_at: stageStartedAt,
         handoff_path: handoffPath,
       });
       await db.addHandoff(task.id, {
@@ -423,6 +428,7 @@ export function makeRoleNode(roleDef, {
     // It NEVER throws on a case failure, load error, or write error — each is
     // captured as evidence; only new_failures vs fail_threshold drives the event.
     if (roleDef.kind === "regression") {
+      const stageStartedAt = new Date().toISOString();
       const cwd = currentTask.worktree_path
         ?? (currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd());
       const corpusDir = roleDef.corpus_dir
@@ -578,6 +584,7 @@ export function makeRoleNode(roleDef, {
         role: roleKey,
         provider: "regression",
         status: "succeeded",
+        started_at: stageStartedAt,
         handoff_path: handoffPath,
       });
       await db.addHandoff(task.id, {
@@ -610,6 +617,7 @@ export function makeRoleNode(roleDef, {
     // (pass_event / block_event, default "passed"/"blocked"). It NEVER throws —
     // missing/garbage evidence is handled by the pure scoring module.
     if (roleDef.kind === "scoring") {
+      const stageStartedAt = new Date().toISOString();
       // last-write-wins handoffs-by-role map from the accumulated priorHandoffs.
       const handoffsByRole = {};
       for (const h of priorHandoffs) {
@@ -662,6 +670,7 @@ export function makeRoleNode(roleDef, {
         role: roleKey,
         provider: "scoring",
         status: "succeeded",
+        started_at: stageStartedAt,
         handoff_path: handoffPath,
       });
       await db.addHandoff(task.id, {
@@ -1079,6 +1088,8 @@ export function makeRoleNode(roleDef, {
       await db.appendStep(task.id, {
         role: roleKey,
         provider: runProvider,
+        model: runModel,
+        tokens: parseUsage(runProvider, result.stdout),
         status: "succeeded",
         started_at: stepStartedAt,
         stdout_path: result.stdoutPath,

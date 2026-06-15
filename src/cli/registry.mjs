@@ -63,6 +63,16 @@ export const COMMAND_TREE = {
       ],
     },
     {
+      name: "events",
+      kind: "local",
+      synopsis: "maestro events <id> [--json]",
+      summary: "list per-stage events (projection over task steps)",
+      flags: [
+        { flag: "--json", desc: "raw stage_event JSON array" },
+        STATE_DIR_FLAG,
+      ],
+    },
+    {
       name: "tui",
       kind: "local",
       synopsis: "maestro tui",

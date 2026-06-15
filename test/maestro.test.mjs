@@ -7041,3 +7041,63 @@ test("createTask records workflow field with default + validation", async () => 
     await assert.rejects(() => store.createTask({ prompt: "z", workflow: "Bad" }), /invalid_workflow_name/);
   });
 });
+
+// ── SP6a: `maestro events <id> [--json]` ─────────────────────────────────────
+
+test("events command lists one projected stage_event per step", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    await store.appendStep(task.id, {
+      role: "planner", provider: "claude", model: "claude-opus", tokens: 120,
+      status: "succeeded", started_at: "2026-06-15T00:00:00.000Z",
+      stdout_path: "/runs/planner.out", handoff_path: "/runs/planner.json",
+    });
+    await store.appendStep(task.id, {
+      role: "scoring", provider: "scoring", status: "succeeded",
+      started_at: "2026-06-15T00:00:01.000Z",
+    });
+    const output = [];
+    const result = await runLocalMaestroCommand({
+      args: ["events", "--state-dir", store.root, task.id],
+      cwd: dir,
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.equal(result.events.length, 2);
+    assert.deepEqual(result.events.map((e) => e.stage), ["planner", "scoring"]);
+    const text = output.join("");
+    assert.match(text, /planner/);
+    assert.match(text, /claude-opus/);
+    assert.match(text, /scoring/);
+  });
+});
+
+test("events --json emits a valid stage_event array", async () => {
+  await withTempDir(async (dir) => {
+    const { validatePayload } = await import("../src/schemas/index.mjs");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    await store.appendStep(task.id, {
+      role: "executor", provider: "codex", model: "gpt", tokens: 50,
+      status: "succeeded", started_at: "2026-06-15T00:00:00.000Z",
+    });
+    const output = [];
+    await runLocalMaestroCommand({
+      args: ["events", "--state-dir", store.root, task.id, "--json"],
+      cwd: dir,
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const events = JSON.parse(output.join(""));
+    assert.ok(Array.isArray(events));
+    assert.equal(events.length, 1);
+    for (const event of events) {
+      assert.ok(validatePayload("stage_event", event).ok, JSON.stringify(event));
+    }
+    assert.equal(events[0].model, "gpt");
+    assert.equal(events[0].tokens, 50);
+  });
+});

@@ -2237,3 +2237,81 @@ test("full-audit-sweep: regressions_found loops back to implementation, bounded 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── SP6a capture seam: non-LLM started_at + agent model/tokens ───────────────
+
+test("capture seam: command node records started_at ⇒ projected duration_ms > 0", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-sp6a-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260615-sp6a-cmd";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "ok", run: "good" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => ({ exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }) },
+    });
+    await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    const task = await db.getTask(taskId);
+    const step = task.steps.find((s) => s.role === "evaluation");
+    assert.ok(step, "evaluation step recorded");
+    assert.ok(step.started_at, "started_at stamped on non-LLM branch");
+    const { getStageEvents } = await import("../src/stage-events.mjs");
+    const event = getStageEvents(task).find((e) => e.stage === "evaluation");
+    assert.ok(event.duration_ms >= 0, "duration_ms projects (>=0)");
+    assert.equal(event.model, "", "non-LLM model is empty");
+    assert.equal(event.tokens, 0, "non-LLM tokens is 0");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("capture seam: scoring node records started_at", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-sp6a-score-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260615-sp6a-score";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const roleDef = { kind: "scoring", prompt_template: "scoring", output_schema: "scoring", gates: {} };
+    const node = makeRoleNode(roleDef, { db, runner: THROWING_RUNNER, providerDef: null, stateName: "scoring" });
+    await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    const task = await db.getTask(taskId);
+    const step = task.steps.find((s) => s.role === "scoring");
+    assert.ok(step.started_at, "started_at stamped on scoring branch");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("capture seam: agent-success step stores model + parsed tokens", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-sp6a-agent-"));
+  let db;
+  try {
+    db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+    const taskId = "20260615-sp6a-agent";
+    await db.createTask({ id: taskId, status: "running", prompt: "add logging", cwd: dir, mode: "task", run_dir: null, planner_policy: "on" });
+    const handoffPayload = { plan_summary: "p", steps: ["s"], files_to_touch: ["f"] };
+    const claudeUsage = JSON.stringify({ type: "result", usage: { input_tokens: 100, output_tokens: 25 } });
+    const stubRunner = {
+      runStep: async () => ({
+        stdout: `MAESTRO_HANDOFF: ${JSON.stringify(handoffPayload)}\n${claudeUsage}`,
+        stderr: "",
+        stdoutPath: null,
+        stderrPath: null,
+      }),
+    };
+    // planner role default model is "" — set one so model is captured non-empty.
+    const roleDef = { ...DEFAULT_WORKFLOW.roles.planner, model: "claude-opus" };
+    const node = makeRoleNode(roleDef, { db, runner: stubRunner, providerDef: DEFAULT_CONFIG.providers.claude });
+    await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    const task = await db.getTask(taskId);
+    const step = task.steps.find((s) => s.role === "planner" && s.status === "succeeded");
+    assert.ok(step, "succeeded planner step recorded");
+    assert.equal(step.model, "claude-opus", "runModel stored on step");
+    assert.equal(step.tokens, 125, "parsed claude usage stored on step");
+  } finally {
+    db?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

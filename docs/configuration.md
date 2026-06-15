@@ -741,3 +741,49 @@ Templates are rendered with
 | `priorHandoffs` | Array of typed handoffs from previous roles |
 | `userDirectives` | Resume directives (answers, approval text) |
 | `stepIndex` | Zero-based step counter |
+
+---
+
+## Stage events & observability
+
+Every stage execution is exposed as a structured `stage_event`. The stream is a
+**projection over `task.steps`** (the record maestro already keeps) — there is no
+separate events table and no second write path, so events can never diverge from
+the steps they describe. It is **per-step-transition**: a retried role honestly
+shows as two events, distinguished by `status`.
+
+Each event has the SP1 `stage_event` shape plus additive cross-reference fields:
+
+| Field | Source |
+|---|---|
+| `workflow_id` | `task.workflow` (`"default"` when unset) |
+| `stage` | the step's role |
+| `model` | the model for LLM stages; `""` for non-LLM (`stub`/`command`/`regression`/`scoring`) |
+| `tokens` | parsed from the agent's structured usage (see below); `0` for non-LLM |
+| `duration_ms` | `completed_at − started_at` (now real for non-LLM stages too) |
+| `status` | the step status (`succeeded`/`failed`/`retried`/…) |
+| `artifacts` | present subset of `[handoff_path, stdout_path, stderr_path]` |
+| `role` / `provider` | additive — for cross-referencing the source step |
+
+### `maestro events <id> [--json]`
+
+Prints the projected stream, one line per stage
+(`stage  status  model  tokens  duration_ms  [artifacts…]`), or a raw
+`stage_event` JSON array with `--json`.
+
+### Tokens
+
+`tokens` is parsed per provider from the structured usage each CLI emits — claude
+`stream-json` `result.usage`, codex `--json`, and
+copilot/antigravity/gemini JSON (incl. gemini `usageMetadata`). Providers that
+print no usage (ollama), unrecognised output, a parse error, or the 64KB
+log-tail truncation all yield `0`.
+
+### OpenTelemetry
+
+When a collector is configured via `OTEL_EXPORTER_OTLP_ENDPOINT`, each event is
+mirrored as a `maestro.stage` span with the event fields as `maestro.*`
+attributes. With no endpoint/SDK registered it is a fully-guarded no-op —
+emission never affects a run.
+
+A persisted, indexed events table and an artifact store are deferred to SP6b.
