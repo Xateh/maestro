@@ -32,20 +32,11 @@ import { resolveRoleSchema, validatePayload, validateInline, emptyPayloadForSche
 import { buildEvaluationPayload } from "../evaluation.mjs";
 import { deriveScores, enforceGates } from "../scoring.mjs";
 import { parseUsage } from "../usage-parse.mjs";
+import { boundedTail } from "../bounded-tail.mjs";
 
 // SP3 kind:"command" output-tail / timeout fallbacks (no new default config key).
 const COMMAND_DEFAULT_TAIL_BYTES = 65_536;
 const COMMAND_DEFAULT_TIMEOUT_MS = 120_000;
-
-// Bound combined command output the same way agent-runner does (last N bytes).
-function _boundedCommandTail(text, maxBytes) {
-  const buffer = Buffer.from(String(text ?? ""), "utf8");
-  if (buffer.length <= maxBytes) return buffer.toString("utf8");
-  return buffer
-    .subarray(buffer.length - maxBytes)
-    .toString("utf8")
-    .replace(/^�/, "");
-}
 
 const INSTRUCTION_FILE_CAP = 16 * 1024;
 const INSTRUCTION_TOTAL_CAP = 64 * 1024;
@@ -345,7 +336,7 @@ export function makeRoleNode(roleDef, {
             spawn_error: true,
           };
         }
-        const outputTail = _boundedCommandTail(
+        const outputTail = boundedTail(
           `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
           maxTailBytes,
         );
@@ -493,7 +484,7 @@ export function makeRoleNode(roleDef, {
             break; // stop early on first pass
           }
         }
-        const outputTail = _boundedCommandTail(
+        const outputTail = boundedTail(
           `${lastResult?.stdout ?? ""}\n${lastResult?.stderr ?? ""}`,
           maxTailBytes,
         );
