@@ -48,11 +48,18 @@ export function parseCommandCounts(parser, text) {
 
   let resolvedTotal = null;
   let resolvedPassed = null;
+  // `onlyTotal` marks the case where total is known but there is no explicit
+  // passed/failed split; passed is then resolved by computeEvaluation from the
+  // command's exit status rather than assumed to be a full pass.
+  let onlyTotal = false;
   if (total !== null) {
     resolvedTotal = total;
     if (passed !== null) resolvedPassed = passed;
     else if (failed !== null) resolvedPassed = total - failed;
-    else resolvedPassed = total; // total known, no pass/fail split → assume all pass
+    else {
+      resolvedPassed = total; // provisional; computeEvaluation gates on exit status
+      onlyTotal = true;
+    }
   } else if (passed !== null && failed !== null) {
     resolvedTotal = passed + failed;
     resolvedPassed = passed;
@@ -62,7 +69,7 @@ export function parseCommandCounts(parser, text) {
 
   if (resolvedTotal < 0) return null;
   const clamped = Math.max(0, Math.min(resolvedPassed, resolvedTotal));
-  return { total: resolvedTotal, passed: clamped };
+  return { total: resolvedTotal, passed: clamped, onlyTotal };
 }
 
 // Per-command result shape (from the command node / commandRunner):
@@ -81,12 +88,16 @@ export function computeEvaluation(results = []) {
     const parsed = parseCommandCounts(r?.parser ?? null, r?.output_tail ?? "");
     let total;
     let passed;
+    const succeeded = r?.exit_code === 0 && !r?.timed_out && !r?.spawn_error;
     if (parsed) {
       total = parsed.total;
-      passed = parsed.passed;
+      // only-total parser (no explicit passed/failed split): credit the total as
+      // passing only when the command actually succeeded, otherwise 0 — keeps
+      // pass_rate consistent with the failures list (which gates on exit status).
+      passed = parsed.onlyTotal ? (succeeded ? parsed.total : 0) : parsed.passed;
     } else {
       total = 1;
-      passed = r?.exit_code === 0 && !r?.timed_out && !r?.spawn_error ? 1 : 0;
+      passed = succeeded ? 1 : 0;
     }
     sumTotal += total;
     sumPassed += passed;
@@ -104,7 +115,7 @@ export function computeEvaluation(results = []) {
         signal: r?.signal ?? null,
         timed_out: r?.timed_out === true,
         output_tail: r?.output_tail ?? "",
-        ...(parsed ? { parsed } : {}),
+        ...(parsed ? { parsed: { total: parsed.total, passed: parsed.passed } } : {}),
       });
     }
   }
