@@ -10,11 +10,19 @@ import readline from "node:readline";
 
 import { ENV_KEY_DENYLIST } from "../agent-runner.mjs";
 import { resolveDollarValue } from "../workflow.mjs";
+import { decryptSecrets, encryptSecrets, isEncryptedEnvelope } from "./secret-crypto.mjs";
+import { getPassphrase } from "./secret-passphrase.mjs";
+import { readSecretMasked } from "./secret-prompt.mjs";
 
 const SECRETS_FILE = "secrets.local.json";
+const ENC_SECRETS_FILE = "secrets.local.enc.json";
 
 export function secretsPath(stateDir) {
   return path.join(stateDir, SECRETS_FILE);
+}
+
+export function encryptedSecretsPath(stateDir) {
+  return path.join(stateDir, ENC_SECRETS_FILE);
 }
 
 export async function readLocalSecrets(stateDir) {
@@ -48,10 +56,59 @@ export async function writeLocalSecrets(stateDir, env) {
   return env;
 }
 
+export async function writeEncryptedSecrets(stateDir, env, passphrase) {
+  const filePath = encryptedSecretsPath(stateDir);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const envelope = encryptSecrets(env, passphrase);
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${ENC_SECRETS_FILE}.${process.pid}.${Date.now()}.tmp`,
+  );
+  await fs.writeFile(tempPath, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+  await fs.rename(tempPath, filePath);
+  await fs.chmod(filePath, 0o600);
+  return env;
+}
+
+// Read the secret env map, preferring the encrypted store. opts.passphraseEnv
+// lets callers/tests inject the env used for passphrase resolution.
+export async function readSecretsEnvMap(
+  stateDir,
+  { passphraseEnv = process.env, interactive = false } = {},
+) {
+  // Encrypted store wins when present.
+  try {
+    const encText = await fs.readFile(encryptedSecretsPath(stateDir), "utf8");
+    const envelope = JSON.parse(encText);
+    if (!isEncryptedEnvelope(envelope)) {
+      throw new Error(`secrets_enc_malformed: fix or remove ${encryptedSecretsPath(stateDir)}`);
+    }
+    const passphrase = await getPassphrase({ env: passphraseEnv, interactive });
+    return decryptSecrets(envelope, passphrase);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error; // real decrypt/format errors propagate
+  }
+  // Legacy plaintext fallback.
+  return readLocalSecrets(stateDir);
+}
+
 // Load secrets into the process env. Real environment variables always win.
 // Returns the names of keys that were applied.
-export async function loadLocalSecrets(stateDir, env = process.env) {
-  const secrets = await readLocalSecrets(stateDir);
+export async function loadLocalSecrets(stateDir, env = process.env, opts = {}) {
+  let secrets;
+  try {
+    secrets = await readSecretsEnvMap(stateDir, {
+      passphraseEnv: opts.passphraseEnv ?? env,
+      interactive: opts.interactive ?? false,
+    });
+  } catch (error) {
+    // An encrypted store with no passphrase available at (non-interactive)
+    // startup is not an error: most commands don't need secrets. Stay silent
+    // and leave secrets unloaded. Genuine failures (bad passphrase, tampered or
+    // malformed store) still propagate so callers can warn.
+    if (error.message === "secret_passphrase_required") return [];
+    throw error;
+  }
   const applied = [];
   for (const [key, value] of Object.entries(secrets)) {
     if (typeof value !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
@@ -82,34 +139,66 @@ export function resolveProviderEnv(providerDef, env = process.env) {
   return resolved;
 }
 
-// Read one line with terminal echo muted (best-effort; falls back to plain).
-function questionMuted(rl, stdout, prompt) {
-  return new Promise((resolve) => {
-    stdout.write(prompt);
-    const origWrite = rl._writeToOutput?.bind(rl);
-    if (origWrite) {
-      // Suppress ALL echo while muted — a pasted secret containing newlines
-      // must not leak to the terminal; the resolve path writes its own "\n".
-      rl._writeToOutput = () => {};
-    }
-    rl.question("", (answer) => {
-      if (origWrite) rl._writeToOutput = origWrite;
-      stdout.write("\n");
-      resolve(answer);
-    });
-  });
+// Read a masked secret value while a readline interface owns stdin: pause the
+// interface and detach its keypress listener for the duration, so readSecretMasked
+// (raw mode) is the sole reader, then restore. Only the typed value is masked —
+// the prompt/instructions written by readSecretMasked stay visible.
+async function readMaskedWithReadline(rl, stdin, stdout, prompt) {
+  rl.pause();
+  const saved = stdin.listeners("data");
+  stdin.removeAllListeners("data");
+  try {
+    return await readSecretMasked({ stdin, stdout, prompt });
+  } finally {
+    for (const listener of saved) stdin.on("data", listener);
+    rl.resume();
+  }
 }
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+// Persist the secret env map, preserving the active store format: once an
+// encrypted store exists, keep writing encrypted; otherwise stay plaintext.
+async function persistSecrets(stateDir, envMap, env, stdout) {
+  let encExists = true;
+  try {
+    await fs.access(encryptedSecretsPath(stateDir));
+  } catch {
+    encExists = false;
+  }
+  if (encExists) {
+    const passphrase = await getPassphrase({ env, interactive: true, stdout });
+    await writeEncryptedSecrets(stateDir, envMap, passphrase);
+    return;
+  }
+  await writeLocalSecrets(stateDir, envMap);
+}
+
 // Interactive wizard: list/add/remove secret env vars.
 // Non-interactive: `maestro setup keys --var NAME` reads the value from stdin.
+// `maestro setup keys --encrypt` migrates the plaintext store to the encrypted
+// store and shreds the plaintext file.
 export async function runKeysWizard({
   stateDir,
   args = [],
+  env = process.env,
   stdin = process.stdin,
   stdout = process.stdout,
 }) {
+  if (args.includes("--encrypt")) {
+    const current = await readSecretsEnvMap(stateDir, { passphraseEnv: env, interactive: true });
+    const passphrase = await getPassphrase({ env, interactive: true, stdout });
+    await writeEncryptedSecrets(stateDir, current, passphrase);
+    try {
+      await fs.rm(secretsPath(stateDir));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    stdout.write(`secrets encrypted → ${encryptedSecretsPath(stateDir)} (0600)\n`);
+    stdout.write("unlock with MAESTRO_SECRET_PASSPHRASE or the interactive prompt\n");
+    return;
+  }
+
   const varFlagIndex = args.indexOf("--var");
   if (varFlagIndex !== -1) {
     const name = args[varFlagIndex + 1];
@@ -120,9 +209,9 @@ export async function runKeysWizard({
     for await (const chunk of stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     const value = Buffer.concat(chunks).toString("utf8").trim();
     if (!value) throw new Error("empty_secret_value");
-    const secrets = await readLocalSecrets(stateDir);
-    await writeLocalSecrets(stateDir, { ...secrets, [name]: value });
-    stdout.write(`stored ${name} in ${secretsPath(stateDir)} (0600)\n`);
+    const secrets = await readSecretsEnvMap(stateDir, { passphraseEnv: env, interactive: true });
+    await persistSecrets(stateDir, { ...secrets, [name]: value }, env, stdout);
+    stdout.write(`stored ${name} (0600)\n`);
     stdout.write(`reference it from shareable config as "$${name}"\n`);
     return;
   }
@@ -131,7 +220,7 @@ export async function runKeysWizard({
   const ask = (prompt) => new Promise((resolve) => rl.question(prompt, resolve));
   try {
     for (;;) {
-      const secrets = await readLocalSecrets(stateDir);
+      const secrets = await readSecretsEnvMap(stateDir, { passphraseEnv: env, interactive: true });
       const names = Object.keys(secrets);
       stdout.write(`\nSecrets in ${secretsPath(stateDir)} (values hidden):\n`);
       stdout.write(names.length ? `${names.map((n) => `  - ${n}`).join("\n")}\n` : "  (none)\n");
@@ -145,12 +234,14 @@ export async function runKeysWizard({
           stdout.write("invalid name — letters, digits, underscore; cannot start with a digit\n");
           continue;
         }
-        const value = (await questionMuted(rl, stdout, "value (hidden): ")).trim();
+        const value = (
+          await readMaskedWithReadline(rl, stdin, stdout, `enter value for ${name} (masked): `)
+        ).trim();
         if (!value) {
           stdout.write("empty value — skipped\n");
           continue;
         }
-        await writeLocalSecrets(stateDir, { ...secrets, [name]: value });
+        await persistSecrets(stateDir, { ...secrets, [name]: value }, env, stdout);
         stdout.write(`stored ${name}. Reference it from shareable config as "$${name}".\n`);
       } else if (action === "r") {
         const name = (await ask("env var name to remove: ")).trim();
@@ -159,7 +250,7 @@ export async function runKeysWizard({
           continue;
         }
         const { [name]: _removed, ...rest } = secrets;
-        await writeLocalSecrets(stateDir, rest);
+        await persistSecrets(stateDir, rest, env, stdout);
         stdout.write(`removed ${name}\n`);
       }
     }

@@ -216,9 +216,22 @@ export const COMMAND_TREE = {
       subcommands: [
         {
           name: "keys",
-          synopsis: "maestro setup keys [--var NAME]",
-          summary: "manage optional API keys (secrets.local.json, 0600)",
-          flags: [{ flag: "--var NAME", desc: "set a single variable non-interactively" }, STATE_DIR_FLAG],
+          synopsis: "maestro setup keys [--var NAME] [--encrypt]",
+          summary: "manage optional API keys; --encrypt migrates to the encrypted store",
+          flags: [
+            { flag: "--var NAME", desc: "set a single variable non-interactively" },
+            { flag: "--encrypt", desc: "encrypt the store (scrypt+AES-GCM) and shred plaintext" },
+            STATE_DIR_FLAG,
+          ],
+        },
+        {
+          name: "harden",
+          synopsis: "maestro setup harden [--project] [--dry-run]",
+          summary: "install the Claude Code secret guardrail (PreToolUse hook + deny rules)",
+          flags: [
+            { flag: "--project", desc: "write .claude/settings.json in the cwd (default: global ~/.claude)" },
+            { flag: "--dry-run", desc: "show the target without writing" },
+          ],
         },
         {
           name: "local",
