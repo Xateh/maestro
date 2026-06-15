@@ -196,7 +196,11 @@ export function enforceGates(gates, scores, evidence) {
           : null;
     evaluated.no_high_severity_findings = { required: true, actual: found, passed };
     if (!passed) {
-      blockedReasons.push(`no_high_severity_findings: found ${found} severity`);
+      blockedReasons.push(
+        hasReview
+          ? `no_high_severity_findings: found ${found} severity finding(s)`
+          : "no_high_severity_findings: no review evidence",
+      );
     }
   }
 
@@ -208,7 +212,11 @@ export function enforceGates(gates, scores, evidence) {
     const n = newFailures === null ? "no regression evidence" : newFailures.length;
     evaluated.all_regressions_pass = { required: true, actual: n, passed };
     if (!passed) {
-      blockedReasons.push(`all_regressions_pass: ${n} new failures`);
+      blockedReasons.push(
+        newFailures === null
+          ? "all_regressions_pass: no regression evidence"
+          : `all_regressions_pass: ${n} new failures`,
+      );
     }
   }
 

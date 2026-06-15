@@ -230,7 +230,7 @@ test("enforceGates: all_regressions_pass true, absent regression handoff ⇒ fai
   const r = enforceGates({ all_regressions_pass: true }, {}, {});
   assert.equal(r.passed, false);
   assert.equal(r.evaluated.all_regressions_pass.passed, false);
-  assert.deepEqual(r.blocked_reasons, ["all_regressions_pass: no regression evidence new failures"]);
+  assert.deepEqual(r.blocked_reasons, ["all_regressions_pass: no regression evidence"]);
 });
 
 test("enforceGates: all_regressions_pass FALSE ⇒ not enforced (F2)", () => {
@@ -257,7 +257,7 @@ test("enforceGates: no_high_severity_findings true, review high ⇒ fail", () =>
     review: { severity: "high" },
   });
   assert.equal(r.passed, false);
-  assert.deepEqual(r.blocked_reasons, ["no_high_severity_findings: found high severity"]);
+  assert.deepEqual(r.blocked_reasons, ["no_high_severity_findings: found high severity finding(s)"]);
 });
 
 test("enforceGates: no_high_severity_findings true, critical static_analysis finding ⇒ fail", () => {
@@ -266,13 +266,13 @@ test("enforceGates: no_high_severity_findings true, critical static_analysis fin
     static_analysis: { findings: [{ severity: "critical" }] },
   });
   assert.equal(r.passed, false);
-  assert.deepEqual(r.blocked_reasons, ["no_high_severity_findings: found critical severity"]);
+  assert.deepEqual(r.blocked_reasons, ["no_high_severity_findings: found critical severity finding(s)"]);
 });
 
 test("enforceGates: no_high_severity_findings true, no review evidence ⇒ fail-closed", () => {
   const r = enforceGates({ no_high_severity_findings: true }, {}, {});
   assert.equal(r.passed, false);
-  assert.deepEqual(r.blocked_reasons, ["no_high_severity_findings: found no review evidence severity"]);
+  assert.deepEqual(r.blocked_reasons, ["no_high_severity_findings: no review evidence"]);
 });
 
 test("enforceGates: no_high_severity_findings FALSE ⇒ not enforced (F2)", () => {
