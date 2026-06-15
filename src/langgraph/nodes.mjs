@@ -28,6 +28,15 @@ import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../sta
 import { resolveProviderEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
+import { resolveRoleSchema, validatePayload, validateInline, emptyPayloadForSchema } from "../schemas/index.mjs";
+import { buildEvaluationPayload } from "../evaluation.mjs";
+import { deriveScores, enforceGates } from "../scoring.mjs";
+import { parseUsage } from "../usage-parse.mjs";
+import { boundedTail } from "../bounded-tail.mjs";
+
+// SP3 kind:"command" output-tail / timeout fallbacks (no new default config key).
+const COMMAND_DEFAULT_TAIL_BYTES = 65_536;
+const COMMAND_DEFAULT_TIMEOUT_MS = 120_000;
 
 const INSTRUCTION_FILE_CAP = 16 * 1024;
 const INSTRUCTION_TOTAL_CAP = 64 * 1024;
@@ -111,11 +120,12 @@ function _maestroEnv(task, role) {
   };
 }
 
-async function _writeHandoffFile(runDir, role, { role: r, provider, payload, stdoutPath, stderrPath }) {
+async function _writeHandoffFile(runDir, role, { role: r, provider, payload, schemaValidation, stdoutPath, stderrPath }) {
   const handoff = {
     role: r,
     provider,
     payload,
+    ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
     stdout_path: stdoutPath ?? null,
     stderr_path: stderrPath ?? null,
     created_at: new Date().toISOString(),
@@ -166,6 +176,8 @@ export function makeRoleNode(roleDef, {
     recordProjectBlocker = null,
     gitRunner = null,
     markActiveStep = null,
+    commandRunner = null,
+    regressionStore = null,
   } = ops;
 
   return async function roleNode(state) {
@@ -228,6 +240,452 @@ export function makeRoleNode(roleDef, {
     // ── cycle revisit: stale handoff in the DB must not mask the new run ─────
     if (isRevisit) {
       await db.deleteHandoffsByRole(task.id, roleKey);
+    }
+
+    // ── stub role: no provider, no agent — emit a schema-conforming payload ──
+    // Stubs still honor resume-skip + loop bounding (above) but NEVER touch the
+    // runner or provider availability. SP3 extends this seam with kind:"command".
+    if (roleDef.kind === "stub") {
+      const stageStartedAt = new Date().toISOString();
+      const resolved = resolveRoleSchema(roleDef);
+      const payload = resolved.schema ? emptyPayloadForSchema(resolved.schema) : {};
+      let schemaValidation = null;
+      if (resolved.source === "name" && resolved.schema) {
+        const r = validatePayload(resolved.name, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
+      } else if (resolved.source === "inline" && resolved.schema) {
+        const r = validateInline(resolved.schema, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
+      }
+      let handoffPath = null;
+      if (task.run_dir) {
+        try {
+          handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
+            role: roleKey,
+            provider: null,
+            payload,
+            schemaValidation,
+            stdoutPath: null,
+            stderrPath: null,
+          });
+        } catch (err) {
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+        }
+      }
+      // The handoffs.provider column is NOT NULL, so the DB row carries the
+      // "stub" sentinel; the engine-visible handoff (state slice + on-disk file)
+      // keeps provider:null since a stub has no real LLM provider.
+      await db.appendStep(task.id, {
+        role: roleKey,
+        provider: "stub",
+        status: "succeeded",
+        started_at: stageStartedAt,
+        handoff_path: handoffPath,
+      });
+      await db.addHandoff(task.id, {
+        role: roleKey,
+        provider: "stub",
+        payload,
+        logPath: null,
+        schemaValidation,
+      });
+      return {
+        priorHandoffs: [{
+          role: roleKey,
+          provider: null,
+          payload,
+          log_path: null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
+        event: "done",
+        currentState: roleKey,
+        visits: { [roleKey]: 1 },
+      };
+    }
+
+    // ── command role: non-LLM stage that runs declared shell commands ────────
+    // Sibling to the stub branch: honors resume-skip + loop bounding (above) but
+    // NEVER touches the agent runner or provider availability. Runs every command
+    // as evidence and always emits "done" — a failing command is data, not a halt
+    // (no gating; that is SP5). Builds the SP1 `evaluation` payload.
+    if (roleDef.kind === "command") {
+      const stageStartedAt = new Date().toISOString();
+      const commands = Array.isArray(roleDef.commands) ? roleDef.commands : [];
+      const cwd = currentTask.worktree_path
+        ?? (currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd());
+      const maxTailBytes = config?.stream_tail_bytes ?? COMMAND_DEFAULT_TAIL_BYTES;
+      const env = _maestroEnv(currentTask, roleKey);
+
+      const records = [];
+      for (const command of commands) {
+        const run = command?.run;
+        const timeoutMs = command?.timeout_ms ?? config?.command_timeout_ms ?? COMMAND_DEFAULT_TIMEOUT_MS;
+        // Never let a thrown/absent runner abort the stage — synthesize a
+        // spawn-error result (exit_code 127, matching the engine's convention).
+        let result;
+        try {
+          if (!commandRunner) throw new Error("commandRunner not provided");
+          result = await commandRunner({ run, cwd, timeoutMs, env, maxTailBytes });
+        } catch (err) {
+          result = {
+            exit_code: 127,
+            signal: null,
+            stdout: "",
+            stderr: err?.message ?? String(err),
+            timed_out: false,
+            spawn_error: true,
+          };
+        }
+        const outputTail = boundedTail(
+          `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+          maxTailBytes,
+        );
+        records.push({
+          name: command?.name ?? null,
+          run: run ?? null,
+          category: command?.category ?? null,
+          exit_code: result.exit_code ?? null,
+          signal: result.signal ?? null,
+          timed_out: result.timed_out === true,
+          spawn_error: result.spawn_error === true,
+          output_tail: outputTail,
+          allow_failure: command?.allow_failure === true,
+          parser: command?.parser ?? null,
+        });
+      }
+
+      const payload = buildEvaluationPayload(records);
+      const resolved = resolveRoleSchema(roleDef);
+      let schemaValidation = null;
+      if (resolved.source === "name" && resolved.schema) {
+        const r = validatePayload(resolved.name, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
+      } else if (resolved.source === "inline" && resolved.schema) {
+        const r = validateInline(resolved.schema, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
+      }
+
+      let handoffPath = null;
+      if (task.run_dir) {
+        try {
+          handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
+            role: roleKey,
+            provider: null,
+            payload,
+            schemaValidation,
+            stdoutPath: null,
+            stderrPath: null,
+          });
+        } catch (err) {
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+        }
+      }
+      // The handoffs.provider column is NOT NULL, so the DB row carries the
+      // "command" sentinel; the engine-visible handoff (state slice + on-disk
+      // file) keeps provider:null since a command stage has no LLM provider.
+      await db.appendStep(task.id, {
+        role: roleKey,
+        provider: "command",
+        status: "succeeded",
+        started_at: stageStartedAt,
+        handoff_path: handoffPath,
+      });
+      await db.addHandoff(task.id, {
+        role: roleKey,
+        provider: "command",
+        payload,
+        logPath: null,
+        schemaValidation,
+      });
+      return {
+        priorHandoffs: [{
+          role: roleKey,
+          provider: null,
+          payload,
+          log_path: null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
+        event: "done",
+        currentState: roleKey,
+        visits: { [roleKey]: 1 },
+      };
+    }
+
+    // ── regression role: non-LLM corpus runner (SP4) ─────────────────────────
+    // Sibling to stub/command: honors resume-skip + loop bounding (above), NEVER
+    // touches the agent runner. Loads an on-disk corpus, re-runs each case (with
+    // retries) via commandRunner, auto-promotes upstream evaluation.failures[]
+    // into new cases, and emits an OUTCOME-DEPENDENT event (done / fail_event).
+    // It NEVER throws on a case failure, load error, or write error — each is
+    // captured as evidence; only new_failures vs fail_threshold drives the event.
+    if (roleDef.kind === "regression") {
+      const stageStartedAt = new Date().toISOString();
+      const cwd = currentTask.worktree_path
+        ?? (currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd());
+      const corpusDir = roleDef.corpus_dir
+        ? path.resolve(cwd, roleDef.corpus_dir)
+        : path.join(cwd, ".maestro", "regression");
+      const maxTailBytes = config?.stream_tail_bytes ?? COMMAND_DEFAULT_TAIL_BYTES;
+      const env = _maestroEnv(currentTask, roleKey);
+
+      // effective attempts (>=1): case.attempts ?? roleDef.attempts ??
+      // config.regression_attempts ?? 1
+      const roleAttempts = Number.isInteger(roleDef.attempts) && roleDef.attempts > 0
+        ? roleDef.attempts : null;
+      const cfgAttempts = Number.isInteger(config?.regression_attempts) && config.regression_attempts > 0
+        ? config.regression_attempts : null;
+
+      // ── load corpus (tolerant; absent store ⇒ empty) ──────────────────────
+      let cases = [];
+      let loadErrors = [];
+      if (regressionStore) {
+        try {
+          const loaded = await regressionStore.loadCorpus(corpusDir);
+          cases = loaded?.cases ?? [];
+          loadErrors = loaded?.loadErrors ?? [];
+        } catch (err) {
+          loadErrors = [{ file: corpusDir, error: err?.message ?? String(err) }];
+        }
+      }
+
+      // ── re-run each case with retries (stop early on first pass) ───────────
+      const regressionsRun = [];
+      const newFailures = [];
+      for (const c of cases) {
+        const run = c?.command?.run;
+        const timeoutMs = c?.command?.timeout_ms
+          ?? config?.command_timeout_ms ?? COMMAND_DEFAULT_TIMEOUT_MS;
+        const caseAttempts = Number.isInteger(c?.attempts) && c.attempts > 0 ? c.attempts : null;
+        const attemptsCap = caseAttempts ?? roleAttempts ?? cfgAttempts ?? 1;
+
+        let lastResult = null;
+        let passed = false;
+        let attemptsMade = 0;
+        for (let a = 0; a < attemptsCap; a++) {
+          attemptsMade = a + 1;
+          let result;
+          try {
+            if (!commandRunner) throw new Error("commandRunner not provided");
+            result = await commandRunner({ run, cwd, timeoutMs, env, maxTailBytes });
+          } catch (err) {
+            result = {
+              exit_code: 127,
+              signal: null,
+              stdout: "",
+              stderr: err?.message ?? String(err),
+              timed_out: false,
+              spawn_error: true,
+            };
+          }
+          lastResult = result;
+          // pass iff exit 0 AND not timed_out AND not spawn_error
+          if (result.exit_code === 0 && !result.timed_out && result.spawn_error !== true) {
+            passed = true;
+            break; // stop early on first pass
+          }
+        }
+        const outputTail = boundedTail(
+          `${lastResult?.stdout ?? ""}\n${lastResult?.stderr ?? ""}`,
+          maxTailBytes,
+        );
+        const entry = {
+          id: c.id,
+          run: run ?? null,
+          category: c?.category ?? null,
+          exit_code: lastResult?.exit_code ?? null,
+          signal: lastResult?.signal ?? null,
+          timed_out: lastResult?.timed_out === true,
+          passed,
+          attempts: attemptsMade,
+          output_tail: outputTail,
+        };
+        regressionsRun.push(entry);
+        if (!passed) {
+          // new_failures entry — same fields minus `passed`
+          const { passed: _omit, ...failEntry } = entry;
+          newFailures.push(failEntry);
+        }
+      }
+
+      // ── promote from the most recent prior evaluation handoff ──────────────
+      const evalHandoff = [...priorHandoffs].reverse().find((h) => h.role === "evaluation");
+      const failuresToPromote = Array.isArray(evalHandoff?.payload?.failures)
+        ? evalHandoff.payload.failures : [];
+      const existingIds = new Set(cases.map((c) => c.id));
+      let promotedTests = [];
+      if (regressionStore && failuresToPromote.length > 0) {
+        try {
+          const res = await regressionStore.promoteFailures({
+            dir: corpusDir,
+            failures: failuresToPromote,
+            existingIds,
+            date: new Date().toISOString().slice(0, 10),
+            taskId: currentTask.id ?? null,
+          });
+          promotedTests = res?.promoted ?? [];
+          // res.writeErrors are intentionally swallowed (read-only tree etc.);
+          // affected ids simply do not appear in promoted_tests.
+        } catch {
+          promotedTests = [];
+        }
+      }
+
+      // ── build payload + soft schema validation ────────────────────────────
+      const failThreshold = Number.isInteger(roleDef.fail_threshold) && roleDef.fail_threshold > 0
+        ? roleDef.fail_threshold : 1;
+      const failEvent = roleDef.fail_event ?? "regressions_found";
+      const outcome = newFailures.length >= failThreshold ? failEvent : "done";
+      const payload = {
+        regressions_run: regressionsRun,
+        new_failures: newFailures,
+        promoted_tests: promotedTests,
+        corpus_load_errors: loadErrors,
+        outcome: outcome === "done" ? "clean" : outcome, // "clean" | fail_event name
+      };
+
+      const resolved = resolveRoleSchema(roleDef);
+      let schemaValidation = null;
+      if (resolved.source === "name" && resolved.schema) {
+        const r = validatePayload(resolved.name, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
+      } else if (resolved.source === "inline" && resolved.schema) {
+        const r = validateInline(resolved.schema, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
+      }
+
+      // ── persist (DB sentinel "regression"; engine-visible provider null) ──
+      let handoffPath = null;
+      if (task.run_dir) {
+        try {
+          handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
+            role: roleKey,
+            provider: null,
+            payload,
+            schemaValidation,
+            stdoutPath: null,
+            stderrPath: null,
+          });
+        } catch (err) {
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+        }
+      }
+      // The handoffs.provider column is NOT NULL, so the DB row carries the
+      // "regression" sentinel; the engine-visible handoff keeps provider:null.
+      await db.appendStep(task.id, {
+        role: roleKey,
+        provider: "regression",
+        status: "succeeded",
+        started_at: stageStartedAt,
+        handoff_path: handoffPath,
+      });
+      await db.addHandoff(task.id, {
+        role: roleKey,
+        provider: "regression",
+        payload,
+        logPath: null,
+        schemaValidation,
+      });
+      return {
+        priorHandoffs: [{
+          role: roleKey,
+          provider: null,
+          payload,
+          log_path: null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
+        event: outcome, // done | fail_event
+        currentState: roleKey,
+        visits: { [roleKey]: 1 },
+      };
+    }
+
+    // ── scoring role: non-LLM reliability scoring + gate engine (SP5) ────────
+    // Sibling to stub/command/regression: honors resume-skip + loop bounding
+    // (above), NEVER touches the agent runner. Reads the accumulated upstream
+    // handoffs, derives the six SP1 `scoring` numbers FROM ACTUAL EVIDENCE
+    // (absent ⇒ 0.0 + missing_evidence + score_inputs.missing), enforces the
+    // manifest's declared `gates:`, and emits an OUTCOME-DEPENDENT event
+    // (pass_event / block_event, default "passed"/"blocked"). It NEVER throws —
+    // missing/garbage evidence is handled by the pure scoring module.
+    if (roleDef.kind === "scoring") {
+      const stageStartedAt = new Date().toISOString();
+      // last-write-wins handoffs-by-role map from the accumulated priorHandoffs.
+      const handoffsByRole = {};
+      for (const h of priorHandoffs) {
+        if (h?.role) handoffsByRole[h.role] = h.payload;
+      }
+
+      const { scores, score_inputs, missing_evidence } = deriveScores(handoffsByRole);
+      const gateResult = enforceGates(
+        workflow?.gates ?? roleDef.gates ?? {},
+        scores,
+        handoffsByRole,
+      );
+      const payload = {
+        ...scores,
+        score_inputs,
+        missing_evidence,
+        gates: gateResult.evaluated,
+        blocked_reasons: gateResult.blocked_reasons,
+      };
+
+      const resolved = resolveRoleSchema(roleDef);
+      let schemaValidation = null;
+      if (resolved.source === "name" && resolved.schema) {
+        const r = validatePayload(resolved.name, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
+      } else if (resolved.source === "inline" && resolved.schema) {
+        const r = validateInline(resolved.schema, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
+      }
+
+      // ── persist (DB sentinel "scoring"; engine-visible provider null) ──────
+      let handoffPath = null;
+      if (task.run_dir) {
+        try {
+          handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
+            role: roleKey,
+            provider: null,
+            payload,
+            schemaValidation,
+            stdoutPath: null,
+            stderrPath: null,
+          });
+        } catch (err) {
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+        }
+      }
+      // The handoffs.provider column is NOT NULL, so the DB row carries the
+      // "scoring" sentinel; the engine-visible handoff keeps provider:null.
+      await db.appendStep(task.id, {
+        role: roleKey,
+        provider: "scoring",
+        status: "succeeded",
+        started_at: stageStartedAt,
+        handoff_path: handoffPath,
+      });
+      await db.addHandoff(task.id, {
+        role: roleKey,
+        provider: "scoring",
+        payload,
+        logPath: null,
+        schemaValidation,
+      });
+      const event = gateResult.passed
+        ? (roleDef.pass_event ?? "passed")
+        : (roleDef.block_event ?? "blocked");
+      return {
+        priorHandoffs: [{
+          role: roleKey,
+          provider: null,
+          payload,
+          log_path: null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
+        event, // passed | blocked (or custom pass_event/block_event)
+        currentState: roleKey,
+        visits: { [roleKey]: 1 },
+      };
     }
 
     // ── reviewer: synthetic skip when review_enabled === false ───────────────
@@ -370,6 +828,7 @@ export function makeRoleNode(roleDef, {
         priorHandoffs,
         handoffMode,
         roleInstructions: await _roleInstructions(roleDef),
+        outputSchema: resolveRoleSchema(roleDef).schema ?? null,
       });
 
       // Apply the resolved alias/model over the role defaults so a substituted
@@ -550,6 +1009,10 @@ export function makeRoleNode(roleDef, {
       }
 
       // ── parse handoff payload ─────────────────────────────────────────────
+      // rawHandoff is the parsed MAESTRO_HANDOFF marker (null when none emitted).
+      // Soft schema validation only runs when a marker was actually emitted —
+      // an absent marker leaves nothing to validate (schema_validation omitted).
+      const rawHandoff = parseAgentHandoff(combined);
       let payload;
       if (roleKey === "reviewer") {
         const review = parseReviewerOutput(combined, currentTask.review ?? null);
@@ -564,7 +1027,20 @@ export function makeRoleNode(roleDef, {
         };
         await db.updateTask(task.id, { review });
       } else {
-        payload = parseAgentHandoff(combined) ?? {};
+        payload = rawHandoff ?? {};
+      }
+
+      // ── soft schema validation (additive evidence; never alters routing) ────
+      let schemaValidation = null;
+      if (rawHandoff != null) {
+        const resolved = resolveRoleSchema(roleDef);
+        if (resolved.source === "name" && resolved.schema) {
+          const result = validatePayload(resolved.name, payload);
+          schemaValidation = { ok: result.ok, errors: result.errors, schema: resolved.name };
+        } else if (resolved.source === "inline" && resolved.schema) {
+          const result = validateInline(resolved.schema, payload);
+          schemaValidation = { ok: result.ok, errors: result.errors, schema: "inline" };
+        }
       }
 
       // ── custom event passthrough: handoff may route a declared transition ──
@@ -590,6 +1066,7 @@ export function makeRoleNode(roleDef, {
             role: roleKey,
             provider: runProvider,
             payload,
+            schemaValidation,
             stdoutPath: result.stdoutPath,
             stderrPath: result.stderrPath,
           });
@@ -602,6 +1079,8 @@ export function makeRoleNode(roleDef, {
       await db.appendStep(task.id, {
         role: roleKey,
         provider: runProvider,
+        model: runModel,
+        tokens: parseUsage(runProvider, result.stdout),
         status: "succeeded",
         started_at: stepStartedAt,
         stdout_path: result.stdoutPath,
@@ -615,6 +1094,7 @@ export function makeRoleNode(roleDef, {
         provider: runProvider,
         payload,
         logPath: result.stdoutPath,
+        schemaValidation,
       });
 
       // ── git HEAD guard: non-reviewer roles with branch tracking ──────────
@@ -651,7 +1131,13 @@ export function makeRoleNode(roleDef, {
       }
 
       return {
-        priorHandoffs: [{ role: roleKey, provider: runProvider, payload, log_path: result.stdoutPath ?? null }],
+        priorHandoffs: [{
+          role: roleKey,
+          provider: runProvider,
+          payload,
+          log_path: result.stdoutPath ?? null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
         event,
         currentState: roleKey,
         visits: { [roleKey]: 1 },

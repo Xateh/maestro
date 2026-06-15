@@ -1,10 +1,17 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import path from "node:path";
 
+import { buildArtifactIndex, compareArtifactIndexes, resolveArtifact } from "../artifacts.mjs";
+import { openStore } from "../db/store.mjs";
+import { tailFile } from "../fs-safe.mjs";
 import { usageError } from "./registry.mjs";
 import { loadLocalSecrets, runKeysWizard } from "../setup/keys.mjs";
 import { runLocalSetup } from "../setup/local.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
+import { manifestToTaskInputs, sanitizeRerunWorkflowName } from "../run-manifest.mjs";
+import { formatDurationMs } from "../run-summary.mjs";
+import { getStageEvents } from "../stage-events.mjs";
 import { formatTaskDetails, runMaestroTui } from "../tui.mjs";
 import { formatValidation, validateWorkflow } from "../workflow-validate.mjs";
 
@@ -13,8 +20,12 @@ import {
   findUnknownFlags,
   makeStore,
   parseActionArgs,
+  parseArtifactsArgs,
+  parseCompareArgs,
   parseEditActionArgs,
+  parseEventsArgs,
   parseInspectArgs,
+  parseRerunArgs,
   parseSharedStateArgs,
   parseTaskArgs,
 } from "./parse-args.mjs";
@@ -255,8 +266,13 @@ export async function runLocalMaestroCommand({
     const parsed = parseTaskArgs(args, cwd);
     const taskStore = makeStore(parsed, store);
     const defaults = await taskStore.readConfig();
+    const workflowName = parsed.workflow ?? "default";
+    const workflow = await taskStore.readWorkflow(workflowName);
+    // Non-default names have no implicit fallback — a missing file is an error.
+    if (!workflow) {
+      throw new Error(`unknown_workflow: ${workflowName}`);
+    }
     if (parsed.mode !== "task") {
-      const workflow = await taskStore.readWorkflow();
       if (!workflow.modes?.[parsed.mode]) {
         throw new Error(`unknown_mode: ${parsed.mode} (defined modes: ${Object.keys(workflow.modes ?? {}).join(", ")})`);
       }
@@ -571,6 +587,182 @@ export async function runLocalMaestroCommand({
     return { task };
   }
 
+  if (command === "events") {
+    const parsed = parseEventsArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "events", stderr);
+    const taskStore = makeStore(parsed, store);
+
+    // Cross-task query over the materialised events table (--all). No task id.
+    if (parsed.all) {
+      let events = [];
+      try {
+        const db = store && typeof store.queryStageEvents === "function"
+          ? store
+          : await openStore(path.join(taskStore.root, "maestro.db"));
+        events = await db.queryStageEvents({
+          stage: parsed.stage ?? undefined,
+          status: parsed.status ?? undefined,
+          workflow_id: parsed.workflow ?? undefined,
+        });
+      } catch {
+        events = [];
+      }
+      if (parsed.json) {
+        writeLine(stdout, JSON.stringify(events, null, 2));
+      } else {
+        for (const event of events) {
+          const artifacts = (event.artifacts ?? []).length > 0 ? `  ${event.artifacts.join(" ")}` : "";
+          writeLine(stdout, [
+            String(event.task_id ?? "-").padEnd(20),
+            String(event.stage ?? "").padEnd(12),
+            String(event.status ?? "").padEnd(10),
+            String(event.model || "-").padEnd(16),
+            `${event.tokens ?? 0}t`.padStart(8),
+            formatDurationMs(event.duration_ms ?? 0).padStart(6),
+            artifacts,
+          ].join(" "));
+        }
+      }
+      return { events };
+    }
+
+    // Per-task live projection (correct even before materialisation / mid-run).
+    const id = parsed.positional[0];
+    if (!id) throw new Error("missing_task_id");
+    const task = await taskStore.readTask(id);
+    const events = getStageEvents(task);
+    if (parsed.json) {
+      writeLine(stdout, JSON.stringify(events, null, 2));
+    } else {
+      for (const event of events) {
+        const artifacts = event.artifacts.length > 0 ? `  ${event.artifacts.join(" ")}` : "";
+        writeLine(stdout, [
+          String(event.stage).padEnd(12),
+          String(event.status).padEnd(10),
+          String(event.model || "-").padEnd(16),
+          `${event.tokens}t`.padStart(8),
+          formatDurationMs(event.duration_ms).padStart(6),
+          artifacts,
+        ].join(" "));
+      }
+    }
+    return { task, events };
+  }
+
+  if (command === "artifacts") {
+    const parsed = parseArtifactsArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "artifacts", stderr);
+    const id = parsed.positional[0];
+    if (!id) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const task = await taskStore.readTask(id).catch(() => null);
+    const runDir = task?.run_dir ?? path.join(taskStore.root, "runs", id);
+    const taskForIndex = { ...(task ?? {}), run_dir: runDir };
+    const selector = parsed.positional[1];
+
+    if (!selector) {
+      const entries = await buildArtifactIndex(taskForIndex);
+      if (parsed.json) {
+        writeLine(stdout, JSON.stringify(entries, null, 2));
+      } else {
+        for (const e of entries) {
+          writeLine(stdout, [
+            String(e.role ?? "-").padEnd(14),
+            String(e.kind).padEnd(8),
+            String(e.bytes ?? "-").padStart(9),
+            String(e.modified ?? "-").padEnd(26),
+            String(e.sha256 ?? "-").slice(0, 12).padEnd(12),
+            e.name,
+          ].join(" "));
+        }
+      }
+      return { entries };
+    }
+
+    const resolved = await resolveArtifact(taskForIndex, selector);
+    if (!resolved) throw new Error(`unknown_artifact: ${selector}`);
+    if (parsed.json) {
+      writeLine(stdout, JSON.stringify(resolved.entry, null, 2));
+    } else if (parsed.tail) {
+      const text = await tailFile(resolved.path);
+      writeLine(stdout, text ?? "");
+    } else if (parsed.cat || (!parsed.tail && !parsed.json)) {
+      const text = await fs.readFile(resolved.path, "utf8").catch(() => "");
+      writeLine(stdout, text);
+    }
+    return { entry: resolved.entry, path: resolved.path };
+  }
+
+  if (command === "rerun") {
+    const parsed = parseRerunArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "rerun", stderr);
+    const id = parsed.positional[0];
+    if (!id) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const srcTask = await taskStore.readTask(id).catch(() => null);
+    const runDir = srcTask?.run_dir ?? path.join(taskStore.root, "runs", id);
+    let manifest;
+    try {
+      manifest = JSON.parse(await fs.readFile(path.join(runDir, "run-manifest.json"), "utf8"));
+    } catch {
+      throw new Error(`no_run_manifest: ${id}`);
+    }
+    const inputs = manifestToTaskInputs(manifest);
+
+    if (parsed.dryRun) {
+      // Print the manifest + resolved inputs; create nothing.
+      writeLine(stdout, JSON.stringify({ manifest, inputs }, null, 2));
+      return { manifest, inputs };
+    }
+
+    // Pin the captured workflow snapshot under a sanitized name so a later edit
+    // to the original workflow cannot change what this replay runs. writeWorkflow
+    // shallow-merges over DEFAULT_WORKFLOW; harmless here as the snapshot is a
+    // full resolved workflow object (first pin of a complete snapshot).
+    const name = sanitizeRerunWorkflowName(id);
+    await taskStore.writeWorkflow(name, manifest.workflow_snapshot ?? {});
+    const newTask = await taskStore.createTask({ ...inputs, workflow: name });
+
+    if (parsed.noRun) {
+      writeLine(stdout, newTask.id);
+      return { task: newTask };
+    }
+    writeLine(stdout, newTask.id);
+    return runCreatedLocalTask({
+      taskStore,
+      taskId: newTask.id,
+      cwd,
+      stdout,
+      stderr,
+      runner,
+      gitRunner,
+      availabilityProbe,
+    });
+  }
+
+  if (command === "compare") {
+    const parsed = parseCompareArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "compare", stderr);
+    const [id1, id2] = parsed.positional;
+    if (!id1 || !id2) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const indexFor = async (id) => {
+      const task = await taskStore.readTask(id).catch(() => null);
+      const runDir = task?.run_dir ?? path.join(taskStore.root, "runs", id);
+      return buildArtifactIndex({ ...(task ?? {}), run_dir: runDir });
+    };
+    const [a, b] = await Promise.all([indexFor(id1), indexFor(id2)]);
+    const rows = compareArtifactIndexes(a, b);
+    if (parsed.json) {
+      writeLine(stdout, JSON.stringify(rows, null, 2));
+    } else {
+      for (const r of rows) {
+        writeLine(stdout, `${`${r.role ?? "-"}.${r.kind ?? "-"}`.padEnd(28)} ${r.result}`);
+      }
+    }
+    return { rows };
+  }
+
   if (command === "init") {
     const parsed = parseSharedStateArgs(args, cwd);
     warnFlags(findUnknownFlags(parsed.positional, new Set(["--yes", "--dry-run", "--workflow"])), "init", stderr);
@@ -747,10 +939,52 @@ export async function runLocalMaestroCommand({
       }
       return result;
     }
+    if (action === "list") {
+      warnFlags(findUnknownFlags(rest, new Set(["--json"])), "workflow list", stderr);
+      const taskStore = makeStore(parsed, store);
+      const workflows = await taskStore.listWorkflows();
+      if (rest.includes("--json")) {
+        writeLine(stdout, JSON.stringify(workflows, null, 2));
+      } else if (workflows.length === 0) {
+        writeLine(stdout, "no workflows (run 'maestro init' or 'maestro workflow use <name>')");
+      } else {
+        for (const wf of workflows) {
+          writeLine(stdout, `${wf.name} (${wf.source})`);
+        }
+      }
+      return { workflows };
+    }
     if (action === "use") {
-      warnFlags(findUnknownFlags(rest, new Set()), "workflow use", stderr);
-      const name = rest.find((arg) => !arg.startsWith("-"));
+      warnFlags(findUnknownFlags(rest, new Set(["--as"])), "workflow use", stderr);
+      const positional = [];
+      let asName = null;
+      let asSeen = false;
+      for (let index = 0; index < rest.length; index += 1) {
+        if (rest[index] === "--as") {
+          asSeen = true;
+          index += 1;
+          asName = rest[index] ?? "";
+          continue;
+        }
+        if (!rest[index].startsWith("-")) positional.push(rest[index]);
+      }
+      // A bare "--as" with no value must error, not silently fall back to the
+      // legacy default-slot path.
+      if (asSeen && !asName) throw usageError(["workflow", "use"]);
+      const name = positional[0];
       if (!name) throw usageError(["workflow", "use"]);
+      // With --as: write into a named slot (workflows/<as>.json). Without:
+      // legacy behavior — replace the default workflow.json via the module path.
+      if (asName) {
+        const taskStore = makeStore(parsed, store);
+        const result = await taskStore.applyWorkflowTemplate({ name, as: asName });
+        const roles = Object.entries(result.workflow.roles)
+          .map(([role, def]) => `${role}(${def.provider})`)
+          .join(" → ");
+        writeLine(stdout, `workflow "${asName}" now uses template "${name}": ${roles}`);
+        writeLine(stdout, `modes: ${Object.keys(result.workflow.modes ?? {}).join(", ")}`);
+        return result;
+      }
       const { applyWorkflowTemplate } = await import("../setup/workflow-templates.mjs");
       const result = await applyWorkflowTemplate({ name, stateDir: parsed.stateDir });
       if (result.backupPath) {

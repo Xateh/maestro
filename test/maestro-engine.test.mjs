@@ -8,16 +8,20 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import { buildGraph } from "../src/langgraph/graph.mjs";
 import { makeRoleNode } from "../src/langgraph/nodes.mjs";
+import { buildPromptFromHandoffs } from "../src/langgraph/prompt.mjs";
 import { runLangGraphTask } from "../src/langgraph/engine.mjs";
 import { SqliteTaskStore } from "../src/db/store.mjs";
+import { getStageEvents } from "../src/stage-events.mjs";
 import { DEFAULT_WORKFLOW, LocalTaskStore } from "../src/task-store.mjs";
+import { emptyPayloadForSchema, getSchema } from "../src/schemas/index.mjs";
+import { resolveWorkflowTemplate } from "../src/setup/workflow-templates.mjs";
 
 const DEFAULT_CONFIG = {
   default_role: "executor",
@@ -191,6 +195,241 @@ test("makeRoleNode: returns done and records handoff when agent emits MAESTRO_HA
     db?.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ── makeRoleNode: soft schema validation (SP1) ───────────────────────────────────
+
+const IMPL_OK = {
+  summary: "did the thing",
+  files_changed: ["a.js"],
+  assumptions: [],
+  risks: [],
+};
+
+async function runNodeWithSchema({ roleDef, stdout, runDir = null }) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-schema-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  const taskId = "20260614-000001-schema";
+  await db.createTask({
+    id: taskId,
+    status: "running",
+    prompt: "do work",
+    cwd: dir,
+    mode: "task",
+    run_dir: runDir,
+    planner_policy: "on",
+  });
+  const stubRunner = {
+    runStep: async () => ({ stdout, stderr: "", stdoutPath: null, stderrPath: null }),
+  };
+  const node = makeRoleNode(roleDef, {
+    db,
+    runner: stubRunner,
+    providerDef: DEFAULT_CONFIG.providers.codex,
+  });
+  const result = await node({ task: { id: taskId, run_dir: runDir }, priorHandoffs: [], event: null, currentState: null });
+  const handoffs = await db.getHandoffs(taskId);
+  return { dir, db, result, handoffs };
+}
+
+test("makeRoleNode: conformant payload records schema_validation.ok === true", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.equal(result.priorHandoffs[0].schema_validation.schema, "implementation");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: non-conformant payload records ok:false but routing unchanged", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "missing arrays" })}`,
+  });
+  try {
+    assert.equal(result.event, "done"); // routing NOT blocked
+    const sv = result.priorHandoffs[0].schema_validation;
+    assert.equal(sv.ok, false);
+    assert.ok(sv.errors.length > 0);
+    // DB carries schema_validation too.
+    assert.equal(handoffs[0].schema_validation.ok, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: schema_validation written to handoff.<role>.json on disk", async () => {
+  const runDir = await mkdtemp(path.join(tmpdir(), "maestro-schema-run-"));
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+    runDir,
+  });
+  try {
+    const onDisk = JSON.parse(await readFile(path.join(runDir, "handoff.executor.json"), "utf8"));
+    assert.equal(onDisk.schema_validation.ok, true);
+    assert.equal(onDisk.schema_validation.schema, "implementation");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+    await rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: no MAESTRO_HANDOFF emitted → schema_validation omitted", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+    stdout: "just some text, no marker",
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].schema_validation, undefined);
+    assert.equal(handoffs[0].schema_validation, undefined);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: role with no schema → schema_validation omitted", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor }; // no output_schema
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+  });
+  try {
+    assert.equal(result.priorHandoffs[0].schema_validation, undefined);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: inline output_schema validated via validateInline", async () => {
+  const roleDef = {
+    ...DEFAULT_WORKFLOW.roles.executor,
+    output_schema: { type: "object", required: ["x"], properties: { x: { type: "number" } } },
+  };
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ x: "not a number" })}`,
+  });
+  try {
+    const sv = result.priorHandoffs[0].schema_validation;
+    assert.equal(sv.schema, "inline");
+    assert.equal(sv.ok, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── makeRoleNode: kind:"stub" pass-through (SP2) ─────────────────────────────────
+
+const THROWING_RUNNER = {
+  runStep: async () => { throw new Error("runner must never be called for a stub role"); },
+};
+
+test("makeRoleNode: stub role emits schema-conforming payload", async () => {
+  const roleDef = { kind: "stub", prompt_template: "static_analysis", output_schema: "static_analysis", permission: "read" };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.deepEqual(result.priorHandoffs[0].payload, emptyPayloadForSchema(getSchema("static_analysis")));
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.equal(result.priorHandoffs[0].provider, null, "engine-visible handoff has no provider");
+    assert.equal(handoffs[0].provider, "stub", "DB row uses the stub sentinel (provider column is NOT NULL)");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: stub role does not invoke the runner (runStep throws)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-stub-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000001-stub";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const roleDef = { kind: "stub", prompt_template: "static_analysis", output_schema: "static_analysis", permission: "read" };
+    const node = makeRoleNode(roleDef, { db, runner: THROWING_RUNNER, providerDef: null });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.currentState, "static_analysis");
+    assert.deepEqual(result.visits, { static_analysis: 1 });
+    assert.deepEqual(result.priorHandoffs[0].payload, emptyPayloadForSchema(getSchema("static_analysis")));
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: stub role with no output_schema → payload {} and schema_validation omitted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-stub-noschema-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000002-stub";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const roleDef = { kind: "stub", prompt_template: "noop", permission: "read" };
+    const node = makeRoleNode(roleDef, { db, runner: THROWING_RUNNER, providerDef: null });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.deepEqual(result.priorHandoffs[0].payload, {});
+    assert.equal(result.priorHandoffs[0].schema_validation, undefined);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: stub already in priorHandoffs resume-skips, runner not called", async () => {
+  const roleDef = { kind: "stub", prompt_template: "static_analysis", output_schema: "static_analysis", permission: "read" };
+  const node = makeRoleNode(roleDef, {
+    db: { getTask: () => { throw new Error("db should not be called on resume skip"); } },
+    runner: THROWING_RUNNER,
+    providerDef: null,
+  });
+  const result = await node({
+    task: { id: "t" },
+    priorHandoffs: [{ role: "static_analysis", payload: {} }],
+    event: null,
+    currentState: null,
+  });
+  assert.equal(result.event, "done");
+  assert.equal(result.currentState, "static_analysis");
+});
+
+// ── buildPromptFromHandoffs: schema-aware generic prompt (SP2) ────────────────────
+
+test("buildPromptFromHandoffs: generic role with outputSchema renders skeleton + enum note", () => {
+  const prompt = buildPromptFromHandoffs({
+    role: "review",
+    task: { prompt: "x" },
+    outputSchema: getSchema("review"),
+  });
+  assert.ok(prompt.includes("severity"));
+  assert.ok(prompt.includes("findings"));
+  assert.ok(prompt.includes("recommendations"));
+  assert.ok(prompt.includes("severity ∈ {none,low,medium,high,critical}"));
+});
+
+test("buildPromptFromHandoffs: generic role with no outputSchema keeps the legacy example", () => {
+  const prompt = buildPromptFromHandoffs({ role: "review", task: { prompt: "x" } });
+  assert.ok(prompt.includes('{"summary":"","details":{}}'));
+  assert.ok(!prompt.includes("severity"));
 });
 
 // ── runLangGraphTask: herdr tab close policy ─────────────────────────────────────
@@ -700,4 +939,1528 @@ test("formatDurationMs and formatBytes edge cases", async () => {
   assert.equal(formatBytes(812), "812B");
   assert.equal(formatBytes(18_432), "18.0KB");
   assert.equal(formatBytes(2_097_152), "2.0MB");
+});
+
+// ── runLangGraphTask: per-task workflow selection (SP0a) ─────────────────────
+
+test("runLangGraphTask runs the task's named workflow (solo = executor only)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-wf-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.applyWorkflowTemplate({ name: "solo", as: "solo" });
+    const task = await store.createTask({ prompt: "do it", cwd: dir, workflow: "solo" });
+
+    const roles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        roles.push(role);
+        return {
+          stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "done" })}`,
+          stderr: "",
+          stdoutPath: null,
+          stderrPath: null,
+        };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "succeeded");
+    assert.deepEqual([...new Set(roles)], ["executor"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runLangGraphTask surfaces unknown_workflow as waiting_user", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-wf-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do it", cwd: dir, workflow: "nope" });
+
+    let ran = false;
+    const stubRunner = { runStep: async () => { ran = true; return { stdout: "", stderr: "", stdoutPath: null, stderrPath: null }; } };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "waiting_user");
+    assert.equal(finalTask.blockers[0].code, "unknown_workflow");
+    assert.equal(finalTask.blockers[0].workflow, "nope");
+    assert.equal(ran, false, "graph must not build for an unknown workflow");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── full-audit-sweep: e2e spine + loop-back routing (SP2) ────────────────────
+
+// Schema-conforming MAESTRO_HANDOFF per agent role; stubs are skipped by the
+// runner (kind:"stub"). Used by the e2e test below.
+const AUDIT_AGENT_OUTPUTS = {
+  implementation: { summary: "did it", files_changed: ["a.js"], assumptions: [], risks: [] },
+  review: { severity: "none", findings: [], recommendations: [] },
+  threat_model: { threats: [], mitigations: [] },
+  edge_cases: { edge_cases: [] },
+  tests: { tests_created: [], coverage_targets: [] },
+  human_approval: {},
+};
+
+test("full-audit-sweep: e2e runs the spine to human_approval, one handoff per stage", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const ranRoles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        ranRoles.push(role);
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+
+    assert.equal(finalTask.status, "succeeded");
+    // non-agent stages never reach the runner (stub / command / regression / scoring)
+    for (const stub of ["static_analysis", "evaluation", "regression", "scoring"]) {
+      assert.ok(!ranRoles.includes(stub), `non-agent stage ${stub} must not call the runner`);
+    }
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const byRole = new Set(handoffs.map((h) => h.role));
+      for (const role of Object.keys(template.roles)) {
+        assert.ok(byRole.has(role), `missing handoff for ${role}`);
+      }
+      assert.equal(handoffs.length, 10, "exactly one handoff per stage");
+      for (const h of handoffs) {
+        if (h.schema_validation) assert.equal(h.schema_validation.ok, true, `${h.role} not conforming`);
+      }
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SP6b: engine seam materialises one events row per step, no dupes on re-run", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-events-seam-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+
+    const runOnce = () => runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+
+    await runOnce();
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const endTask = await db.getTask(task.id);
+      const projected = getStageEvents(endTask);
+      const materialised = await db.getStageEventsForTask(task.id);
+      assert.ok(projected.length > 0, "expected at least one projected event");
+      assert.equal(materialised.length, projected.length, "one row per projected step");
+      assert.deepEqual(materialised.map((e) => e.stage), projected.map((e) => e.stage));
+      assert.deepEqual(materialised.map((e) => e.status), projected.map((e) => e.status));
+
+      // Re-run / resume re-materialises without duplicating.
+      await runOnce();
+      const after = await db.getStageEventsForTask(task.id);
+      const reProjected = getStageEvents(await db.getTask(task.id));
+      assert.equal(after.length, reProjected.length, "re-run must not duplicate rows");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: review changes_requested routes back to implementation", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  assert.equal(template.transitions.review.changes_requested, "implementation");
+  assert.equal(template.transitions.threat_model.changes_requested, "implementation");
+  assert.equal(template.transitions.edge_cases.changes_requested, "implementation");
+});
+
+test("full-audit-sweep: review node emits changes_requested when handoff requests it", async () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-review-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000003-review";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const stubRunner = {
+      runStep: async () => ({
+        stdout: 'MAESTRO_HANDOFF: {"severity":"high","findings":["x"],"recommendations":[],"event":"changes_requested"}',
+        stderr: "", stdoutPath: null, stderrPath: null,
+      }),
+    };
+    const node = makeRoleNode(template.roles.review, {
+      db,
+      runner: stubRunner,
+      providerDef: DEFAULT_CONFIG.providers.claude,
+      workflow: template,
+      stateName: "review",
+      availabilityProbe: () => true,
+      config: DEFAULT_CONFIG,
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "changes_requested");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: persistent changes_requested pauses after the visit cap", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-loop-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "loop it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        if (role === "review") {
+          return {
+            stdout: 'MAESTRO_HANDOFF: {"severity":"high","findings":["x"],"recommendations":[],"event":"changes_requested"}',
+            stderr: "", stdoutPath: null, stderrPath: null,
+          };
+        }
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "waiting_user");
+    assert.ok((finalTask.blockers ?? []).some((b) => b.code === "loop_limit_exceeded"));
+    assert.ok(finalTask.active_question);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: malformed verifier output records ok:false but advances", async () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-bad-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000004-bad-review";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const stubRunner = {
+      runStep: async () => ({
+        stdout: 'MAESTRO_HANDOFF: {"severity":"none","recommendations":[]}', // missing findings
+        stderr: "", stdoutPath: null, stderrPath: null,
+      }),
+    };
+    const node = makeRoleNode(template.roles.review, {
+      db,
+      runner: stubRunner,
+      providerDef: DEFAULT_CONFIG.providers.claude,
+      workflow: template,
+      stateName: "review",
+      availabilityProbe: () => true,
+      config: DEFAULT_CONFIG,
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done", "soft validation must not gate routing");
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── SP3 commandRunner (default impl) — hermetic coreutils ────────────────────
+
+import { commandRunner } from "../src/command-runner.mjs";
+import { regressionStore } from "../src/regression-corpus.mjs";
+
+test("commandRunner: echo → exit 0 with stdout", async () => {
+  const r = await commandRunner({ run: "echo hi", cwd: process.cwd(), timeoutMs: 5000 });
+  assert.equal(r.exit_code, 0);
+  assert.equal(r.timed_out, false);
+  assert.match(r.stdout, /hi/);
+});
+
+test("commandRunner: false → exit 1", async () => {
+  const r = await commandRunner({ run: "false", cwd: process.cwd(), timeoutMs: 5000 });
+  assert.equal(r.exit_code, 1);
+  assert.equal(r.timed_out, false);
+});
+
+test("commandRunner: sleep beyond timeout → timed_out, exit null, SIGTERM", async () => {
+  const r = await commandRunner({ run: "sleep 5", cwd: process.cwd(), timeoutMs: 50 });
+  assert.equal(r.timed_out, true);
+  assert.equal(r.exit_code, null);
+  assert.equal(r.signal, "SIGTERM");
+});
+
+test("commandRunner: missing binary resolves (no throw) with spawn_error", async () => {
+  // sh runs but the inner binary is missing → non-zero exit (not a spawn_error
+  // of sh itself). Force a spawn error by injecting a throwing spawnProcess.
+  const r = await commandRunner({
+    run: "echo hi",
+    cwd: process.cwd(),
+    timeoutMs: 5000,
+    spawnProcess: () => { throw new Error("spawn ENOENT"); },
+  });
+  assert.equal(r.exit_code, 127);
+  assert.equal(r.spawn_error, true);
+});
+
+test("commandRunner: child 'error' event resolves with spawn_error 127", async () => {
+  const { EventEmitter } = await import("node:events");
+  const fakeChild = new EventEmitter();
+  fakeChild.kill = () => {};
+  fakeChild.stdout = new EventEmitter();
+  fakeChild.stderr = new EventEmitter();
+  const p = commandRunner({
+    run: "x", cwd: process.cwd(), timeoutMs: 5000,
+    spawnProcess: () => fakeChild,
+  });
+  fakeChild.emit("error", new Error("boom"));
+  const r = await p;
+  assert.equal(r.exit_code, 127);
+  assert.equal(r.spawn_error, true);
+});
+
+test("commandRunner: bounded tail keeps last maxTailBytes", async () => {
+  const r = await commandRunner({ run: "printf 'abcdefghij'", cwd: process.cwd(), timeoutMs: 5000, maxTailBytes: 4 });
+  assert.equal(Buffer.from(r.stdout, "utf8").length <= 4, true);
+  assert.equal(r.stdout, "ghij");
+});
+
+// ── SP3 kind:"command" node branch ───────────────────────────────────────────
+
+function commandRoleDef(commands) {
+  return {
+    label: "Evaluation",
+    kind: "command",
+    provider: null,
+    prompt_template: "evaluation",
+    output_schema: "evaluation",
+    commands,
+  };
+}
+
+test("command node: two commands (exit0/exit1) → done, pass_rate 0.5, one failure, schema ok, runner never called", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0001";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const calls = [];
+    const fakeRunner = async ({ run }) => {
+      calls.push(run);
+      return { exit_code: run === "good" ? 0 : 1, signal: null, stdout: "", stderr: "", timed_out: false };
+    };
+    const node = makeRoleNode(commandRoleDef([{ name: "ok", run: "good" }, { name: "bad", run: "boom" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: fakeRunner },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].provider, null);
+    assert.equal(result.priorHandoffs[0].payload.pass_rate, 0.5);
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+    assert.deepEqual(result.priorHandoffs[0].payload.coverage, {});
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.deepEqual(calls, ["good", "boom"]);
+    // DB sentinel is "command", engine-visible handoff is null
+    const handoffs = await db.getHandoffs(taskId);
+    assert.equal(handoffs[0].provider, "command");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: empty commands → runner never called, pass_rate 1", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0002";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    let called = false;
+    const node = makeRoleNode(commandRoleDef([]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => { called = true; return {}; } },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(called, false);
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.pass_rate, 1);
+    assert.deepEqual(result.priorHandoffs[0].payload.failures, []);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: spawn-error result → one failure, done", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0003";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "missing", run: "nope" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => ({ exit_code: 127, signal: null, stdout: "", stderr: "boom", timed_out: false, spawn_error: true }) },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.pass_rate, 0);
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+    assert.equal(result.priorHandoffs[0].payload.failures[0].exit_code, 127);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: timeout result → failure timed_out:true, done", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0004";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "slow", run: "sleep" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => ({ exit_code: null, signal: "SIGTERM", stdout: "", stderr: "", timed_out: true }) },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+    assert.equal(result.priorHandoffs[0].payload.failures[0].timed_out, true);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: rejecting commandRunner is caught → failure, done (never throws)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0005";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "c", run: "x" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => { throw new Error("rejected"); } },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+    assert.equal(result.priorHandoffs[0].payload.failures[0].exit_code, 127);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: absent commandRunner → synthetic spawn-error, done", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0006";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "c", run: "x" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: {},
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.failures.length, 1);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: allow_failure failing command excluded from pass_rate + failures", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-cmd-0007";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([
+      { name: "ok", run: "good" },
+      { name: "flaky", run: "bad", allow_failure: true },
+    ]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async ({ run }) => ({ exit_code: run === "good" ? 0 : 1, signal: null, stdout: "", stderr: "", timed_out: false }) },
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.priorHandoffs[0].payload.pass_rate, 1);
+    assert.deepEqual(result.priorHandoffs[0].payload.failures, []);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("command node: resume skip → commandRunner never called", async () => {
+  let called = false;
+  const node = makeRoleNode(commandRoleDef([{ name: "c", run: "x" }]), {
+    db: { getTask: () => { throw new Error("db should not be hit on resume skip"); } },
+    runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+    ops: { commandRunner: async () => { called = true; return {}; } },
+  });
+  const result = await node({
+    task: { id: "t-resume" },
+    priorHandoffs: [{ role: "evaluation", provider: null, payload: {} }],
+    event: null, currentState: null,
+  });
+  assert.equal(result.event, "done");
+  assert.equal(called, false);
+});
+
+// ── SP3 template conversion + real-command e2e + back-compat ─────────────────
+
+test("full-audit-sweep template: evaluation is kind:command with commands:[]", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  assert.equal(template.roles.evaluation.kind, "command");
+  assert.deepEqual(template.roles.evaluation.commands, []);
+});
+
+test("full-audit-sweep: real-command evaluation e2e → succeeded, pass_rate 0.5, bad in failures", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cmd-e2e-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    template.roles.evaluation.commands = [{ name: "ok", run: "true" }, { name: "bad", run: "false" }];
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner },
+    });
+    assert.equal(finalTask.status, "succeeded");
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const evaluation = handoffs.find((h) => h.role === "evaluation");
+      assert.equal(evaluation.payload.pass_rate, 0.5);
+      assert.ok(evaluation.payload.failures.some((f) => f.name === "bad"));
+      assert.deepEqual(evaluation.payload.coverage, {});
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("back-compat: DEFAULT_WORKFLOW roles declare no kind (kind absent ⇒ agent)", () => {
+  for (const role of Object.values(DEFAULT_WORKFLOW.roles)) {
+    assert.equal(role.kind, undefined);
+  }
+});
+
+// ── SP4 kind:"regression" node branch ────────────────────────────────────────
+
+function regressionRoleDef(overrides = {}) {
+  return {
+    label: "Regression",
+    kind: "regression",
+    provider: null,
+    prompt_template: "regression",
+    output_schema: "regression",
+    fail_event: "regressions_found",
+    ...overrides,
+  };
+}
+
+// In-memory fake regressionStore. `cmd` maps a case-run string → result object.
+function fakeStore({ cases = [], loadErrors = [], promoted = [], writeErrors = [], onPromote } = {}) {
+  return {
+    loadCorpus: async () => ({ cases, loadErrors }),
+    promoteFailures: async (args) => (onPromote ? onPromote(args) : { promoted, writeErrors }),
+    deriveCaseId: (f) => f.id,
+  };
+}
+
+async function runRegressionNode(roleDef, { ops, db: dbArg, priorHandoffs = [], config = null } = {}) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-reg-"));
+  const db = dbArg ?? new SqliteTaskStore(path.join(dir, "maestro.db"));
+  const taskId = `20260614-reg-${Math.random().toString(36).slice(2, 8)}`;
+  await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+  const node = makeRoleNode(roleDef, {
+    db, runner: THROWING_RUNNER, providerDef: null, stateName: "regression", config, ops,
+  });
+  const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs, event: null, currentState: null });
+  return { result, db, dir, taskId };
+}
+
+test("regression node: 2 cases (pass/fail) → 2 run, 1 new_failure, schema ok, runner untouched", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [
+      { id: "a", command: { run: "good" } },
+      { id: "b", command: { run: "bad" } },
+    ] }),
+    commandRunner: async ({ run }) => ({ exit_code: run === "good" ? 0 : 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.regressions_run.length, 2);
+    assert.equal(p.new_failures.length, 1);
+    assert.equal(p.new_failures[0].id, "b");
+    assert.equal(p.new_failures[0].exit_code, 1);
+    assert.equal(p.new_failures[0].timed_out, false);
+    assert.equal(p.new_failures[0].attempts, 1);
+    assert.equal("output_tail" in p.new_failures[0], true);
+    assert.equal("passed" in p.new_failures[0], false); // new_failures omit `passed`
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.equal(result.priorHandoffs[0].provider, null);
+    assert.equal(result.event, "regressions_found");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: DB row carries provider sentinel 'regression', engine handoff null", async () => {
+  const ops = { regressionStore: fakeStore({ cases: [] }) };
+  const { result, db, dir, taskId } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    assert.equal(result.priorHandoffs[0].provider, null);
+    const handoffs = await db.getHandoffs(taskId);
+    assert.equal(handoffs[0].provider, "regression");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: retry fail→fail→pass ⇒ passed, attempts 3, done/clean", async () => {
+  let n = 0;
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => {
+      n += 1;
+      return { exit_code: n < 3 ? 1 : 0, signal: null, stdout: "", stderr: "", timed_out: false };
+    },
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ attempts: 3 }), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.regressions_run[0].passed, true);
+    assert.equal(p.regressions_run[0].attempts, 3);
+    assert.equal(p.new_failures.length, 0);
+    assert.equal(result.event, "done");
+    assert.equal(p.outcome, "clean");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: retry fail×3 ⇒ not passed, attempts 3, one new_failure, regressions_found", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => ({ exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ attempts: 3 }), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.regressions_run[0].passed, false);
+    assert.equal(p.regressions_run[0].attempts, 3);
+    assert.equal(p.new_failures.length, 1);
+    assert.equal(result.event, "regressions_found");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: first-try pass stops early (attempts 1, runner called once)", async () => {
+  let calls = 0;
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => { calls += 1; return { exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }; },
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ attempts: 3 }), { ops });
+  try {
+    assert.equal(calls, 1);
+    assert.equal(result.priorHandoffs[0].payload.regressions_run[0].attempts, 1);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: attempts precedence — case > role > config", async () => {
+  // case.attempts wins over role.attempts.
+  let calls = 0;
+  const ops1 = {
+    regressionStore: fakeStore({ cases: [{ id: "a", attempts: 2, command: { run: "x" } }] }),
+    commandRunner: async () => { calls += 1; return { exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }; },
+  };
+  const r1 = await runRegressionNode(regressionRoleDef({ attempts: 5 }), { ops: ops1, config: { regression_attempts: 9 } });
+  try {
+    assert.equal(calls, 2);
+    assert.equal(r1.result.priorHandoffs[0].payload.regressions_run[0].attempts, 2);
+  } finally { r1.db.close(); await rm(r1.dir, { recursive: true, force: true }); }
+
+  // no case/role value ⇒ config.regression_attempts used.
+  calls = 0;
+  const ops2 = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => { calls += 1; return { exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }; },
+  };
+  const r2 = await runRegressionNode(regressionRoleDef(), { ops: ops2, config: { regression_attempts: 2 } });
+  try {
+    assert.equal(calls, 2);
+  } finally { r2.db.close(); await rm(r2.dir, { recursive: true, force: true }); }
+});
+
+test("regression node: empty corpus + no eval failures ⇒ all empty, clean, done", async () => {
+  const ops = { regressionStore: fakeStore({ cases: [] }) };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.deepEqual(p.regressions_run, []);
+    assert.deepEqual(p.new_failures, []);
+    assert.deepEqual(p.promoted_tests, []);
+    assert.deepEqual(p.corpus_load_errors, []);
+    assert.equal(p.outcome, "clean");
+    assert.equal(result.event, "done");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: one failing case ⇒ event regressions_found, outcome mirrors", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => ({ exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    assert.equal(result.event, "regressions_found");
+    assert.equal(result.priorHandoffs[0].payload.outcome, "regressions_found");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: fail_threshold 2 with one failure ⇒ done", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => ({ exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ fail_threshold: 2 }), { ops });
+  try {
+    assert.equal(result.priorHandoffs[0].payload.new_failures.length, 1);
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].payload.outcome, "clean");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: custom fail_event honored", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "a", command: { run: "x" } }] }),
+    commandRunner: async () => ({ exit_code: 1, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef({ fail_event: "oops" }), { ops });
+  try {
+    assert.equal(result.event, "oops");
+    assert.equal(result.priorHandoffs[0].payload.outcome, "oops");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: auto-promotion + dedup against existing corpus", async () => {
+  let promoteArgs = null;
+  const ops = {
+    regressionStore: fakeStore({
+      cases: [{ id: "lint-existing", command: { run: "npm run lint" } }],
+      onPromote: (args) => {
+        promoteArgs = args;
+        // store reports one new promoted entry (the second failure)
+        return { promoted: [{ id: "test-new", source: "evaluation.failures", run: "npm test", category: "unit", path: "/tmp/test-new.json" }], writeErrors: [] };
+      },
+    }),
+    commandRunner: async () => ({ exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const priorHandoffs = [{
+    role: "evaluation",
+    provider: null,
+    payload: { failures: [
+      { name: "lint", run: "npm run lint", category: "lint" },
+      { name: "test", run: "npm test", category: "unit" },
+    ] },
+  }];
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops, priorHandoffs });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.promoted_tests.length, 1);
+    assert.equal(p.promoted_tests[0].id, "test-new");
+    assert.equal(p.promoted_tests[0].source, "evaluation.failures");
+    assert.ok(p.promoted_tests[0].path);
+    // existingIds passed to the store includes the already-present corpus id
+    assert.ok(promoteArgs.existingIds.has("lint-existing"));
+    assert.equal(promoteArgs.failures.length, 2);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: no prior evaluation handoff ⇒ promoted_tests empty, corpus still runs", async () => {
+  let promoteCalled = false;
+  const ops = {
+    regressionStore: {
+      loadCorpus: async () => ({ cases: [{ id: "a", command: { run: "x" } }], loadErrors: [] }),
+      promoteFailures: async () => { promoteCalled = true; return { promoted: [], writeErrors: [] }; },
+    },
+    commandRunner: async () => ({ exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    assert.deepEqual(result.priorHandoffs[0].payload.promoted_tests, []);
+    assert.equal(result.priorHandoffs[0].payload.regressions_run.length, 1);
+    assert.equal(promoteCalled, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: load errors don't halt; appear in corpus_load_errors", async () => {
+  const ops = {
+    regressionStore: fakeStore({
+      cases: [{ id: "a", command: { run: "x" } }],
+      loadErrors: [{ file: "broken.json", error: "bad" }],
+    }),
+    commandRunner: async () => ({ exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }),
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.corpus_load_errors.length, 1);
+    assert.equal(p.regressions_run.length, 1);
+    assert.equal(result.event, "done");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: absent regressionStore ⇒ done, empty arrays (no runner)", async () => {
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops: {} });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.deepEqual(p.regressions_run, []);
+    assert.deepEqual(p.new_failures, []);
+    assert.equal(result.event, "done");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: throwing commandRunner ⇒ synthetic 127 failure, never throws", async () => {
+  const ops = {
+    regressionStore: fakeStore({ cases: [{ id: "c", command: { run: "x" } }] }),
+    commandRunner: async () => { throw new Error("rej"); },
+  };
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.new_failures.length, 1);
+    assert.equal(p.new_failures[0].exit_code, 127);
+    assert.equal(result.event, "regressions_found");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: promote write failure tolerated (writeErrors swallowed)", async () => {
+  const ops = {
+    regressionStore: fakeStore({
+      cases: [],
+      onPromote: () => ({ promoted: [], writeErrors: [{ id: "x", error: "EACCES" }] }),
+    }),
+  };
+  const priorHandoffs = [{ role: "evaluation", provider: null, payload: { failures: [{ name: "lint", run: "npm run lint" }] } }];
+  const { result, db, dir } = await runRegressionNode(regressionRoleDef(), { ops, priorHandoffs });
+  try {
+    assert.deepEqual(result.priorHandoffs[0].payload.promoted_tests, []);
+    assert.equal(result.event, "done"); // clean corpus ⇒ done despite write error
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("regression node: resume skip ⇒ neither store nor runner called", async () => {
+  let touched = false;
+  const node = makeRoleNode(regressionRoleDef(), {
+    db: { getTask: () => { throw new Error("db should not be hit on resume skip"); } },
+    runner: THROWING_RUNNER, providerDef: null, stateName: "regression",
+    ops: {
+      regressionStore: { loadCorpus: async () => { touched = true; return { cases: [], loadErrors: [] }; } },
+      commandRunner: async () => { touched = true; return {}; },
+    },
+  });
+  const result = await node({
+    task: { id: "t-resume" },
+    priorHandoffs: [{ role: "regression", provider: null, payload: {} }],
+    event: null, currentState: null,
+  });
+  assert.equal(result.event, "done");
+  assert.equal(touched, false);
+});
+
+// ── SP4 template conversion + e2e + back-compat ──────────────────────────────
+
+test("full-audit-sweep template: regression is kind:regression with loop-back transition", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  assert.equal(template.roles.regression.kind, "regression");
+  assert.equal(template.transitions.regression.regressions_found, "implementation");
+  // SP5 repoints regression.done from human_approval to the new scoring stage.
+  assert.equal(template.transitions.regression.done, "scoring");
+});
+
+test("full-audit-sweep: clean-corpus e2e → succeeded, regression handoff clean, runner untouched", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-reg-e2e-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const ranRoles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        ranRoles.push(role);
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner, regressionStore },
+    });
+    assert.equal(finalTask.status, "succeeded");
+    assert.ok(!ranRoles.includes("regression"), "regression must not call the agent runner");
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const regression = handoffs.find((h) => h.role === "regression");
+      assert.ok(regression, "regression handoff present");
+      assert.deepEqual(regression.payload.regressions_run, []);
+      assert.deepEqual(regression.payload.new_failures, []);
+      assert.equal(regression.payload.outcome, "clean");
+      assert.equal(regression.provider, "regression");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── SP5 kind:"scoring" node branch ───────────────────────────────────────────
+
+function scoringRoleDef(overrides = {}) {
+  return {
+    label: "Scoring",
+    kind: "scoring",
+    provider: null,
+    permission: "read",
+    prompt_template: "scoring",
+    output_schema: "scoring",
+    ...overrides,
+  };
+}
+
+// Full conforming upstream handoffs (priorHandoffs shape) → all scores 1.0.
+function fullPriorHandoffs() {
+  return [
+    { role: "evaluation", provider: null, payload: { pass_rate: 1.0, failures: [], coverage: {} } },
+    { role: "tests", provider: null, payload: { tests_created: ["a.test.js"], coverage_targets: [] } },
+    { role: "review", provider: null, payload: { severity: "none", findings: [], recommendations: [] } },
+    { role: "threat_model", provider: null, payload: { threats: [], mitigations: [] } },
+    { role: "regression", provider: null, payload: { regressions_run: [], new_failures: [], promoted_tests: [] } },
+  ];
+}
+
+async function runScoringNode(roleDef, { priorHandoffs = [], workflow = null } = {}) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-score-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  const taskId = `20260615-score-${Math.random().toString(36).slice(2, 8)}`;
+  await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+  const node = makeRoleNode(roleDef, {
+    db, runner: THROWING_RUNNER, providerDef: null, stateName: "scoring", workflow,
+  });
+  const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs, event: null, currentState: null });
+  return { result, db, dir, taskId };
+}
+
+test("scoring node: full handoffs, no gates ⇒ six scores, passed, schema ok, sentinel scoring, runner untouched", async () => {
+  const { result, db, dir, taskId } = await runScoringNode(scoringRoleDef(), {
+    priorHandoffs: fullPriorHandoffs(),
+  });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.correctness_score, 1.0);
+    assert.equal(p.review_score, 1.0);
+    assert.equal(p.security_score, 1.0);
+    assert.equal(p.test_score, 1.0);
+    assert.equal(p.regression_score, 1.0);
+    assert.equal(p.overall_confidence, 1.0);
+    assert.deepEqual(p.missing_evidence, []);
+    assert.deepEqual(p.gates, {});
+    assert.deepEqual(p.blocked_reasons, []);
+    assert.equal(result.event, "passed");
+    assert.equal(result.priorHandoffs[0].provider, null);
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    const handoffs = await db.getHandoffs(taskId);
+    assert.equal(handoffs[0].provider, "scoring");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: missing evidence ⇒ 0 + flagged + overall 0", async () => {
+  const prior = fullPriorHandoffs().filter((h) => h.role !== "threat_model");
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), { priorHandoffs: prior });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.security_score, 0.0);
+    assert.ok(p.missing_evidence.includes("threat_model"));
+    assert.equal(p.score_inputs.security_score.missing, true);
+    assert.equal(p.overall_confidence, 0.0);
+    assert.equal(result.event, "passed"); // no gates ⇒ informational
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: blocking gate ⇒ blocked event + blocked_reasons + gate.passed false", async () => {
+  const prior = fullPriorHandoffs().filter((h) => h.role !== "threat_model"); // overall 0
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), {
+    priorHandoffs: prior,
+    workflow: { gates: { min_overall_confidence: 0.99 } },
+  });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(result.event, "blocked");
+    assert.equal(p.gates.min_overall_confidence.passed, false);
+    assert.ok(p.blocked_reasons.length >= 1);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: passing gate ⇒ passed event", async () => {
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), {
+    priorHandoffs: fullPriorHandoffs(),
+    workflow: { gates: { min_overall_confidence: 0.5 } },
+  });
+  try {
+    assert.equal(result.event, "passed");
+    assert.equal(result.priorHandoffs[0].payload.gates.min_overall_confidence.passed, true);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: custom pass_event/block_event honored", async () => {
+  // passing custom
+  const pass = await runScoringNode(scoringRoleDef({ pass_event: "ok", block_event: "stop" }), {
+    priorHandoffs: fullPriorHandoffs(),
+  });
+  try {
+    assert.equal(pass.result.event, "ok");
+  } finally {
+    pass.db.close();
+    await rm(pass.dir, { recursive: true, force: true });
+  }
+  // blocking custom
+  const block = await runScoringNode(scoringRoleDef({ pass_event: "ok", block_event: "stop" }), {
+    priorHandoffs: fullPriorHandoffs(),
+    workflow: { gates: { min_overall_confidence: 1.1 } },
+  });
+  try {
+    assert.equal(block.result.event, "stop");
+  } finally {
+    block.db.close();
+    await rm(block.dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: role-level gates override (no workflow gates)", async () => {
+  const { result, db, dir } = await runScoringNode(
+    scoringRoleDef({ gates: { min_overall_confidence: 1.1 } }),
+    { priorHandoffs: fullPriorHandoffs(), workflow: {} },
+  );
+  try {
+    assert.equal(result.event, "blocked");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: last-write-wins for duplicate review handoffs", async () => {
+  const prior = [
+    ...fullPriorHandoffs(),
+    { role: "review", provider: null, payload: { severity: "critical", findings: [], recommendations: [] } },
+  ];
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), { priorHandoffs: prior });
+  try {
+    // last review (critical → 0.0) wins over the earlier none (1.0)
+    assert.equal(result.priorHandoffs[0].payload.review_score, 0.0);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scoring node: resume skip when scoring handoff already present ⇒ done, runner untouched", async () => {
+  const node = makeRoleNode(scoringRoleDef(), {
+    db: { getTask: async () => { throw new Error("getTask must not run on resume-skip"); } },
+    runner: THROWING_RUNNER,
+    providerDef: null,
+    stateName: "scoring",
+  });
+  const result = await node({
+    task: { id: "t", run_dir: null },
+    priorHandoffs: [{ role: "scoring", provider: null, payload: {} }],
+    event: null,
+    currentState: null,
+  });
+  assert.equal(result.event, "done");
+});
+
+test("scoring node: empty priorHandoffs ⇒ all 0, passed (totality, no throw)", async () => {
+  const { result, db, dir } = await runScoringNode(scoringRoleDef(), { priorHandoffs: [] });
+  try {
+    const p = result.priorHandoffs[0].payload;
+    assert.equal(p.overall_confidence, 0.0);
+    assert.equal(p.correctness_score, 0.0);
+    assert.equal(result.event, "passed");
+    assert.equal(p.missing_evidence.length, 5);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── SP5 template insertion + e2e ──────────────────────────────────────────────
+
+test("full-audit-sweep template: scoring kind + repointed transitions", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  assert.equal(template.roles.scoring.kind, "scoring");
+  assert.equal(template.transitions.regression.done, "scoring");
+  assert.equal(template.transitions.scoring.passed, "human_approval");
+  assert.equal(template.transitions.scoring.blocked, "$halt");
+});
+
+test("full-audit-sweep: no gates ⇒ scoring routes to human_approval, six scores in handoff", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-score-e2e-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const ranRoles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        ranRoles.push(role);
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner, regressionStore },
+    });
+    assert.equal(finalTask.status, "succeeded");
+    assert.ok(!ranRoles.includes("scoring"), "scoring must not call the agent runner");
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const scoring = handoffs.find((h) => h.role === "scoring");
+      assert.ok(scoring, "scoring handoff present");
+      assert.equal(scoring.provider, "scoring");
+      assert.equal(typeof scoring.payload.overall_confidence, "number");
+      assert.deepEqual(scoring.payload.gates, {});
+      assert.ok(handoffs.find((h) => h.role === "human_approval"), "reached human_approval");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: blocking gate ⇒ scoring routes to $halt, no human_approval", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-score-block-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    template.gates = { min_overall_confidence: 0.99 }; // empty tests_created ⇒ test_score 0 ⇒ overall 0
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner, regressionStore },
+    });
+    // blocked → $halt: task does not complete via human_approval
+    assert.notEqual(finalTask.status, "succeeded");
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const scoring = handoffs.find((h) => h.role === "scoring");
+      assert.ok(scoring, "scoring handoff present");
+      assert.ok(scoring.payload.blocked_reasons.length >= 1);
+      assert.equal(scoring.payload.gates.min_overall_confidence.passed, false);
+      assert.ok(!handoffs.find((h) => h.role === "human_approval"), "must NOT reach human_approval");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: regressions_found loops back to implementation, bounded by loop_limits", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-reg-loop-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "loop it", cwd: dir, workflow: "full-audit-sweep" });
+
+    // Seed one corpus case that always fails.
+    const corpusDir = path.join(dir, ".maestro", "regression");
+    await mkdir(corpusDir, { recursive: true });
+    await writeFile(path.join(corpusDir, "always-fail.json"), JSON.stringify({
+      id: "always-fail", command: { run: "false" },
+    }));
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+      ops: { commandRunner, regressionStore },
+    });
+    // The regression→implementation loop is bounded by loop_limits → eventually
+    // pauses for the user (does not run forever / does not crash).
+    assert.ok(["waiting_user", "succeeded"].includes(finalTask.status), `unexpected status ${finalTask.status}`);
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const regression = handoffs.find((h) => h.role === "regression");
+      assert.ok(regression, "regression handoff present");
+      assert.ok(regression.payload.new_failures.length >= 1);
+    } finally {
+      db.close();
+    }
+    // Explicit loop-back: the regressions_found event routed back to
+    // implementation, so it ran more than once (steps append per visit and are
+    // not deduped, unlike handoffs) — proves routing, not merely inferred from
+    // the paused status.
+    const implRuns = (finalTask.steps ?? []).filter((s) => s.role === "implementation").length;
+    assert.ok(implRuns >= 2, `expected implementation re-visited, got ${implRuns} run(s)`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── SP6a capture seam: non-LLM started_at + agent model/tokens ───────────────
+
+test("capture seam: command node records started_at ⇒ projected duration_ms > 0", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-sp6a-cmd-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260615-sp6a-cmd";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const node = makeRoleNode(commandRoleDef([{ name: "ok", run: "good" }]), {
+      db, runner: THROWING_RUNNER, providerDef: null, stateName: "evaluation",
+      ops: { commandRunner: async () => ({ exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false }) },
+    });
+    await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    const task = await db.getTask(taskId);
+    const step = task.steps.find((s) => s.role === "evaluation");
+    assert.ok(step, "evaluation step recorded");
+    assert.ok(step.started_at, "started_at stamped on non-LLM branch");
+    const { getStageEvents } = await import("../src/stage-events.mjs");
+    const event = getStageEvents(task).find((e) => e.stage === "evaluation");
+    assert.ok(event.duration_ms >= 0, "duration_ms projects (>=0)");
+    assert.equal(event.model, "", "non-LLM model is empty");
+    assert.equal(event.tokens, 0, "non-LLM tokens is 0");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("capture seam: scoring node records started_at", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-sp6a-score-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260615-sp6a-score";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const roleDef = { kind: "scoring", prompt_template: "scoring", output_schema: "scoring", gates: {} };
+    const node = makeRoleNode(roleDef, { db, runner: THROWING_RUNNER, providerDef: null, stateName: "scoring" });
+    await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    const task = await db.getTask(taskId);
+    const step = task.steps.find((s) => s.role === "scoring");
+    assert.ok(step.started_at, "started_at stamped on scoring branch");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("capture seam: agent-success step stores model + parsed tokens", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-sp6a-agent-"));
+  let db;
+  try {
+    db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+    const taskId = "20260615-sp6a-agent";
+    await db.createTask({ id: taskId, status: "running", prompt: "add logging", cwd: dir, mode: "task", run_dir: null, planner_policy: "on" });
+    const handoffPayload = { plan_summary: "p", steps: ["s"], files_to_touch: ["f"] };
+    const claudeUsage = JSON.stringify({ type: "result", usage: { input_tokens: 100, output_tokens: 25 } });
+    const stubRunner = {
+      runStep: async () => ({
+        stdout: `MAESTRO_HANDOFF: ${JSON.stringify(handoffPayload)}\n${claudeUsage}`,
+        stderr: "",
+        stdoutPath: null,
+        stderrPath: null,
+      }),
+    };
+    // planner role default model is "" — set one so model is captured non-empty.
+    const roleDef = { ...DEFAULT_WORKFLOW.roles.planner, model: "claude-opus" };
+    const node = makeRoleNode(roleDef, { db, runner: stubRunner, providerDef: DEFAULT_CONFIG.providers.claude });
+    await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    const task = await db.getTask(taskId);
+    const step = task.steps.find((s) => s.role === "planner" && s.status === "succeeded");
+    assert.ok(step, "succeeded planner step recorded");
+    assert.equal(step.model, "claude-opus", "runModel stored on step");
+    assert.equal(step.tokens, 125, "parsed claude usage stored on step");
+  } finally {
+    db?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── SP6c: engine writes run-manifest.json at run start ───────────────────────
+
+// Drive a full task run with a stub runner (review disabled → reviewer
+// synthesizes "complete"), returning the store + run_dir for manifest asserts.
+async function runForManifest({ store, dir, taskPatch = {} } = {}) {
+  const task = await store.createTask({
+    prompt: "snapshot me", cwd: dir, reviewEnabled: false, plannerPolicy: "off",
+    plannerModel: "p", executorModel: "e", ...taskPatch,
+  });
+  const stubRunner = {
+    runStep: async () => ({
+      stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "done" })}`,
+      stderr: "", stdoutPath: null, stderrPath: null,
+    }),
+    closeTab: async () => {},
+  };
+  const { task: finalTask } = await runLangGraphTask(task.id, {
+    taskStore: store, maestroRoot: store.root, runner: stubRunner,
+    stdout: { write: () => {} }, stderr: { write: () => {} },
+    availabilityProbe: () => true,
+  });
+  return { task, finalTask };
+}
+
+test("runLangGraphTask: writes run-manifest.json with the resolved snapshot + seeded inputs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-manifest-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task } = await runForManifest({ store, dir });
+    const runDir = store.runDir(task.id);
+    const manifest = JSON.parse(await readFile(path.join(runDir, "run-manifest.json"), "utf8"));
+
+    assert.equal(manifest.manifest_version, 1);
+    assert.equal(manifest.source_task_id, task.id);
+    assert.deepEqual(manifest.workflow_snapshot, DEFAULT_WORKFLOW);
+    // allow-listed task block reflects seeded inputs
+    assert.equal(manifest.task.prompt, "snapshot me");
+    assert.equal(manifest.task.review_enabled, false);
+    assert.equal(manifest.task.planner_policy, "off");
+    assert.equal(manifest.task.executor_model, "e");
+    // identity fields excluded
+    assert.ok(!("id" in manifest.task));
+    assert.ok(!("steps" in manifest.task));
+    assert.ok(!("status" in manifest.task));
+    // maestro_version present
+    assert.match(manifest.maestro_version, /^\d/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runLangGraphTask: a forced manifest-write error is swallowed; the run still completes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-manifest-err-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "x", cwd: dir, reviewEnabled: false, plannerPolicy: "off" });
+    // Make run-manifest.json a DIRECTORY so writeFile(run-manifest.json) fails
+    // (run_dir itself stays a valid dir so the engine's mkdir succeeds).
+    const runDir = store.runDir(task.id);
+    await mkdir(path.join(runDir, "run-manifest.json"), { recursive: true });
+    const stubRunner = {
+      runStep: async () => ({ stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "ok" })}`, stderr: "", stdoutPath: null, stderrPath: null }),
+      closeTab: async () => {},
+    };
+    const stderrLines = [];
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store, maestroRoot: store.root, runner: stubRunner,
+      stdout: { write: () => {} }, stderr: { write: (t) => stderrLines.push(t) },
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "succeeded", "run completes despite manifest write failure");
+    assert.ok(stderrLines.join("").includes("run-manifest write failed"), "failure logged to stderr");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runLangGraphTask: resume overwrites the manifest, leaving a single file (no error)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-manifest-resume-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task } = await runForManifest({ store, dir });
+    const runDir = store.runDir(task.id);
+    // Re-run the same task (resume): manifest write is idempotent.
+    const stubRunner = {
+      runStep: async () => ({ stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "again" })}`, stderr: "", stdoutPath: null, stderrPath: null }),
+      closeTab: async () => {},
+    };
+    await runLangGraphTask(task.id, {
+      taskStore: store, maestroRoot: store.root, runner: stubRunner,
+      stdout: { write: () => {} }, stderr: { write: () => {} },
+      availabilityProbe: () => true,
+    });
+    const manifest = JSON.parse(await readFile(path.join(runDir, "run-manifest.json"), "utf8"));
+    assert.equal(manifest.manifest_version, 1);
+    assert.deepEqual(manifest.workflow_snapshot, DEFAULT_WORKFLOW);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

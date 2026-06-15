@@ -60,6 +60,23 @@ query MaestroIssueStates($ids: [ID!]) {
 }
 `;
 
+const WORKFLOW_STATE_QUERY = `
+query MaestroWorkflowState($name: String!) {
+  workflowStates(filter: { name: { eq: $name } }) {
+    nodes { id name }
+  }
+}
+`;
+
+const ISSUE_UPDATE_MUTATION = `
+mutation MaestroIssueUpdate($id: String!, $stateId: String!) {
+  issueUpdate(id: $id, input: { stateId: $stateId }) {
+    success
+    issue { id identifier state { name } }
+  }
+}
+`;
+
 function timestampOrNull(value) {
   if (!value) return null;
   const parsed = new Date(value);
@@ -199,5 +216,19 @@ export class LinearTrackerClient {
       throw trackerError("linear_unknown_payload", "missing state refresh nodes");
     }
     return nodes.map(normalizeLinearIssue);
+  }
+
+  async transitionIssue(issueId, stateName) {
+    if (!issueId || !stateName) return false;
+    const lookup = await this.graphql(WORKFLOW_STATE_QUERY, { name: stateName });
+    const state = lookup?.data?.workflowStates?.nodes?.[0];
+    if (!state?.id) {
+      throw trackerError("linear_state_not_found", stateName);
+    }
+    const payload = await this.graphql(ISSUE_UPDATE_MUTATION, { id: issueId, stateId: state.id });
+    if (payload?.data?.issueUpdate?.success !== true) {
+      throw trackerError("linear_mutation_error", `issueUpdate ${issueId} → ${stateName}`);
+    }
+    return true;
   }
 }

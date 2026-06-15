@@ -17,7 +17,7 @@ npm run maestro <command> [args...]
 | Flag | Description |
 |---|---|
 | `--state-dir <path>` | Override the `.maestro/` directory (default: nearest `.maestro/` at or above the caller's cwd, else `PACKAGE_ROOT/.maestro`) |
-| `--workflow-path <path>` | Override `WORKFLOW.md` / `workflow.json` path |
+| `--config <path>` | Path to the state dir whose `config.json` the server reads (server mode) |
 | `--port <n>` | HTTP API port (0 = disable) |
 
 ---
@@ -99,22 +99,24 @@ maestro doctor --json     # machine-readable result
 
 ## Server Mode
 
-### `serve [WORKFLOW.md]`
+### `serve [--config <path>] [--state-dir <dir>] [--port <n>]`
 
-Start server mode: poll Linear and auto-dispatch issues. Also starts the
-HTTP server, which serves the **interactive web dashboard** at `/` and a
-JSON API at `/api/v1/*`.
+Start server mode: poll Linear and auto-dispatch issues as graph tasks (the same
+LangGraph engine `maestro task` uses). Also starts the HTTP server, which serves
+the **interactive web dashboard** at `/` and a JSON API at `/api/v1/*`.
 
 ```bash
-maestro serve                       # default .maestro/WORKFLOW.md (legacy ./WORKFLOW.md still honored)
-maestro serve ./ops/WORKFLOW.md --port 4100
-maestro serve --workflow-path .maestro/WORKFLOW.md
-maestro serve --state-dir ./alt     # reads <state-dir>/WORKFLOW.md
+maestro serve                       # reads ./.maestro/config.json
+maestro serve --port 4100
+maestro serve --config ./.maestro   # explicit state dir for config.json
+maestro serve --state-dir ./alt     # reads ./alt/config.json
 ```
 
-The server-mode workflow file lives in the `.maestro/` state directory
-(`.maestro/WORKFLOW.md`). For backward compatibility a `WORKFLOW.md` at the
-repo root is still used when no `.maestro/WORKFLOW.md` is present.
+All server settings (tracker, polling, workspace, hooks, agent limits, intake
+template, and which named workflow to run) come from the `server` block in
+`config.json`. There is no separate dispatch file. `config.json` is read **once**
+at startup — edits require a restart. See
+[configuration.md](configuration.md#server-mode-config) for the `server` schema.
 
 **Dashboard** (`http://localhost:<port>/`): Linear-inspired browser UI with
 live task polling (5 s when tasks are active, 30 s when idle), filter tabs
@@ -174,6 +176,18 @@ standalone modes created by `setup import` for imported subagents.
 
 ```bash
 maestro task --mode system_evaluator "evaluate the markers module"
+```
+
+### `task --workflow <name> "<prompt>"`
+
+Run the task with a named workflow. Named workflows live in
+`.maestro/workflows/<name>.json`; the name `default` is the legacy
+`.maestro/workflow.json`. The name must match `^[a-z0-9][a-z0-9_-]{0,63}$`
+(invalid shapes throw `invalid_workflow`); an unknown non-`default` name throws
+`unknown_workflow`. Defaults to `default`.
+
+```bash
+maestro task --workflow solo "ship the hotfix"
 ```
 
 ### `run-task <id>`
@@ -350,15 +364,29 @@ invalid limits) and warnings (unreachable roles, unknown providers, cycles
 without termination clauses). Exit 1 on errors, or on warnings with
 `--strict`.
 
-### `workflow use <name>`
+### `workflow list`
 
-Switch `workflow.json` to a built-in template (`default | extended | local |
-solo`). Prompt-free: the previous file is always backed up to
-`workflow.json.bak` first, then fully replaced (not merged — keys from the
-old workflow do not survive the switch).
+List available workflows as `<name> (<source>)`, where `source` is `named`
+(a `.maestro/workflows/<name>.json` slot) or `legacy` (the root
+`.maestro/workflow.json`, surfaced as `default`). `--json` emits the raw
+`[{name, path, source}]` array. `default` is always sorted first.
+
+```bash
+maestro workflow list
+maestro workflow list --json
+```
+
+### `workflow use <name> [--as <slot>]`
+
+Apply a built-in template (`default | extended | local | solo`). Without
+`--as`, it switches the default `workflow.json` (the previous file is backed up
+to `workflow.json.bak`, then fully replaced — keys from the old workflow do not
+survive the switch). With `--as <slot>`, it writes the template into the named
+slot `.maestro/workflows/<slot>.json` instead, leaving the default untouched.
 
 ```bash
 maestro workflow use solo
+maestro workflow use solo --as fast
 maestro workflow validate
 ```
 

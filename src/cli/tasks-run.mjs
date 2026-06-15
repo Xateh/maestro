@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { commandRunner } from "../command-runner.mjs";
+import { regressionStore } from "../regression-corpus.mjs";
 import { runLangGraphTask } from "../langgraph/engine.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { buildRunSummary, formatRunSummary } from "../run-summary.mjs";
@@ -94,6 +96,7 @@ export async function createLocalTaskFromParsed({ parsed, taskStore, defaults, c
   const task = await taskStore.createTask({
     prompt: parsed.prompt,
     mode: parsed.mode,
+    workflow: parsed.workflow ?? "default",
     cwd: taskCwd,
     plannerPolicy,
     plannerDecision: plannerDecision.decision,
@@ -175,6 +178,32 @@ export async function recoverStaleRunningTasks(taskStore) {
   return recovered;
 }
 
+// Shared graph-engine invocation used by CLI, MCP (spawn), and the dispatch
+// server (via TaskGraphRunner) so every entry point builds the ops bundle and
+// calls runLangGraphTask identically.
+export async function runTaskGraph({ taskStore, taskId, stdout, stderr, runner = null, gitRunner, availabilityProbe = null }) {
+  return runLangGraphTask(taskId, {
+    taskStore,
+    maestroRoot: taskStore.root,
+    runner,
+    stdout,
+    stderr,
+    gitRunner,
+    availabilityProbe,
+    ops: {
+      buildUnblockOptions,
+      canonicalizeActionRequestsForTask,
+      releasePathLeases: (t) => releasePathLeases(taskStore, t),
+      markProjectTaskStatus: (t, s, p) => markProjectTaskStatus(taskStore, t, s, p),
+      recordProjectBlocker: (pid, b) => recordProjectBlocker(taskStore, pid, b),
+      finalizeProjectTask: (t) => finalizeProjectTask({ taskStore, task: t, gitRunner, stdout }),
+      gitRunner,
+      commandRunner,
+      regressionStore,
+    },
+  });
+}
+
 export async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe = null }) {
   let currentTask = await taskStore.readTask(taskId);
   const continuationPrompt = currentTask.continuation_prompt
@@ -242,23 +271,14 @@ export async function runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stde
     return { task: currentTask };
   }
   currentTask = await taskStore.updateTask(taskId, { status: "running" });
-  const result = await runLangGraphTask(taskId, {
+  const result = await runTaskGraph({
     taskStore,
-    maestroRoot: taskStore.root,
-    runner,
+    taskId,
     stdout,
     stderr,
+    runner,
     gitRunner,
     availabilityProbe,
-    ops: {
-      buildUnblockOptions,
-      canonicalizeActionRequestsForTask,
-      releasePathLeases: (t) => releasePathLeases(taskStore, t),
-      markProjectTaskStatus: (t, s, p) => markProjectTaskStatus(taskStore, t, s, p),
-      recordProjectBlocker: (pid, b) => recordProjectBlocker(taskStore, pid, b),
-      finalizeProjectTask: (t) => finalizeProjectTask({ taskStore, task: t, gitRunner, stdout }),
-      gitRunner,
-    },
   });
   if ((result.task?.steps ?? []).length > 0) {
     writeLine(stdout, formatRunSummary(await buildRunSummary(result.task), { color: stdout.isTTY === true }));
@@ -278,6 +298,7 @@ export async function startDetachedLocalTask({
   const task = await createLocalTaskFromParsed({
     parsed: {
       mode: form.mode,
+      workflow: form.workflow ?? "default",
       prompt: form.prompt,
       taskCwd: form.cwd,
       timeoutMs: form.timeout_ms,

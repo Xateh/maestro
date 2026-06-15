@@ -18,7 +18,9 @@ import { buildGraph } from "./graph.mjs";
 import { resolveInitialState, isTerminalAfterState } from "../state-machine.mjs";
 import { findCycles, validateWorkflow } from "../workflow-validate.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
+import { buildRunManifest, readMaestroVersion } from "../run-manifest.mjs";
 import { REVIEW_MAX_CONTINUATIONS, skippedReview } from "../markers.mjs";
+import { emitOtelStageEvent, getStageEvents } from "../stage-events.mjs";
 
 // maestroRoot = taskStore.root = resolved .maestro/ directory
 function _dbPath(maestroRoot) {
@@ -307,7 +309,7 @@ export async function runLangGraphTask(taskId, {
     "action_requests", "review_enabled", "timeout_ms", "role_skips",
     // Provider-availability recovery inputs (switch_provider / approve_substitution).
     "role_overrides", "auto_fallback_confirmed",
-    "planner_policy", "cwd", "branch", "run_dir", "mode", "worktree_path",
+    "planner_policy", "cwd", "branch", "run_dir", "mode", "workflow", "worktree_path",
     "project_id", "start_head", "stream_tail_bytes",
     // User-visible audit trail — readable by prompts and callers via result.task.
     "interactions",
@@ -328,11 +330,49 @@ export async function runLangGraphTask(taskId, {
     await fs.mkdir(task.run_dir, { recursive: true });
   }
 
-  // ── load workflow + config ────────────────────────────────────────────────
+  // ── load workflow (by task.workflow) + config ─────────────────────────────
+  const workflowName = task.workflow ?? "default";
   const [workflow, config] = await Promise.all([
-    taskStore.readWorkflow(),
+    taskStore.readWorkflow(workflowName),
     taskStore.readConfig(),
   ]);
+
+  // Unknown non-default workflow → surface as a recoverable waiting_user blocker
+  // (typed, not a throw) before the graph builds.
+  if (!workflow) {
+    await db.updateTask(taskId, {
+      status: "waiting_user",
+      active_step: null,
+      blockers: [{ code: "unknown_workflow", workflow: workflowName }],
+    });
+    const blockedTask = await db.getTask(taskId);
+    await taskStore.updateTask(taskId, _mirrorPatch(blockedTask));
+    return { task: blockedTask };
+  }
+
+  // ── reproducibility: snapshot run inputs (SP6c) ───────────────────────────
+  // Write a self-contained run-manifest.json (resolved workflow snapshot +
+  // allow-listed task inputs + git start_head + maestro version) so the run can
+  // be replayed via `maestro rerun`. Best-effort: any failure is logged to
+  // stderr and swallowed — a manifest problem must never break a run. Idempotent
+  // overwrite on resume. gitRunner/cwd are not in scope here, so start_head is
+  // task.start_head if known, else null (Flag 1).
+  try {
+    const manifest = buildRunManifest({
+      task,
+      workflow,
+      maestroVersion: readMaestroVersion(),
+      startHead: task.start_head ?? null,
+    });
+    if (task.run_dir) {
+      await fs.writeFile(
+        path.join(task.run_dir, "run-manifest.json"),
+        `${JSON.stringify(manifest, null, 2)}\n`,
+      );
+    }
+  } catch (err) {
+    write(stderr, `run-manifest write failed: ${err?.message ?? err}`);
+  }
 
   // Surface workflow problems (e.g. unterminated cycles) without blocking the run.
   const validation = validateWorkflow(workflow, { config });
@@ -405,6 +445,13 @@ export async function runLangGraphTask(taskId, {
   };
 
   let finalState = null;
+  // ── OTel seam: one place, every return path ──────────────────────────────
+  // Wrap the stream consumption through every final return in an OUTER try so
+  // a finally can mirror the recorded steps as `maestro.stage` spans exactly
+  // once per run. The emit is fully guarded (re-read + iterate in its own
+  // try/catch); observability never breaks a run, and it is a no-op when no
+  // OTel SDK is registered.
+  try {
   try {
     const stream = await graph.stream(
       { task, priorHandoffs, currentState: initialState, event: null },
@@ -500,4 +547,14 @@ export async function runLangGraphTask(taskId, {
   }
 
   return { task: await db.getTask(taskId) };
+  } finally {
+    try {
+      const endTaskForEvents = await db.getTask(taskId);
+      const events = getStageEvents(endTaskForEvents);
+      for (const event of events) emitOtelStageEvent(event);
+      // SP6b: materialise the projection into the queryable events table
+      // (delete-then-insert, regenerable). Internally guarded; never throws.
+      await db.replaceStageEvents(taskId, events);
+    } catch { /* observability never breaks a run */ }
+  }
 }

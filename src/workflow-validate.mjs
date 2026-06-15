@@ -2,6 +2,43 @@
 // termination-clause analysis. No I/O — callers pass parsed workflow/config.
 
 import { SINK_STATES, isSink } from "./state-machine.mjs";
+import { resolveRoleSchema, validateInline } from "./schemas/index.mjs";
+
+// Role names that denote a verification stage. When a role with one of these
+// names declares no resolvable output schema we emit a `missing_output_schema`
+// warning (advisory only — these stages benefit from a structured contract).
+const VERIFIER_ROLE_NAMES = new Set([
+  "review",
+  "threat_model",
+  "edge_cases",
+  "tests",
+  "evaluation",
+  "regression",
+]);
+
+// Allowed `gates` keys → validator predicate. Each returns true when the value
+// is acceptable. Enforcement of the gate values themselves is SP5; SP1 only
+// validates the manifest declaration.
+const isUnit = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+const isPercent = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100;
+const isBool = (v) => typeof v === "boolean";
+const GATE_VALIDATORS = {
+  min_coverage: isPercent,
+  no_high_severity_findings: isBool,
+  all_regressions_pass: isBool,
+  min_overall_confidence: isUnit,
+};
+
+// Syntactic check for output_schema_ref: a relative path that does not escape
+// the state dir. No file I/O — existence is checked at load, not here.
+function isSafeRelativeRef(ref) {
+  if (typeof ref !== "string" || ref.length === 0) return false;
+  if (ref.startsWith("/")) return false;
+  if (/^[a-zA-Z]:[\\/]/.test(ref)) return false; // windows absolute
+  const segments = ref.split(/[\\/]/);
+  if (segments.includes("..")) return false;
+  return true;
+}
 
 // Enumerate simple cycles among role→role transitions (sink destinations are
 // not edges). Workflows are tiny, so a DFS from every node is fine. Cycles are
@@ -116,6 +153,155 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
       for (const key of role.fallback) {
         if (!config.providers[key]) {
           warnings.push(issue("unknown_fallback", `role "${roleName}" fallback provider "${key}" is not configured`));
+        }
+      }
+    }
+
+    // ── command role spec (SP3 kind:"command") ─────────────────────────────
+    // Each command needs a non-empty name + run; names must be unique within
+    // the role. An empty commands:[] is valid (opt-in no-op). `category` is
+    // permissive (any string / absent) — unknown categories are not rejected.
+    if (role?.kind === "command") {
+      if (role.commands !== undefined && !Array.isArray(role.commands)) {
+        errors.push(issue("bad_command_spec", `role "${roleName}" commands must be an array, got ${JSON.stringify(role.commands)}`));
+      } else if (Array.isArray(role.commands)) {
+        const seen = new Set();
+        for (const [i, command] of role.commands.entries()) {
+          const name = command?.name;
+          const run = command?.run;
+          if (typeof name !== "string" || name.length === 0) {
+            errors.push(issue("bad_command_spec", `role "${roleName}" command[${i}] is missing a non-empty "name"`));
+          } else if (seen.has(name)) {
+            errors.push(issue("bad_command_spec", `role "${roleName}" command name "${name}" is duplicated`));
+          } else {
+            seen.add(name);
+          }
+          if (typeof run !== "string" || run.length === 0) {
+            errors.push(issue("bad_command_spec", `role "${roleName}" command "${name ?? i}" is missing a non-empty "run"`));
+          }
+        }
+      }
+    }
+
+    // ── regression role spec (SP4 kind:"regression") ───────────────────────
+    // A regression role must declare both a "done" and its effective fail_event
+    // transition (default "regressions_found") so an unmapped event cannot throw
+    // inside LangGraph at runtime; attempts/fail_threshold, if present, must be
+    // positive integers.
+    if (role?.kind === "regression") {
+      const failEvent = role.fail_event ?? "regressions_found";
+      const t = transitions[roleName] ?? {};
+      if (!("done" in t)) {
+        errors.push(issue("bad_regression_spec",
+          `role "${roleName}" (kind:"regression") must declare a "done" transition`));
+      }
+      if (!(failEvent in t)) {
+        errors.push(issue("bad_regression_spec",
+          `role "${roleName}" (kind:"regression") must declare its fail_event "${failEvent}" transition`));
+      }
+      if (role.attempts !== undefined && (!Number.isInteger(role.attempts) || role.attempts <= 0)) {
+        errors.push(issue("bad_regression_spec",
+          `role "${roleName}" attempts must be a positive integer, got ${JSON.stringify(role.attempts)}`));
+      }
+      if (role.fail_threshold !== undefined && (!Number.isInteger(role.fail_threshold) || role.fail_threshold <= 0)) {
+        errors.push(issue("bad_regression_spec",
+          `role "${roleName}" fail_threshold must be a positive integer, got ${JSON.stringify(role.fail_threshold)}`));
+      }
+    }
+
+    // ── scoring role spec (SP5 kind:"scoring") ─────────────────────────────
+    // A scoring role must declare both its effective pass_event (default
+    // "passed") and block_event (default "blocked") transitions so an unmapped
+    // event cannot throw inside LangGraph at runtime.
+    if (role?.kind === "scoring") {
+      const passEvent = role.pass_event ?? "passed";
+      const blockEvent = role.block_event ?? "blocked";
+      const t = transitions[roleName] ?? {};
+      if (!(passEvent in t)) {
+        errors.push(issue("bad_scoring_spec",
+          `role "${roleName}" (kind:"scoring") must declare its pass_event "${passEvent}" transition`));
+      }
+      if (!(blockEvent in t)) {
+        errors.push(issue("bad_scoring_spec",
+          `role "${roleName}" (kind:"scoring") must declare its block_event "${blockEvent}" transition`));
+      }
+    }
+
+    // ── output schema declaration (manifest v2) ─────────────────────────────
+    const resolved = resolveRoleSchema(role ?? {});
+    if (resolved.source === "unknown") {
+      errors.push(issue(
+        "unknown_output_schema",
+        `role "${roleName}" output_schema "${resolved.name}" is not a known registry schema`,
+      ));
+    } else if (resolved.source === "inline") {
+      // Compile the inline schema in-memory (no file I/O); report failures.
+      const compiled = validateInline(resolved.schema, {});
+      const compileError = compiled.errors.find((e) => e.message?.startsWith("bad_schema"));
+      if (compileError) {
+        errors.push(issue(
+          "bad_output_schema",
+          `role "${roleName}" inline output_schema does not compile: ${compileError.message}`,
+        ));
+      }
+    } else if (resolved.source === "ref") {
+      if (!isSafeRelativeRef(role.output_schema_ref)) {
+        errors.push(issue(
+          "bad_output_schema",
+          `role "${roleName}" output_schema_ref must be a relative path inside the state dir, got ${JSON.stringify(role.output_schema_ref)}`,
+        ));
+      }
+    }
+
+    // `output_schema_ref` given as a non-string never reaches source:"ref"
+    // (resolveRoleSchema ignores it); flag it explicitly.
+    if (role?.output_schema_ref !== undefined && typeof role.output_schema_ref !== "string") {
+      errors.push(issue(
+        "bad_output_schema",
+        `role "${roleName}" output_schema_ref must be a string path, got ${JSON.stringify(role.output_schema_ref)}`,
+      ));
+    }
+
+    // Verifier-named role lacking any resolvable schema → advisory warning.
+    if (VERIFIER_ROLE_NAMES.has(roleName)
+      && (resolved.source === "none" || resolved.source === "unknown")) {
+      warnings.push(issue(
+        "missing_output_schema",
+        `role "${roleName}" matches a known verifier stage but declares no output_schema`,
+      ));
+    }
+  }
+
+  // ── session-level independence (SP2) ───────────────────────────────────────
+  // A role that is an implementation entry role (workflow.initial or any
+  // modes.<mode>.initial) MUST NOT also be a verifier — that would let one
+  // session both implement and verify its own work. Distinct roles ⇒ distinct
+  // sessions ⇒ independent by construction. Pure check, no runtime cost.
+  const entryRoles = new Set(
+    [workflow.initial, ...Object.values(workflow.modes ?? {}).map((m) => m?.initial)]
+      .filter((s) => roleNames.has(s)),
+  );
+  for (const roleName of entryRoles) {
+    if (roles[roleName]?.verifies === true) {
+      errors.push(issue(
+        "non_independent_role",
+        `role "${roleName}" is both an implementation entry role and a verifier`,
+      ));
+    }
+  }
+
+  // ── top-level gates block (manifest v2) ────────────────────────────────────
+  if (workflow.gates !== undefined) {
+    const gates = workflow.gates;
+    if (gates === null || typeof gates !== "object" || Array.isArray(gates)) {
+      errors.push(issue("bad_gates", `gates must be an object, got ${JSON.stringify(gates)}`));
+    } else {
+      for (const [key, value] of Object.entries(gates)) {
+        const validator = GATE_VALIDATORS[key];
+        if (!validator) {
+          errors.push(issue("bad_gates", `unknown gate "${key}" (allowed: ${Object.keys(GATE_VALIDATORS).join(", ")})`));
+        } else if (!validator(value)) {
+          errors.push(issue("bad_gates", `gate "${key}" has an invalid value ${JSON.stringify(value)}`));
         }
       }
     }

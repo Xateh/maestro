@@ -36,14 +36,17 @@ export function resolveWorkspaceLocalInvocation({
 } = {}) {
   const callerCwd = env.MAESTRO_CALLER_CWD || env.INIT_CWD || processCwd;
   const nextArgs = [...args];
+  let usedPackageFallback = false;
   if (LOCAL_COMMANDS.has(nextArgs[0]) && !hasStateDir(nextArgs) && !CALLER_STATE_DIR_COMMANDS.has(nextArgs[0])) {
     // Prefer an initialized .maestro/ in (or above) the caller's directory;
     // fall back to the package checkout's state dir (historical default).
     const discovered = findStateDirUpwards(callerCwd, exists);
+    usedPackageFallback = discovered === null;
     nextArgs.push("--state-dir", discovered ?? path.join(PACKAGE_ROOT, DEFAULT_LOCAL_STATE_DIR));
   }
   return {
     args: nextArgs,
     cwd: callerCwd,
+    usedPackageFallback,
   };
 }

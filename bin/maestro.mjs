@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { main } from "../src/cli/main.mjs";
 
 export { parseReviewerOutput } from "../src/markers.mjs";
-export { parseCliArgs } from "../src/workflow.mjs";
+export { parseServerArgs } from "../src/cli/parse-args.mjs";
 export { canonicalizeActionRequestsForTask } from "../src/cli/action-requests.mjs";
 export { runLocalMaestroCommand } from "../src/cli/local-command.mjs";
 export { startMaestro } from "../src/cli/runtime.mjs";
@@ -43,8 +43,12 @@ if (invokedAsMain) {
   main().catch((error) => {
     if (error?.code === "cli_usage") {
       process.stderr.write(error.cliHelp);
-    } else {
+    } else if (process.env.MAESTRO_DEBUG) {
       process.stderr.write(`maestro_failed ${error.stack ?? error.message}\n`);
+    } else {
+      // Typed errors carry a "code: detail" message that already reads as a
+      // friendly one-liner; raw fs/ENOENT errors fall back to .message too.
+      process.stderr.write(`maestro: ${error.message}\n`);
     }
     process.exitCode = 1;
   });

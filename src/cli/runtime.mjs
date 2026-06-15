@@ -1,85 +1,97 @@
-import { CodexAgentRunner } from "../codex-client.mjs";
+// Server runtime wiring. Reads config.json ONCE at startup (live reload dropped,
+// decision SP0b#2), resolves the `server` block via resolveServerConfig, and
+// constructs the unified dispatch path:
+//   LinearTrackerClient -> MaestroOrchestrator -> TaskGraphRunner -> runTaskGraph
+// (the same graph-engine bundle used by the CLI and MCP spawn paths).
+
+import { defaultGitRunner } from "./git-exec.mjs";
+import { runTaskGraph } from "./tasks-run.mjs";
 import { startMaestroHttpServer } from "../http-server.mjs";
 import { LinearTrackerClient } from "../linear-tracker.mjs";
 import { StructuredLogger } from "../logger.mjs";
 import { MaestroOrchestrator } from "../orchestrator.mjs";
-import { WorkflowStore, validateDispatchConfig } from "../workflow.mjs";
+import { resolveServerConfig, validateServerConfig } from "../setup/server-config.mjs";
+import { TaskGraphRunner } from "../task-graph-runner.mjs";
+import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore } from "../task-store.mjs";
 import { WorkspaceManager } from "../workspace.mjs";
 
-function buildTracker(config) {
+function buildTracker(serverConfig, deps = {}) {
+  if (deps.tracker) return deps.tracker;
   return new LinearTrackerClient({
-    endpoint: config.tracker.endpoint,
-    apiKey: config.tracker.apiKey,
-    projectSlug: config.tracker.projectSlug,
+    endpoint: serverConfig.tracker.endpoint,
+    apiKey: serverConfig.tracker.apiKey,
+    projectSlug: serverConfig.tracker.projectSlug,
   });
 }
 
-function buildWorkspaceManager(config, logger) {
+function buildWorkspaceManager(serverConfig, logger) {
   return new WorkspaceManager({
-    root: config.workspace.root,
-    hooks: config.hooks,
+    root: serverConfig.workspace.root,
+    hooks: serverConfig.hooks,
     logger,
   });
 }
 
-function buildRuntime({ workflowStore, logger }) {
-  const { config } = workflowStore.current;
-  const tracker = buildTracker(config);
-  const workspaceManager = buildWorkspaceManager(config, logger);
-  const runner = new CodexAgentRunner({
-    workflowStore,
+export async function startMaestro({
+  configPath = null,
+  stateDir = DEFAULT_LOCAL_STATE_DIR,
+  port = null,
+  env = process.env,
+  logger = new StructuredLogger(),
+  // Test seams — production leaves these defaulted.
+  deps = {},
+} = {}) {
+  const root = configPath ?? stateDir ?? DEFAULT_LOCAL_STATE_DIR;
+  const taskStore = deps.taskStore ?? new LocalTaskStore({ root });
+  await taskStore.init();
+
+  // Read config ONCE (no watch). resolveServerConfig works off config.json's
+  // `server` block; baseDir is the state dir's parent so relative workspace.root
+  // values resolve the same way the old dispatch config path did.
+  const config = await taskStore.readConfig();
+  const serverConfig = resolveServerConfig(config, {
+    env,
+    baseDir: deps.baseDir ?? taskStore.root,
+  });
+  validateServerConfig(serverConfig);
+
+  const tracker = buildTracker(serverConfig, deps);
+  const workspaceManager = deps.workspaceManager ?? buildWorkspaceManager(serverConfig, logger);
+
+  const gitRunner = deps.gitRunner ?? defaultGitRunner;
+  const runTask = deps.runTask
+    ?? ((taskId, opts = {}) => runTaskGraph({
+      taskStore,
+      taskId,
+      stdout: opts.stdout,
+      stderr: opts.stderr,
+      runner: opts.runner ?? null,
+      gitRunner,
+      availabilityProbe: opts.availabilityProbe ?? null,
+    }));
+
+  const runner = deps.runner ?? new TaskGraphRunner({
+    taskStore,
+    serverConfig,
     workspaceManager,
-    tracker,
+    runTask,
+    gitRunner,
     logger,
   });
+
   const orchestrator = new MaestroOrchestrator({
-    config,
+    config: serverConfig,
     tracker,
     runner,
     workspaceManager,
     logger,
   });
-  return { tracker, workspaceManager, runner, orchestrator };
-}
 
-async function applyReload({ workflowStore, runtime, logger, previous }) {
-  const { config } = workflowStore.current;
-  try {
-    validateDispatchConfig(config);
-  } catch (error) {
-    workflowStore.current = previous;
-    logger.error("workflow_reload_rejected", { error: error.message });
-    return false;
-  }
-
-  runtime.tracker = buildTracker(config);
-  runtime.workspaceManager = buildWorkspaceManager(config, logger);
-  runtime.runner.tracker = runtime.tracker;
-  runtime.runner.workspaceManager = runtime.workspaceManager;
-  runtime.orchestrator.tracker = runtime.tracker;
-  runtime.orchestrator.workspaceManager = runtime.workspaceManager;
-  runtime.orchestrator.updateConfig(config);
-  logger.info("workflow_reload_applied", { workflow_path: workflowStore.workflowPath });
-  return true;
-}
-
-export async function startMaestro({ workflowPath, port = null, env = process.env, logger = new StructuredLogger() }) {
-  const workflowStore = new WorkflowStore({ workflowPath, env, logger });
-  await workflowStore.loadInitial();
-  validateDispatchConfig(workflowStore.current.config);
-
-  const runtime = buildRuntime({ workflowStore, logger });
-  let stopWatch = () => {};
-  stopWatch = workflowStore.watch((next, previous) => {
-    workflowStore.current = next;
-    void applyReload({ workflowStore, runtime, logger, previous });
-  });
-
-  const effectivePort = port ?? workflowStore.current.config.server.port;
-  const httpServer = effectivePort === null
+  const effectivePort = port ?? serverConfig.port;
+  const httpServer = (effectivePort === null || effectivePort === undefined)
     ? null
     : await startMaestroHttpServer({
-      orchestrator: runtime.orchestrator,
+      orchestrator,
       port: effectivePort,
       host: "127.0.0.1",
     });
@@ -88,31 +100,29 @@ export async function startMaestro({ workflowPath, port = null, env = process.en
   }
 
   const poll = async () => {
-    const previous = workflowStore.current;
-    const reload = await workflowStore.reloadIfChanged();
-    if (reload.changed) {
-      logger.info("workflow_reload_seen", { workflow_path: workflowStore.workflowPath, previous_ok: Boolean(previous) });
-    }
     try {
-      validateDispatchConfig(workflowStore.current.config);
-      await runtime.orchestrator.tick();
+      await orchestrator.tick();
     } catch (error) {
       logger.error("maestro_tick_failed", { error: error.message });
     }
   };
   const interval = setInterval(() => {
     void poll();
-  }, workflowStore.current.config.polling.intervalMs);
+  }, serverConfig.polling.intervalMs);
+  if (typeof interval.unref === "function") interval.unref();
   void poll();
 
   return {
-    workflowStore,
-    runtime,
+    taskStore,
+    serverConfig,
+    tracker,
+    workspaceManager,
+    runner,
+    orchestrator,
     httpServer,
     stop: async () => {
       clearInterval(interval);
-      stopWatch();
-      await runtime.orchestrator.stop();
+      await orchestrator.stop();
       if (httpServer) await httpServer.close();
     },
   };

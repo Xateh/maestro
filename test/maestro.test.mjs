@@ -8,20 +8,23 @@ import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
 import { canonicalizeActionRequestsForTask, parseReviewerOutput, runLocalMaestroCommand } from "../bin/maestro.mjs";
+import { SqliteTaskStore } from "../src/db/store.mjs";
+import { buildRunManifest } from "../src/run-manifest.mjs";
 import { buildCodexCommand } from "../src/adapters/codex.mjs";
 import { buildCopilotCommand } from "../src/adapters/copilot.mjs";
 import { buildClaudeCommand } from "../src/adapters/claude.mjs";
 import { buildAntigravityCommand } from "../src/adapters/antigravity.mjs";
 import { TerminalAgentRunner } from "../src/agent-runner.mjs";
 import { buildStepPrompt, evaluatePlannerDecision, resolveAgentFlow } from "../src/router.mjs";
-import { LocalTaskStore, DEFAULT_WORKFLOW } from "../src/task-store.mjs";
+import {
+  LocalTaskStore,
+  DEFAULT_WORKFLOW,
+  DEFAULT_WORKFLOW_NAME,
+  WORKFLOW_NAME_RE,
+  isValidWorkflowName,
+} from "../src/task-store.mjs";
 import { collectNewTaskForm, defaultCommandExists, filterTasksForView, formatPageHeader, formatProjectDetails, formatProjectList, formatSettingsList, formatTaskDetails, formatTaskDraft, formatTaskList, resolveTaskSelection, runMaestroTui } from "../src/tui.mjs";
 
-import {
-  loadEffectiveWorkflow,
-  parseCliArgs,
-  renderPrompt,
-} from "../src/workflow.mjs";
 import {
   LinearTrackerClient,
   normalizeLinearIssue,
@@ -31,9 +34,6 @@ import {
   sanitizeWorkspaceKey,
 } from "../src/workspace.mjs";
 import {
-  CodexAppServerClient,
-} from "../src/codex-client.mjs";
-import {
   MaestroOrchestrator,
   computeRetryDelay,
   createRuntimeState,
@@ -41,10 +41,13 @@ import {
   sortIssuesForDispatch,
 } from "../src/orchestrator.mjs";
 import { createMaestroHttpHandler } from "../src/http-server.mjs";
+import { TaskGraphRunner } from "../src/task-graph-runner.mjs";
+import { resolveServerConfig } from "../src/setup/server-config.mjs";
 import {
   parseAgentHandoff,
   REVIEW_MAX_CONTINUATIONS,
 } from "../src/markers.mjs";
+import YAML from "yaml";
 
 const TEST_HANDLE = process.env.USER ?? process.env.USERNAME ?? "xateh";
 
@@ -171,140 +174,6 @@ function issue(overrides = {}) {
     ...overrides,
   };
 }
-
-test("workflow loading parses front matter, resolves env-backed config, and applies defaults", async () => {
-  await withTempDir(async (dir) => {
-    const workflowPath = path.join(dir, "WORKFLOW.md");
-    await writeFile(workflowPath, `---
-tracker:
-  kind: linear
-  api_key: "$LINEAR_TEST_KEY"
-  project_slug: twin-ops
-polling:
-  interval_ms: 77
-workspace:
-  root: ./agent workspaces
-agent:
-  max_concurrent_agents: 3
-  max_concurrent_agents_by_state:
-    Todo: 1
-    Bad: 0
-codex:
-  command: codex app-server --listen stdio://
-server:
-  port: 0
----
-Implement {{ issue.identifier }} with attempt {{ attempt }}.
-`);
-
-    const loaded = await loadEffectiveWorkflow(workflowPath, {
-      env: { LINEAR_TEST_KEY: "linear-token" },
-    });
-
-    assert.equal(loaded.workflow.promptTemplate, "Implement {{ issue.identifier }} with attempt {{ attempt }}.");
-    assert.equal(loaded.config.tracker.kind, "linear");
-    assert.equal(loaded.config.tracker.apiKey, "linear-token");
-    assert.equal(loaded.config.tracker.projectSlug, "twin-ops");
-    assert.equal(loaded.config.polling.intervalMs, 77);
-    assert.equal(loaded.config.workspace.root, path.join(dir, "agent workspaces"));
-    assert.equal(loaded.config.agent.maxConcurrentAgents, 3);
-    assert.deepEqual(loaded.config.agent.maxConcurrentAgentsByState, { todo: 1 });
-    assert.equal(loaded.config.agent.maxTurns, 20);
-    assert.equal(loaded.config.agent.maxRetryBackoffMs, 300_000);
-    assert.equal(loaded.config.codex.command, "codex app-server --listen stdio://");
-    assert.equal(loaded.config.codex.approvalPolicy, "never");
-    assert.deepEqual(loaded.config.codex.turnSandboxPolicy, {
-      type: "workspaceWrite",
-      networkAccess: false,
-      writableRoots: [path.join(dir, "agent workspaces")],
-    });
-    assert.equal(loaded.config.server.port, 0);
-  });
-});
-
-test("workflow loading returns typed errors for bad files and strict prompt rendering fails unknown variables", async () => {
-  await withTempDir(async (dir) => {
-    const missing = path.join(dir, "missing-WORKFLOW.md");
-    await assert.rejects(
-      () => loadEffectiveWorkflow(missing, { env: {} }),
-      /missing_workflow_file/,
-    );
-
-    const badYaml = path.join(dir, "WORKFLOW.md");
-    await writeFile(badYaml, "---\n- not-a-map\n---\nBody");
-    await assert.rejects(
-      () => loadEffectiveWorkflow(badYaml, { env: {} }),
-      /workflow_front_matter_not_a_map/,
-    );
-
-    const rendered = await renderPrompt("Issue {{ issue.identifier }} labels {{ issue.labels | join: ',' }}", {
-      issue: issue({ labels: ["ops", "safety"] }),
-      attempt: null,
-    });
-    assert.equal(rendered, "Issue OPS-1 labels ops,safety");
-
-    await assert.rejects(
-      () => renderPrompt("Bad {{ issue.missing }}", { issue: issue(), attempt: 2 }),
-      /template_render_error/,
-    );
-  });
-});
-
-test("CLI parser supports default workflow path, explicit path, and --port override", () => {
-  // With no WORKFLOW.md on disk the default resolves to the .maestro/ location.
-  assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs"]), {
-    workflowPath: path.resolve(".maestro/WORKFLOW.md"),
-    port: null,
-  });
-  assert.deepEqual(parseCliArgs(["node", "scripts/maestro.mjs", "ops/WORKFLOW.md", "--port", "0"]), {
-    workflowPath: path.resolve("ops/WORKFLOW.md"),
-    port: 0,
-  });
-  assert.throws(
-    () => parseCliArgs(["node", "scripts/maestro.mjs", "--port", "nope"]),
-    /invalid_port/,
-  );
-});
-
-test("CLI parser honors --workflow-path and --state-dir flags", () => {
-  assert.equal(
-    parseCliArgs(["node", "maestro", "--workflow-path", "ops/flow.md"]).workflowPath,
-    path.resolve("ops/flow.md"),
-  );
-  assert.equal(
-    parseCliArgs(["node", "maestro", "--state-dir", "custom-state"]).workflowPath,
-    path.resolve("custom-state/WORKFLOW.md"),
-  );
-});
-
-test("resolveServerWorkflowPath prefers .maestro/, then legacy root", async () => {
-  const { resolveServerWorkflowPath } = await import("../src/workflow.mjs");
-  await withTempDir(async (dir) => {
-    // Nothing on disk → canonical .maestro/ location.
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, ".maestro", "WORKFLOW.md"),
-    );
-    // Legacy root file present, no .maestro/ copy → fall back to root.
-    await writeFile(path.join(dir, "WORKFLOW.md"), "x");
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, "WORKFLOW.md"),
-    );
-    // .maestro/ copy present → it wins over the legacy root file.
-    await mkdir(path.join(dir, ".maestro"), { recursive: true });
-    await writeFile(path.join(dir, ".maestro", "WORKFLOW.md"), "y");
-    assert.equal(
-      resolveServerWorkflowPath({ cwd: dir }),
-      path.join(dir, ".maestro", "WORKFLOW.md"),
-    );
-    // Explicit path always wins, resolved against cwd.
-    assert.equal(
-      resolveServerWorkflowPath({ explicit: "a/b.md", cwd: dir }),
-      path.join(dir, "a", "b.md"),
-    );
-  });
-});
 
 test("workspace manager sanitizes identifiers, runs hooks, and enforces root containment", async () => {
   await withTempDir(async (dir) => {
@@ -508,8 +377,8 @@ test("orchestrator dispatches eligible issues and schedules continuation retry a
         maxConcurrentAgentsByState: {},
         maxRetryBackoffMs: 300_000,
         maxTurns: 1,
+        stallTimeoutMs: 300_000,
       },
-      codex: { stallTimeoutMs: 300_000 },
     },
     tracker,
     runner,
@@ -527,6 +396,53 @@ test("orchestrator dispatches eligible issues and schedules continuation retry a
   assert.equal(snapshot.counts.retrying, 1);
   assert.equal(snapshot.retrying[0].issue_identifier, "OPS-2");
   assert.equal(snapshot.retrying[0].attempt, 1);
+});
+
+test("orchestrator reconcile cancels stalled run and reschedules with stall_timeout reason", async () => {
+  const cancelled = [];
+  const tracker = {
+    fetchIssuesByStates: async () => [],
+    fetchIssueStatesByIds: async () => [],
+    fetchCandidateIssues: async () => [],
+  };
+  const runner = {
+    run: async () => ({ status: "succeeded" }),
+    cancel: (id) => cancelled.push(id),
+  };
+  const orchestrator = new MaestroOrchestrator({
+    config: {
+      tracker: { activeStates: ["Todo"], terminalStates: ["Done"], kind: "linear" },
+      polling: { intervalMs: 30_000 },
+      agent: {
+        maxConcurrentAgents: 1,
+        maxConcurrentAgentsByState: {},
+        maxRetryBackoffMs: 300_000,
+        maxTurns: 1,
+        stallTimeoutMs: 10,
+      },
+    },
+    tracker,
+    runner,
+    workspaceManager: { removeForIssue: async () => {} },
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    timers: { setTimeout: () => ({ fake: true }), clearTimeout: () => {} },
+  });
+
+  const stalled = issue({ id: "stall-1", identifier: "OPS-STALL" });
+  orchestrator.runtime.running.set("stall-1", {
+    issue: stalled,
+    issue_identifier: "OPS-STALL",
+    started_at: new Date().toISOString(),
+    attempt: 0,
+    last_event_at_ms: Date.now() - 1_000,
+  });
+
+  await orchestrator.reconcileRunningIssues();
+
+  assert.deepEqual(cancelled, ["stall-1"]);
+  assert.equal(orchestrator.runtime.running.size, 0);
+  assert.equal(orchestrator.runtime.retrying.size, 1);
+  assert.equal(orchestrator.runtime.retrying.get("stall-1").reason, "stall_timeout");
 });
 
 test("orchestrator retry timer can relaunch its own claimed issue", async () => {
@@ -553,8 +469,8 @@ test("orchestrator retry timer can relaunch its own claimed issue", async () => 
         maxConcurrentAgentsByState: {},
         maxRetryBackoffMs: 300_000,
         maxTurns: 1,
+        stallTimeoutMs: 300_000,
       },
-      codex: { stallTimeoutMs: 300_000 },
     },
     tracker,
     runner,
@@ -575,6 +491,9 @@ test("orchestrator retry timer can relaunch its own claimed issue", async () => 
     reason: "continuation_check",
   });
   scheduled();
+  // runIssue now awaits best-effort write-back (applyTransition) before
+  // scheduling the continuation retry; drain the extra microtask.
+  await Promise.resolve();
   await Promise.resolve();
 
   assert.deepEqual(runs, ["OPS-RETRY:1"]);
@@ -640,119 +559,116 @@ test("HTTP extension serves state, issue details, refresh trigger, and JSON erro
   assert.equal((await invoke("GET", "/api/v1/refresh")).status, 405);
 });
 
-test("Codex client launches in workspace cwd, tracks thread and turn, and fails interactive requests fast", async () => {
-  await withTempDir(async (dir) => {
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    const stdin = new PassThrough();
-    const writes = [];
-    const child = {
-      pid: 12345,
-      stdin,
-      stdout,
-      stderr,
-      killed: false,
-      kill: () => {
-        child.killed = true;
+test("HTTP /state and /refresh reflect the unified TaskGraphRunner dispatch path", async () => {
+  // Wire a real orchestrator onto a TaskGraphRunner with mocked store/tracker so
+  // /refresh drives poll→dispatch→createTask→runTask and /state then mirrors it.
+  const serverConfig = resolveServerConfig(
+    {
+      server: {
+        workflow: "default",
+        tracker: { kind: "linear", api_key: "tok", project_slug: "team" },
+        workspace: { root: "/tmp/maestro-http-parity" },
+        intake_template: "Issue {{ issue.identifier }}.",
       },
-      on: () => child,
-      once: () => child,
-    };
-    const events = [];
-    const client = new CodexAppServerClient({
-      command: "codex app-server",
-      cwd: dir,
-      readTimeoutMs: 5_000,
-      turnTimeoutMs: 5_000,
-      spawnProcess: (command, args, options) => {
-        assert.equal(command, "bash");
-        assert.deepEqual(args, ["-lc", "codex app-server"]);
-        assert.equal(options.cwd, dir);
-        return child;
-      },
-      onEvent: (event) => events.push(event),
-    });
+    },
+    { env: { LINEAR_API_KEY: "tok" }, baseDir: "/tmp/maestro-http-parity" },
+  );
 
-    stdin.on("data", (chunk) => {
-      for (const line of chunk.toString("utf8").trim().split(/\n/).filter(Boolean)) {
-        const message = JSON.parse(line);
-        writes.push(message);
-        if (message.method === "thread/start") {
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            id: message.id,
-            result: {
-              thread: { id: "thread-1" },
-              approvalPolicy: "never",
-              approvalsReviewer: "user",
-              cwd: dir,
-              model: "gpt-5.4",
-              modelProvider: "openai",
-              sandbox: { type: "workspaceWrite", networkAccess: false, writableRoots: [dir] },
-            },
-          })}\n`);
-        }
-        if (message.method === "turn/start") {
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            method: "turn/started",
-            params: { threadId: "thread-1", turn: { id: "turn-1" } },
-          })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            id: "server-request-1",
-            method: "item/tool/requestUserInput",
-            params: { questions: [] },
-          })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            method: "thread/tokenUsage/updated",
-            params: {
-              threadId: "thread-1",
-              inputTokens: 10,
-              outputTokens: 4,
-              totalTokens: 14,
-            },
-          })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            method: "turn/completed",
-            params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
-          })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            id: message.id,
-            result: { turn: { id: "turn-1" } },
-          })}\n`);
-        }
-      }
-    });
+  const tasks = [];
+  let counter = 0;
+  const taskStore = {
+    async listTasks() {
+      return tasks.map((task) => ({ ...task }));
+    },
+    async createTask(input) {
+      counter += 1;
+      const task = {
+        id: `task-${counter}`,
+        status: "queued",
+        ...input,
+        source_issue_id: input.source_issue_id ?? input.sourceIssueId ?? null,
+      };
+      tasks.push(task);
+      return { ...task };
+    },
+  };
 
-    const session = await client.startSession({
-      approvalPolicy: "never",
-      threadSandbox: "workspace-write",
-      turnSandboxPolicy: { type: "workspaceWrite", networkAccess: false, writableRoots: [dir] },
-    });
-    const result = await client.runTurn({ threadId: session.threadId, prompt: "Do work" });
+  const candidate = { id: "issue-77", identifier: "OPS-77", state: "Todo" };
+  let dispatched = false;
+  const tracker = {
+    async fetchCandidateIssues() {
+      // Only offer the candidate once so the second tick doesn't double-dispatch.
+      if (dispatched) return [];
+      return [candidate];
+    },
+    async fetchIssueStatesByIds() {
+      return [];
+    },
+  };
+  const workspaceManager = {
+    async createForIssue(identifier) {
+      return { path: `/tmp/ws/${identifier}` };
+    },
+    async removeForIssue() {},
+  };
 
-    assert.equal(session.threadId, "thread-1");
-    assert.equal(result.turnId, "turn-1");
-    assert.equal(result.status, "completed");
-    assert.equal(client.metrics.inputTokens, 10);
-    assert.equal(client.metrics.outputTokens, 4);
-    assert.equal(client.metrics.totalTokens, 14);
-    assert.ok(writes.some((message) => message.id === "server-request-1" && message.result.answers));
-    assert.deepEqual(events.map((event) => event.event), [
-      "session_started",
-      "turn_started",
-      "input_required",
-      "token_usage",
-      "turn_completed",
-    ]);
-
-    await client.stop();
-    assert.equal(child.killed, true);
+  let runCalls = 0;
+  const runner = new TaskGraphRunner({
+    taskStore,
+    serverConfig,
+    workspaceManager,
+    runTask: async (taskId) => {
+      runCalls += 1;
+      dispatched = true;
+      return { task: { id: taskId, status: "succeeded" } };
+    },
   });
+
+  const orchestrator = new MaestroOrchestrator({
+    config: serverConfig,
+    tracker,
+    runner,
+    workspaceManager,
+  });
+
+  const handler = createMaestroHttpHandler({ orchestrator });
+  const invoke = async (method, url) => {
+    let statusCode = null;
+    let body = "";
+    await handler(
+      { method, url },
+      {
+        writeHead: (status) => {
+          statusCode = status;
+        },
+        end: (payload) => {
+          body = payload ?? "";
+        },
+      },
+    );
+    return { status: statusCode, json: () => JSON.parse(body) };
+  };
+
+  // Before refresh: nothing dispatched.
+  assert.equal((await invoke("GET", "/api/v1/state")).json().counts.running, 0);
+
+  const refresh = await invoke("POST", "/api/v1/refresh");
+  assert.equal(refresh.status, 202);
+  // Let the coalesced refresh tick + async dispatch settle.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(runCalls, 1, "unified path invoked runTask once");
+  assert.equal(tasks.length, 1, "exactly one graph task created");
+  assert.equal(tasks[0].source_issue_id, "issue-77");
+  assert.equal(tasks[0].workflow, "default");
+  assert.equal(tasks[0].mode, "task");
+
+  // The completed run is reflected in the snapshot the /state route serves.
+  const state = await invoke("GET", "/api/v1/state");
+  assert.equal(state.status, 200);
+  assert.equal(state.json().counts.completed, 1);
+
+  await orchestrator.stop();
 });
 
 test("root package exposes Maestro scripts and dependencies", async () => {
@@ -4053,6 +3969,130 @@ test("workflow use switches templates via the CLI and backs up the old file", as
   });
 });
 
+test("workflow use --as writes a named slot", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await runLocalMaestroCommand({
+      args: ["workflow", "use", "solo", "--as", "fast", "--state-dir", store.root],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+    });
+    const wf = await store.readWorkflow("fast");
+    assert.deepEqual(Object.keys(wf.roles), ["executor"]);
+  });
+});
+
+test("readWorkflow: named .yaml normalizes to the JSON-equivalent shape", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    const wfObj = { version: 2, initial: "executor", roles: { executor: { provider: "codex" } }, transitions: { executor: { done: "$complete" } } };
+    await writeFile(store.workflowYamlFilePath("foo"), YAML.stringify(wfObj));
+    const fromYaml = await store.readWorkflow("foo");
+    await writeFile(store.workflowFilePath("bar"), JSON.stringify(wfObj));
+    const fromJson = await store.readWorkflow("bar");
+    assert.deepEqual(fromYaml, fromJson);
+  });
+});
+
+test("readWorkflow: named JSON wins over YAML with a precedence warning", async () => {
+  await withTempDir(async (dir) => {
+    const warnings = [];
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: (m) => warnings.push(m) });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    const jsonObj = { version: 2, initial: "executor", roles: { executor: { provider: "codex", model: "json" } }, transitions: { executor: { done: "$complete" } } };
+    const yamlObj = { ...jsonObj, roles: { executor: { provider: "codex", model: "yaml" } } };
+    await writeFile(store.workflowFilePath("foo"), JSON.stringify(jsonObj));
+    await writeFile(store.workflowYamlFilePath("foo"), YAML.stringify(yamlObj));
+    const wf = await store.readWorkflow("foo");
+    assert.equal(wf.roles.executor.model, "json");
+    assert.ok(warnings.some((m) => m.includes("workflow_format_precedence")));
+  });
+});
+
+test("readWorkflow: default .maestro/workflow.yaml is used when no JSON exists", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    const wfObj = { version: 2, initial: "executor", roles: { executor: { provider: "codex", model: "fromyaml" } }, transitions: { executor: { done: "$complete" } } };
+    await writeFile(store.workflowYamlPath, YAML.stringify(wfObj));
+    const wf = await store.readWorkflow();
+    assert.equal(wf.roles.executor.model, "fromyaml");
+  });
+});
+
+test("workflow list prints name + source", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify(DEFAULT_WORKFLOW));
+    await store.applyWorkflowTemplate({ name: "solo", as: "fast" });
+    const lines = [];
+    await runLocalMaestroCommand({
+      args: ["workflow", "list", "--state-dir", store.root],
+      cwd: dir,
+      stdout: { write: (text) => lines.push(text) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const output = lines.join("");
+    assert.match(output, /default \(legacy\)/);
+    assert.match(output, /fast \(named\)/);
+  });
+});
+
+test("task --workflow runs the named workflow and stamps it", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({
+      root: path.join(dir, ".maestro"),
+      clock: () => new Date("2026-05-13T12:34:56.000Z"),
+    });
+    await store.applyWorkflowTemplate({ name: "solo", as: "solo" });
+    const roles = [];
+    const runner = {
+      runStep: async ({ role }) => {
+        roles.push(role);
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "done" })}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+    const result = await runLocalMaestroCommand({
+      args: ["task", "--state-dir", store.root, "--workflow", "solo", "--planner", "off", "--review", "off", "Do it"],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+      runner,
+      availabilityProbe: () => true,
+    });
+    assert.equal(result.task.workflow, "solo");
+    assert.deepEqual([...new Set(roles)], ["executor"]);
+    const persisted = await store.readTask(result.task.id);
+    assert.equal(persisted.workflow, "solo");
+  });
+});
+
+test("task --workflow rejects an unknown workflow name", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await assert.rejects(
+      () => runLocalMaestroCommand({
+        args: ["task", "--state-dir", store.root, "--workflow", "nope", "do", "it"],
+        cwd: dir,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+        store,
+      }),
+      /unknown_workflow: nope/,
+    );
+  });
+});
+
 test("local task CLI records agent failure as recoverable waiting_user state", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({
@@ -4798,7 +4838,7 @@ test("local task store persists Maestro defaults for TUI and CLI reuse", async (
 test("native TUI helpers collect task settings and format task history", async () => {
   const answers = [
     "Build TUI",
-    "4",
+    "5",
     "-1",
     "s",
   ];
@@ -4815,8 +4855,24 @@ test("native TUI helpers collect task settings and format task history", async (
     prompt: "Build TUI",
     cwd: "/repo",
     mode: "task",
+    workflow: "default",
     timeout_ms: -1,
   });
+
+  // SP0a: the workflow picker (field 4) sets form.workflow; Enter keeps default.
+  const pickAnswers = ["Build TUI", "4", "solo", "s"];
+  const picked = await collectNewTaskForm({
+    ask: async () => pickAnswers.shift(),
+    defaults: { cwd: "/repo", mode: "task", timeout_ms: -1 },
+  });
+  assert.equal(picked.workflow, "solo");
+
+  const keepAnswers = ["Build TUI", "s"];
+  const kept = await collectNewTaskForm({
+    ask: async () => keepAnswers.shift(),
+    defaults: { cwd: "/repo", mode: "task", timeout_ms: -1 },
+  });
+  assert.equal(kept.workflow, "default");
 
   const rows = formatTaskList([
     {
@@ -5176,7 +5232,7 @@ test("TUI new task asks prompt first then uses a draft picker", async () => {
   const answers = [
     "1",
     "Fix label overflow",
-    "4",
+    "5",
     "-1",
     "s",
     "q",
@@ -5302,7 +5358,7 @@ test("TUI task form supports per-role skip override", async () => {
   const answers = [
     "1",
     "Design workflow",
-    "5",      // field 5 = planner skip (after 4 static fields)
+    "6",      // field 6 = planner skip (after 5 static fields)
     "always",
     "s",
     "q",
@@ -6799,4 +6855,532 @@ test("CLI: unknown subcommand rejects with cli_usage and scoped help", async () 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ── multi-workflow store (SP0a) ───────────────────────────────────────────────
+
+test("isValidWorkflowName accepts and rejects per the spec regex", () => {
+  for (const ok of ["default", "solo", "a", "a_b-c", "a".repeat(64)]) {
+    assert.equal(isValidWorkflowName(ok), true, `expected ${ok} valid`);
+  }
+  for (const bad of ["Default", "_x", "-x", "", "a".repeat(65), "a/b", "a.b"]) {
+    assert.equal(isValidWorkflowName(bad), false, `expected ${JSON.stringify(bad)} invalid`);
+  }
+  assert.ok(WORKFLOW_NAME_RE.test("default"));
+  assert.equal(DEFAULT_WORKFLOW_NAME, "default");
+});
+
+test("readWorkflow returns a clone of DEFAULT_WORKFLOW when no files exist", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const wf = await store.readWorkflow();
+    assert.deepEqual(wf, DEFAULT_WORKFLOW);
+    assert.notEqual(wf, DEFAULT_WORKFLOW);
+  });
+});
+
+test("readWorkflow resolves the legacy workflow.json as default", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "executor" }));
+    assert.equal((await store.readWorkflow()).initial, "executor");
+    assert.equal((await store.readWorkflow("default")).initial, "executor");
+  });
+});
+
+test("readWorkflow resolves workflows/default.json", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    await writeFile(store.workflowFilePath("default"), JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "reviewer" }));
+    assert.equal((await store.readWorkflow("default")).initial, "reviewer");
+  });
+});
+
+test("readWorkflow precedence: workflows/default.json wins and warns", async () => {
+  await withTempDir(async (dir) => {
+    const warnings = [];
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: (m) => warnings.push(m) });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "legacy_wins" }));
+    await mkdir(store.workflowsDir, { recursive: true });
+    await writeFile(store.workflowFilePath("default"), JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "named_wins" }));
+    assert.equal((await store.readWorkflow("default")).initial, "named_wins");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /workflow_precedence/);
+  });
+});
+
+test("onWarn fires only when both default sources exist", async () => {
+  await withTempDir(async (dir) => {
+    const warnings = [];
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: (m) => warnings.push(m) });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify(DEFAULT_WORKFLOW));
+    await store.readWorkflow("default");
+    assert.equal(warnings.length, 0);
+  });
+});
+
+test("readWorkflow reads named workflows; missing non-default returns null", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    await writeFile(store.workflowFilePath("solo"), JSON.stringify({ ...DEFAULT_WORKFLOW, initial: "executor" }));
+    assert.equal((await store.readWorkflow("solo")).initial, "executor");
+    assert.equal(await store.readWorkflow("missing"), null);
+  });
+});
+
+test("readWorkflow throws on a bad name", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await assert.rejects(() => store.readWorkflow("Bad"), /invalid_workflow_name/);
+  });
+});
+
+test("writeWorkflow named write round-trips deep-equal", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const written = await store.writeWorkflow("solo", { initial: "executor" });
+    const readBack = await store.readWorkflow("solo");
+    assert.deepEqual(readBack, written);
+    assert.equal(readBack.initial, "executor");
+  });
+});
+
+test("writeWorkflow legacy single-arg still updates the default slot", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.writeWorkflow({ initial: "executor" });
+    assert.equal((await store.readWorkflow()).initial, "executor");
+    // Default stays on the legacy path (no forced migration).
+    assert.ok((await readFile(store.workflowPath, "utf8")).length > 0);
+  });
+});
+
+test("writeWorkflow rejects a bad name", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await assert.rejects(() => store.writeWorkflow("Bad", {}), /invalid_workflow_name/);
+  });
+});
+
+test("listWorkflows: empty store has nothing", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    assert.deepEqual(await store.listWorkflows(), []);
+  });
+});
+
+test("listWorkflows: mixed named + legacy default", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify(DEFAULT_WORKFLOW));
+    await store.writeWorkflow("solo", { initial: "executor" });
+    const list = await store.listWorkflows();
+    assert.deepEqual(list.map((w) => w.name), ["default", "solo"]);
+    assert.equal(list.find((w) => w.name === "default").source, "legacy");
+    assert.equal(list.find((w) => w.name === "solo").source, "named");
+  });
+});
+
+test("listWorkflows: skips non-json and invalid-stem files", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await mkdir(store.workflowsDir, { recursive: true });
+    await store.writeWorkflow("solo", { initial: "executor" });
+    await writeFile(path.join(store.workflowsDir, "README.md"), "not a workflow");
+    await writeFile(path.join(store.workflowsDir, "Bad Name.json"), "{}");
+    const list = await store.listWorkflows();
+    assert.deepEqual(list.map((w) => w.name), ["solo"]);
+  });
+});
+
+test("listWorkflows: both default sources dedupe to a single named default", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.init();
+    await writeFile(store.workflowPath, JSON.stringify(DEFAULT_WORKFLOW));
+    await mkdir(store.workflowsDir, { recursive: true });
+    await writeFile(store.workflowFilePath("default"), JSON.stringify(DEFAULT_WORKFLOW));
+    const list = await store.listWorkflows();
+    const defaults = list.filter((w) => w.name === "default");
+    assert.equal(defaults.length, 1);
+    assert.equal(defaults[0].source, "named");
+  });
+});
+
+test("store.applyWorkflowTemplate writes a named slot from a template", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const result = await store.applyWorkflowTemplate({ name: "solo", as: "fast" });
+    assert.equal(result.as, "fast");
+    const wf = await store.readWorkflow("fast");
+    assert.deepEqual(Object.keys(wf.roles), ["executor"]);
+  });
+});
+
+test("store.applyWorkflowTemplate rejects unknown template + bad target name", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await assert.rejects(() => store.applyWorkflowTemplate({ name: "nope" }), /unknown_workflow_template/);
+    await assert.rejects(() => store.applyWorkflowTemplate({ name: "solo", as: "Bad" }), /invalid_workflow_name/);
+  });
+});
+
+test("createTask records workflow field with default + validation", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "x" });
+    assert.equal(task.workflow, "default");
+    const readBack = await store.readTask(task.id);
+    assert.equal(readBack.workflow, "default");
+    const solo = await store.createTask({ prompt: "y", workflow: "solo" });
+    assert.equal(solo.workflow, "solo");
+    await assert.rejects(() => store.createTask({ prompt: "z", workflow: "Bad" }), /invalid_workflow_name/);
+  });
+});
+
+// ── SP6a: `maestro events <id> [--json]` ─────────────────────────────────────
+
+test("events command lists one projected stage_event per step", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    await store.appendStep(task.id, {
+      role: "planner", provider: "claude", model: "claude-opus", tokens: 120,
+      status: "succeeded", started_at: "2026-06-15T00:00:00.000Z",
+      stdout_path: "/runs/planner.out", handoff_path: "/runs/planner.json",
+    });
+    await store.appendStep(task.id, {
+      role: "scoring", provider: "scoring", status: "succeeded",
+      started_at: "2026-06-15T00:00:01.000Z",
+    });
+    const output = [];
+    const result = await runLocalMaestroCommand({
+      args: ["events", "--state-dir", store.root, task.id],
+      cwd: dir,
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.equal(result.events.length, 2);
+    assert.deepEqual(result.events.map((e) => e.stage), ["planner", "scoring"]);
+    const text = output.join("");
+    assert.match(text, /planner/);
+    assert.match(text, /claude-opus/);
+    assert.match(text, /scoring/);
+  });
+});
+
+test("events --json emits a valid stage_event array", async () => {
+  await withTempDir(async (dir) => {
+    const { validatePayload } = await import("../src/schemas/index.mjs");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    await store.appendStep(task.id, {
+      role: "executor", provider: "codex", model: "gpt", tokens: 50,
+      status: "succeeded", started_at: "2026-06-15T00:00:00.000Z",
+    });
+    const output = [];
+    await runLocalMaestroCommand({
+      args: ["events", "--state-dir", store.root, task.id, "--json"],
+      cwd: dir,
+      stdout: { write: (text) => output.push(text) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const events = JSON.parse(output.join(""));
+    assert.ok(Array.isArray(events));
+    assert.equal(events.length, 1);
+    for (const event of events) {
+      assert.ok(validatePayload("stage_event", event).ok, JSON.stringify(event));
+    }
+    assert.equal(events[0].model, "gpt");
+    assert.equal(events[0].tokens, 50);
+  });
+});
+
+// ── SP6b: `maestro artifacts` + `maestro events --all` ───────────────────────
+
+test("artifacts lists a run's files and reads one with --tail / --json", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    const runDir = store.runDir(task.id);
+    await mkdir(runDir, { recursive: true });
+    const stdoutContent = `${"y".repeat(50)}STDOUT-TAIL`;
+    await writeFile(path.join(runDir, "implementation.stdout.log"), stdoutContent);
+    await writeFile(path.join(runDir, "handoff.implementation.json"), JSON.stringify({ ok: true }));
+
+    // list
+    const listOut = [];
+    const listResult = await runLocalMaestroCommand({
+      args: ["artifacts", "--state-dir", store.root, task.id],
+      cwd: dir,
+      stdout: { write: (t) => listOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.equal(listResult.entries.length, 2);
+    assert.match(listOut.join(""), /implementation\.stdout\.log/);
+
+    // read with --tail (bounded)
+    const tailOut = [];
+    await runLocalMaestroCommand({
+      args: ["artifacts", "--state-dir", store.root, task.id, "implementation.stdout", "--tail"],
+      cwd: dir,
+      stdout: { write: (t) => tailOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.match(tailOut.join(""), /STDOUT-TAIL/);
+
+    // --json metadata is valid
+    const jsonOut = [];
+    await runLocalMaestroCommand({
+      args: ["artifacts", "--state-dir", store.root, task.id, "implementation.handoff", "--json"],
+      cwd: dir,
+      stdout: { write: (t) => jsonOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const entry = JSON.parse(jsonOut.join(""));
+    assert.equal(entry.kind, "handoff");
+    assert.equal(entry.role, "implementation");
+
+    // bad selector → clean error, never a traversal
+    await assert.rejects(
+      () => runLocalMaestroCommand({
+        args: ["artifacts", "--state-dir", store.root, task.id, "../escape"],
+        cwd: dir,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+        store,
+      }),
+      /unknown_artifact/,
+    );
+  });
+});
+
+test("events --all queries the materialised table with filters; events <id> stays the live projection", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    await store.appendStep(task.id, {
+      role: "executor", provider: "codex", model: "gpt", status: "succeeded",
+      started_at: "2026-06-15T00:00:00.000Z",
+    });
+
+    // Seed the events table directly (the engine seam does this in production).
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      await db.replaceStageEvents(task.id, [
+        { workflow_id: "default", stage: "scoring", model: "m", tokens: 1, duration_ms: 1, status: "succeeded", artifacts: [] },
+        { workflow_id: "default", stage: "review", model: "m", tokens: 1, duration_ms: 1, status: "failed", artifacts: [] },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const allOut = [];
+    const allResult = await runLocalMaestroCommand({
+      args: ["events", "--state-dir", store.root, "--all", "--stage", "scoring", "--json"],
+      cwd: dir,
+      stdout: { write: (t) => allOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.equal(allResult.events.length, 1);
+    assert.equal(allResult.events[0].stage, "scoring");
+    const parsed = JSON.parse(allOut.join(""));
+    assert.ok(Array.isArray(parsed));
+    assert.equal(parsed[0].task_id, task.id);
+
+    // events <id> is still the live projection over the task's steps.
+    const liveResult = await runLocalMaestroCommand({
+      args: ["events", "--state-dir", store.root, task.id],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.equal(liveResult.events.length, 1);
+    assert.equal(liveResult.events[0].stage, "executor");
+  });
+});
+
+// ── SP6c: `maestro rerun` + `maestro compare` ────────────────────────────────
+
+// Seed a source task whose run_dir holds a run-manifest.json built from a
+// representative workflow snapshot. Only --no-run / --dry-run are exercised so
+// no real agent is spawned.
+async function seedRerunSource(store, dir, { snapshot } = {}) {
+  const task = await store.createTask({
+    prompt: "rerun me", cwd: dir, plannerPolicy: "off", reviewEnabled: false,
+    executorModel: "e-model", writePaths: ["src/"],
+  });
+  const runDir = store.runDir(task.id);
+  await mkdir(runDir, { recursive: true });
+  const workflowSnapshot = snapshot ?? { ...DEFAULT_WORKFLOW, _pinned: true };
+  const manifest = buildRunManifest({
+    task, workflow: workflowSnapshot, maestroVersion: "9.9.9", startHead: null,
+  });
+  await writeFile(path.join(runDir, "run-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  return { task, manifest, workflowSnapshot };
+}
+
+test("rerun --no-run pins the snapshot as a workflow file and creates a queued task with the manifest's inputs", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task, workflowSnapshot } = await seedRerunSource(store, dir);
+
+    const out = [];
+    const result = await runLocalMaestroCommand({
+      args: ["rerun", "--state-dir", store.root, task.id, "--no-run"],
+      cwd: dir,
+      stdout: { write: (t) => out.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const newTask = result.task;
+    assert.ok(newTask, "a new task was created");
+    assert.equal(newTask.status, "queued", "task left queued under --no-run");
+    assert.match(out.join(""), new RegExp(newTask.id));
+
+    // Workflow pinned under the sanitized name == snapshot.
+    const name = newTask.workflow;
+    assert.ok(name.startsWith("rerun-"));
+    const pinned = await store.readWorkflow(name);
+    assert.deepEqual(pinned, workflowSnapshot);
+
+    // Inputs carried over from the manifest; workflow set to the pinned name.
+    assert.equal(newTask.prompt, "rerun me");
+    assert.equal(newTask.review_enabled, false);
+    assert.equal(newTask.executor_model, "e-model");
+    assert.deepEqual(newTask.write_paths, ["src/"]);
+  });
+});
+
+test("rerun: a later edit to the original workflow does NOT change the pinned snapshot (reproducibility)", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task, workflowSnapshot } = await seedRerunSource(store, dir);
+
+    const result = await runLocalMaestroCommand({
+      args: ["rerun", "--state-dir", store.root, task.id, "--no-run"],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+    });
+    const name = result.task.workflow;
+
+    // Mutate the *default* workflow after pinning — the pinned file must not move.
+    await store.writeWorkflow("default", { _mutated: true });
+    const pinnedAfter = await store.readWorkflow(name);
+    assert.deepEqual(pinnedAfter, workflowSnapshot, "pinned snapshot is immutable to later edits");
+  });
+});
+
+test("rerun --dry-run prints the manifest + inputs and writes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const { task } = await seedRerunSource(store, dir);
+    const tasksBefore = (await store.listTasks()).length;
+
+    const out = [];
+    const result = await runLocalMaestroCommand({
+      args: ["rerun", "--state-dir", store.root, task.id, "--dry-run"],
+      cwd: dir,
+      stdout: { write: (t) => out.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const printed = JSON.parse(out.join(""));
+    assert.ok(printed.manifest, "manifest printed");
+    assert.ok(printed.inputs, "resolved inputs printed");
+    assert.ok(!("workflow" in printed.inputs), "inputs omit workflow (caller pins it)");
+    assert.equal(result.manifest.manifest_version, 1);
+
+    // No task created, no pinned workflow written.
+    assert.equal((await store.listTasks()).length, tasksBefore);
+    const name = `rerun-${task.id}`.slice(0, 64);
+    assert.equal(await store.readWorkflow("default") && true, true); // default still readable
+    const pinnedExists = await readFile(path.join(store.root, "workflows", `${name}.json`), "utf8").then(() => true, () => false);
+    assert.equal(pinnedExists, false, "no pinned workflow file written under --dry-run");
+  });
+});
+
+test("rerun on a task with no run-manifest rejects with no_run_manifest", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "old run", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    // run_dir exists but has no run-manifest.json (pre-SP6c run).
+    await mkdir(store.runDir(task.id), { recursive: true });
+    await assert.rejects(
+      () => runLocalMaestroCommand({
+        args: ["rerun", "--state-dir", store.root, task.id, "--no-run"],
+        cwd: dir,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+        store,
+      }),
+      /no_run_manifest/,
+    );
+  });
+});
+
+test("compare reports MATCH / DIFFER / ONLY per (role, kind) over two run_dirs", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const t1 = await store.createTask({ prompt: "run one", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    const t2 = await store.createTask({ prompt: "run two", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    const rd1 = store.runDir(t1.id);
+    const rd2 = store.runDir(t2.id);
+    await mkdir(rd1, { recursive: true });
+    await mkdir(rd2, { recursive: true });
+
+    // impl.command identical (X); impl.stdout differs (Y1 vs Y2); reviewer.stdout only on side 2.
+    await writeFile(path.join(rd1, "impl.command.json"), "X");
+    await writeFile(path.join(rd1, "impl.stdout.log"), "Y1");
+    await writeFile(path.join(rd2, "impl.command.json"), "X");
+    await writeFile(path.join(rd2, "impl.stdout.log"), "Y2");
+    await writeFile(path.join(rd2, "reviewer.stdout.log"), "Z");
+
+    const out = [];
+    const result = await runLocalMaestroCommand({
+      args: ["compare", "--state-dir", store.root, t1.id, t2.id, "--json"],
+      cwd: dir,
+      stdout: { write: (t) => out.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const rows = JSON.parse(out.join(""));
+    const byKey = Object.fromEntries(rows.map((r) => [`${r.role}.${r.kind}`, r.result]));
+    assert.equal(byKey["impl.command"], "MATCH");
+    assert.equal(byKey["impl.stdout"], "DIFFER");
+    assert.equal(byKey["reviewer.stdout"], "ONLY-2");
+    assert.deepEqual(result.rows, rows);
+
+    // Non-json table form.
+    const tableOut = [];
+    await runLocalMaestroCommand({
+      args: ["compare", "--state-dir", store.root, t1.id, t2.id],
+      cwd: dir,
+      stdout: { write: (t) => tableOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const table = tableOut.join("");
+    assert.match(table, /impl\.command\s+MATCH/);
+    assert.match(table, /impl\.stdout\s+DIFFER/);
+    assert.match(table, /reviewer\.stdout\s+ONLY-2/);
+  });
 });

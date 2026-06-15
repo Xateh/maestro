@@ -5,6 +5,287 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (BREAKING)
+
+- **Dispatch consolidation & WORKFLOW.md removal (SP0b)** — the server (Linear
+  poll → auto-dispatch) now runs issues through the *same* LangGraph task engine
+  as `maestro task`. The standalone dispatch front-matter file and its bespoke
+  Codex client are gone; configuration moves into `config.json`'s `server`
+  block, and dispatched issues become graph tasks (one per issue, idempotent via
+  a new `source_issue_id` field).
+  - **Removed:** the dispatch front-matter file and its loader (`src/workflow.mjs`),
+    the dispatch-only Codex client (`src/codex-client.mjs`), the
+    `--workflow-path` flag, the positional dispatch-file argument to
+    `maestro serve`, and the deprecated `maestro <file>.md` entry point.
+  - **`maestro serve` surface:** now `maestro serve [--config <path>]
+    [--state-dir <dir>] [--port <n>]` only. The tracker/workspace/agent settings
+    come from `config.json`.
+  - **Live config reload dropped:** `config.json` is read once at server start;
+    changes require a restart.
+  - **Cancellation is bookkeeping-only:** a terminal/stalled issue clears the
+    orchestrator's running/retry maps; an in-flight graph run is left to finish
+    (real mid-run engine cancellation is deferred).
+  - **MCP `maestro_read_workflow`** no longer returns `workflow_md` (only
+    `workflow_json`). Export bundles no longer include a dispatch front-matter
+    file.
+  - **Migration (manual):** move your old dispatch front-matter into
+    `config.json` under `server`:
+
+    | Old front-matter           | New `config.json` location                  |
+    | -------------------------- | ------------------------------------------- |
+    | `tracker.*`                | `server.tracker.*`                          |
+    | `polling.*`                | `server.polling.*`                          |
+    | `workspace.*`              | `server.workspace.*`                        |
+    | `hooks.*`                  | `server.hooks.*`                            |
+    | `agent.*`                  | `server.agent.*`                            |
+    | `codex.stall_timeout_ms`   | `server.agent.stall_timeout_ms`             |
+    | `codex.*` (sandbox)        | **dropped** (graph engine adapters own sandboxing) |
+    | prompt body (Markdown)     | `server.intake_template` (Liquid string)    |
+    | *(new)*                    | `server.workflow` (named graph workflow to run) |
+
+### Added
+
+- **Reproducible re-runs (SP6c)** — captures a run's *inputs* so it can be
+  replayed and compared. Reproducible inputs, not bit-identical output: LLM
+  stages stay non-deterministic, so `stdout`/`handoff` artifacts differ across
+  runs while the deterministic `command`/`prompt` inputs match when the replay
+  is faithful — exactly what `compare` surfaces.
+  - **`run-manifest.json`** — written by the engine to `run_dir` at run start
+    (best-effort; a write failure is logged to stderr and never breaks a run).
+    Self-contained: embeds the *resolved workflow snapshot* inline, an explicit
+    allow-list of the 19 replayable task input knobs (identity/derived fields
+    like `id`/`steps`/`branch` are excluded), `git.start_head`, and the maestro
+    version. A later edit to the named workflow cannot change what a replay runs.
+  - **`maestro rerun <id>`** — recreate + run a clean task from the manifest.
+    Pins the captured snapshot as a `rerun-<id>` workflow file (name sanitized to
+    the 64-char limit, `isValidWorkflowName`-checked) and creates a new task via
+    the unchanged by-name load path. `--dry-run` prints the manifest + resolved
+    inputs and writes nothing; `--no-run` creates the task queued and prints its
+    id (run later via `run-task`). A task with no manifest (pre-SP6c) ⇒
+    `no_run_manifest`. Each rerun writes its own manifest, so reruns are
+    themselves reproducible.
+  - **`maestro compare <id1> <id2> [--json]`** — diffs the two runs' per-artifact
+    `sha256`s, joining by `(role, kind)` → `MATCH` / `DIFFER` / `ONLY-1` /
+    `ONLY-2`. Matching `command`/`prompt` artifacts are the reproducibility
+    signal; `stdout`/`handoff` legitimately `DIFFER`.
+  - Pure helpers `buildRunManifest` / `manifestToTaskInputs` (`src/run-manifest.mjs`)
+    and `compareArtifactIndexes` (`src/artifacts.mjs`) are total and unit-tested.
+    The manifest is an internal artifact (shape-tested, not a registered schema);
+    no schema/kind/template change and `DEFAULT_WORKFLOW` is byte-identical.
+
+- **Artifact store + inspection (SP6b)** — every run's artifacts are now
+  discoverable and the stage-event stream is persisted for cross-task history.
+  - **Derived artifact index** — `buildArtifactIndex(task)` scans `run_dir` and
+    returns one entry per file (`role`, `kind`, `name`, `path`, `bytes`,
+    `modified`, `sha256`, `status`). No persisted manifest and no artifacts
+    table — the index is recomputed from disk, so it can never drift (same
+    projection principle as SP6a events). Per-artifact `sha256` is an integrity
+    fingerprint that SP6c (reproducible re-runs) will consume.
+  - **`maestro artifacts <id> [<selector>] [--cat|--tail|--json]`** — list a
+    run's artifacts (`role kind bytes modified sha256 name`, or full entries
+    with `--json`), or read one by `<role>.<kind>` selector or raw filename.
+    Reads are path-safe: a traversing/raw-path selector resolves to `null` (a
+    clean `unknown_artifact` error), never escaping `run_dir`.
+  - **Materialised events table** — the SP6a `getStageEvents` projection is
+    persisted into a queryable `events` table once per run at the existing
+    engine completion seam, via delete-then-insert (`replaceStageEvents`) — a
+    regenerable cache, not a second write path; `getStageEvents` stays canonical.
+  - **`maestro events --all [--stage S] [--status S] [--workflow W] [--json]`**
+    — cross-task/historical query over the materialised table
+    (`queryStageEvents`); `maestro events <id>` stays the live projection
+    (correct even before materialisation / mid-run).
+  - **`src/fs-safe.mjs`** — `assertInsideDir` / `listDir` / `tailFile` extracted
+    from the MCP server into a shared module (behaviour identical), imported by
+    both the MCP server and the artifact index/CLI.
+  - No schema, kind, template, or workflow change; the default 3-role workflow
+    is byte-identical.
+
+- **Per-stage event emission (SP6a)** — every stage execution is exposed as a
+  structured `stage_event` (`{workflow_id, stage, model, tokens, duration_ms,
+  status, artifacts}` + additive `role`/`provider`), derived as a **projection
+  over the steps maestro already records** — no events table, no second write
+  path, so the stream can never diverge from the record it describes.
+  - **`maestro events <id> [--json]`** — read-only inspection of the projected
+    stream (`stage status model tokens duration_ms [artifacts]`, or a raw
+    `stage_event` JSON array with `--json`).
+  - **OpenTelemetry**: each event is mirrored as a `maestro.stage` span (fields
+    as `maestro.*` attributes) when a collector is configured
+    (`OTEL_EXPORTER_OTLP_ENDPOINT`); a fully-guarded no-op otherwise — emission
+    never breaks a run.
+  - **Real tokens**: a per-provider `parseUsage` reads the structured usage each
+    CLI emits (claude stream-json `result.usage`; codex `--json`;
+    copilot/antigravity/gemini JSON incl. gemini `usageMetadata`); ollama /
+    unknown / parse-miss / truncated-tail ⇒ `0`. Parsed once at the
+    agent-success step and stored on the step.
+  - **Fixed `duration_ms` for non-LLM stages**: `stub`/`command`/`regression`/
+    `scoring` branches now stamp `started_at`, so their projected duration is
+    real instead of `0`. `model` stays empty (`""`) for non-LLM stages.
+  - Additive only: no schema/kind/template change; the default 3-role workflow
+    stays byte-identical. A persisted/indexed events table is deferred to SP6b.
+
+- **Reliability scoring + gates engine (SP5)** — the `full-audit-sweep` gains a
+  real, deterministic scoring stage. Additive only; the default 3-role workflow
+  stays byte-identical.
+  - **Role `kind: "scoring"`**: a non-LLM stage (sibling to
+    `stub`/`command`/`regression`; the agent runner is never invoked and it never
+    throws) that reads every prior stage handoff, derives the six SP1 `scoring`
+    numbers, enforces the manifest's declared `gates:`, and emits an
+    outcome-dependent event (`passed`/`blocked`, overridable via
+    `pass_event`/`block_event`).
+  - **Never fabricate confidence**: each sub-score is a pure function of one
+    upstream field — `correctness_score`←`evaluation.pass_rate`,
+    `test_score`←`tests.tests_created` (presence), `review_score`←`review.severity`
+    (none→1.0 … critical→0.0), `security_score`←`threat_model` mitigation ratio,
+    `regression_score`←`regression` pass ratio. Absent evidence (missing handoff
+    or wrong-typed field) ⇒ `0.0`, the role named in `missing_evidence[]`, and
+    `score_inputs[score].missing: true` — a `0` from absence stays distinguishable
+    from a `0` from bad results. A vacuous-pass (e.g. empty `regressions_run`) is
+    `1.0` and not flagged. `overall_confidence` is the **product** of the five
+    sub-scores, so any zeroed axis drives it to `0`.
+  - **Gate enforcement** of the four SP1 keys (`min_coverage`,
+    `no_high_severity_findings`, `all_regressions_pass`, `min_overall_confidence`):
+    only present keys are enforced; a `false`-valued bool gate is skipped; a gate
+    with no evidence fails closed (e.g. `min_coverage` while `coverage:{}`).
+    `gates` absent/`{}` ⇒ `passed` (informational). Gates are read from the
+    top-level manifest `gates:` (a role-level `gates` override is also accepted).
+  - **Pure module `src/scoring.mjs`** (`deriveScores` + `enforceGates`): no I/O,
+    no imports, both total — trivially unit-testable.
+  - **`bad_scoring_spec` validation**: a `kind: "scoring"` role must declare both
+    its effective `pass_event` (default `passed`) and `block_event` (default
+    `blocked`) transitions.
+  - **Template**: `full-audit-sweep` inserts a `scoring` role between
+    `regression` and `human_approval` (`regression.done` repointed to `scoring`;
+    `scoring.passed → human_approval`, `scoring.blocked → $halt`). No `gates:`
+    block is declared, so scoring is purely informational by default — users opt
+    into enforcement by adding a `gates:` block. No new config key, no schema
+    change.
+
+- **Regression corpus stage (SP4)** — the `full-audit-sweep` `regression` stage
+  is now real. Additive only; the default workflow stays byte-identical.
+  - **Role `kind: "regression"`**: a non-LLM stage that loads an on-disk corpus
+    (`<cwd>/.maestro/regression/*.json`, override via `corpus_dir`), re-runs each
+    case via the SP3 `commandRunner`, auto-promotes upstream
+    `evaluation.failures[]` into new corpus cases, and maps results to the
+    `regression` schema `{regressions_run, new_failures, promoted_tests}` (plus
+    `corpus_load_errors` and `outcome`). The agent runner is never invoked; a
+    case failure, corpus load error, or promotion write error never throws —
+    each is captured as evidence.
+  - **Configurable `attempts`** (case ⟶ role ⟶ `config.regression_attempts` ⟶
+    `1`): a case passes if any attempt passes, is a regression only after all
+    attempts fail, and the first pass stops early. The `attempts` made are
+    recorded per case.
+  - **Outcome-driven routing**: emits `done` when `new_failures.length <
+    fail_threshold` (default `1`), else the role's `fail_event` (default
+    `regressions_found`). The stage never halts — the manifest's `transitions`
+    decide routing; `error` stays reserved for internal faults.
+  - **`regressionStore` op**: a new injectable (`src/regression-corpus.mjs`,
+    fs-backed default, wired into the CLI ops bundle) with `loadCorpus` /
+    `promoteFailures` / `deriveCaseId`; tests inject a fake.
+  - **`bad_regression_spec` validation**: a `kind: "regression"` role must
+    declare both a `done` and its effective `fail_event` transition;
+    `attempts`/`fail_threshold`, if present, must be positive integers.
+  - **Template**: `full-audit-sweep` `regression` converts from `kind: "stub"`
+    to `kind: "regression"` and gains `regressions_found → implementation`
+    (a loop-back bounded by `loop_limits`). New optional config key
+    `regression_attempts` (default `1`, carried across config migration).
+
+- **Automated evaluation stage (SP3)** — the `full-audit-sweep` `evaluation`
+  stage is now real. Additive only; the default workflow, SP2 `kind: "stub"`
+  behavior, and `static_analysis`/`regression` (still stubs) are unchanged.
+  - **Role `kind: "command"`**: a non-LLM stage that runs declared shell
+    commands in the task tree (`worktree_path ?? cwd`) and maps results to the
+    `evaluation` schema `{pass_rate, failures, coverage}`. Evidence-only — **no
+    gating**: every command runs and the stage always emits `event: "done"`; the
+    agent runner is never invoked and a command failure never throws (a spawn
+    error / timeout / thrown runner is captured as `exit_code: 127`).
+  - **Hybrid `pass_rate`**: exit-code granularity by default; an optional
+    per-command `parser` (`{passed, failed, total}` regexes) contributes finer
+    test counts. A pass-rate is never fabricated — counts are used only when a
+    total is derivable (a `total` regex, or both `passed`+`failed`); otherwise
+    the command falls back to its exit code. `pass_rate` is `1.0` for empty
+    `commands: []`. `coverage` is always `{}` in SP3.
+  - **`commandRunner` op**: a new injectable runner (`src/command-runner.mjs`,
+    wired into the CLI ops bundle) wrapping `sh -lc` with a timeout and a bounded
+    output tail; tests inject a fake.
+  - **`bad_command_spec` validation**: `validateWorkflow` rejects a command
+    missing a non-empty `name`/`run`, a duplicate `name`, or a non-array
+    `commands`. Empty `commands: []` is valid.
+  - **Template**: `full-audit-sweep` `evaluation` converts from `kind: "stub"`
+    to `kind: "command"` with `commands: []` (a vacuous no-op until populated).
+    Honors optional `command_timeout_ms` (default `120000`) and existing
+    `stream_tail_bytes` (default `65536`) config knobs without adding new
+    default-config keys.
+- **Verification pipeline spine (SP2)** — the 9-stage reliability pipeline as a
+  runnable, opt-in named workflow. Additive only; the default
+  planner→executor→reviewer workflow is unchanged.
+  - **Role `kind` discriminator**: `kind: "agent"` (default; absent ⇒ agent)
+    preserves existing behavior. `kind: "stub"` skips provider resolution and
+    the agent call entirely, emitting a schema-conforming placeholder payload
+    with `event: "done"` (the seam SP3 extends with `kind: "command"`).
+  - **`verifies: true`** role flag tags verification stages declaratively
+    (inert at runtime in SP2; consumed by the new validation rule and later
+    scoring).
+  - **Schema-aware prompts**: the generic (custom-role) prompt now renders the
+    role's `output_schema` required-key skeleton plus enum notes into the
+    `MAESTRO_HANDOFF` example, so verifier agents emit conforming JSON. Schema
+    helpers `emptyPayloadForSchema` and `schemaSkeleton` added to
+    `src/schemas/`. Planner/executor/reviewer prompts are unchanged.
+  - **Independence validation**: `validateWorkflow` reports
+    `non_independent_role` (error) when a role is both an implementation entry
+    role and a verifier — distinct roles ⇒ distinct sessions ⇒ independent.
+  - **`full-audit-sweep` template**: a new `WORKFLOW_TEMPLATES` entry —
+    implementation → static_analysis → review → threat_model → edge_cases →
+    tests → evaluation → regression → human_approval, with bounded
+    `changes_requested` rework loops from the discovery verifiers back to
+    implementation (`loop_limits.default_max_visits: 3`). Opt in with
+    `maestro workflow use full-audit-sweep --as full-audit-sweep` and run via
+    a task's `workflow` field. Not auto-scaffolded by `maestro init`.
+- **Manifest & stage I/O contracts (SP1)** — a shared, declarative vocabulary
+  for reliable pipelines.
+  - **Schema registry** (`src/schemas/`): 10 canonical named JSON Schemas
+    (draft 2020-12) — `implementation`, `static_analysis`, `review`,
+    `threat_model`, `edge_cases`, `tests`, `evaluation`, `regression`,
+    `scoring`, `stage_event` — compiled once with ajv. API: `getSchema`,
+    `listSchemas`, `validatePayload`, `validateInline`, `resolveRoleSchema`.
+  - **Workflow manifest v2**: roles may declare `output_schema` (registry name
+    or inline JSON Schema) or `output_schema_ref` (relative path), plus a
+    top-level `gates` block (`min_coverage`, `no_high_severity_findings`,
+    `all_regressions_pass`, `min_overall_confidence`). `DEFAULT_WORKFLOW` is now
+    `version: 2`; v1 workflows stay valid. Gates are validated now; enforcement
+    is a later sub-project.
+  - **Validation**: `validateWorkflow` reports `unknown_output_schema`,
+    `bad_output_schema`, `bad_gates` (errors) and `missing_output_schema`
+    (warning for verifier-named roles without a schema). Still pure / no I/O.
+  - **Soft runtime validation**: when an agent emits a `MAESTRO_HANDOFF` and the
+    role resolves a schema, `schema_validation: { ok, errors, schema }` is
+    recorded in `priorHandoffs`, `handoff.<role>.json`, and the DB `handoffs`
+    row (new nullable `schema_validation` column in both SQLite and Postgres).
+    Additive evidence only — routing is never changed.
+  - **YAML authoring**: workflows may be authored as `.maestro/workflows/<name>.yaml`
+    or `.maestro/workflow.yaml`; JSON wins (with a `workflow_format_precedence`
+    warning) when both exist for a slot.
+  - Adds `ajv` as a direct dependency.
+- **Multi-workflow selection (SP0a)** — a single state dir can hold multiple
+  named workflows under `.maestro/workflows/<name>.json`, selectable per task.
+  The legacy `.maestro/workflow.json` is treated as the `default` workflow (no
+  forced migration; named `default.json` takes precedence with a
+  `workflow_precedence` warning when both exist).
+  - Store API: `readWorkflow(name)`, `writeWorkflow(name, workflow)` (back-compat
+    single-arg default write retained), `listWorkflows()`,
+    `applyWorkflowTemplate({name, as})`, plus `isValidWorkflowName` and the
+    `^[a-z0-9][a-z0-9_-]{0,63}$` name rule.
+  - Tasks carry a `workflow` field (default `"default"`); the engine loads the
+    selected workflow and surfaces a typed `unknown_workflow` blocker for an
+    unknown name instead of falling back silently.
+  - CLI: `maestro task --workflow <name>`, `maestro workflow list`, and
+    `maestro workflow use <name> --as <slot>`.
+  - MCP: optional `workflow` param on `maestro_create_task` (name shape
+    validated; existence checked by the spawned CLI).
+  - TUI: workflow picker on task creation and a workflows list/edit view
+    (defaults to `default`).
+
 ## [0.1.0] - 2026-06-14
 
 Initial release.

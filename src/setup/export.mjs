@@ -1,8 +1,8 @@
 // Export a Maestro workflow as a portable bundle another instance can import.
 //
 // Bundle contents: workflow.json (instruction_paths rewritten to bundled
-// copies under prompts/), providers from config.json, WORKFLOW.md if present,
-// credits from the import manifest, and sha256 hashes for every file.
+// copies under prompts/), providers from config.json, credits from the import
+// manifest, and sha256 hashes for every file.
 //
 // Never exported: config.local.json, secrets.local.json, tasks/runs/db.
 // Provider definitions get a defensive redaction pass on secret-shaped keys.
@@ -121,12 +121,6 @@ export async function buildBundle({ stateDir, name = null, now = () => new Date(
     }
     roleDef.instruction_paths = rewritten;
   }
-
-  // WORKFLOW.md (server/dispatch mode) lives in the state dir; fall back to the
-  // legacy repo-root location for bundles created before the move.
-  const workflowMd = await fs.readFile(path.join(stateDir, "WORKFLOW.md"), "utf8").catch(() => null)
-    ?? await fs.readFile(path.join(stateDir, "..", "WORKFLOW.md"), "utf8").catch(() => null);
-  if (workflowMd) files["WORKFLOW.md"] = workflowMd;
 
   files["workflow.json"] = `${JSON.stringify(workflow, null, 2)}\n`;
   // No materialized config.json → export the built-in defaults so bundles
@@ -281,10 +275,6 @@ export async function importBundle({ bundle, stateDir, store, force = false, now
   manifest.credits = [...new Set([...manifest.credits, ...(bundle.manifest.credits ?? [])])];
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(manifestPath(stateDir), `${JSON.stringify(manifest, null, 2)}\n`);
-
-  if (bundle.files["WORKFLOW.md"]) {
-    await fs.writeFile(path.join(stateDir, "WORKFLOW.md"), bundle.files["WORKFLOW.md"]).catch(() => {});
-  }
 
   return { workflow, validation, manifest };
 }

@@ -10,6 +10,7 @@ import { buildAntigravityCommand } from "./adapters/antigravity.mjs";
 import { buildOllamaCommand } from "./adapters/ollama.mjs";
 import { resolveAdapter } from "./adapters/registry.mjs";
 import { nullLogger } from "./logger.mjs";
+import { appendBoundedTail } from "./bounded-tail.mjs";
 
 const SAFE_SHELL_COMMAND = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
@@ -112,16 +113,6 @@ export function stripAnsi(value) {
   }
   // Drop trailing spaces left on a line by an erase that stopped mid-word.
   return out.replace(/[ \t]+\n/g, "\n");
-}
-
-function appendBoundedTail(current, chunk, maxBytes) {
-  const next = `${current}${chunk.toString("utf8")}`;
-  const buffer = Buffer.from(next, "utf8");
-  if (buffer.length <= maxBytes) return next;
-  return buffer
-    .subarray(buffer.length - maxBytes)
-    .toString("utf8")
-    .replace(/^\uFFFD/, "");
 }
 
 function endStream(stream) {

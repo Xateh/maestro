@@ -9,12 +9,15 @@ import {
   assertInsideDir,
   redactConfig,
   VALID_MODES,
+  WORKFLOW_NAME_RE,
+  buildTaskArgv,
   resolveValidModes,
   createTask,
   listTasks,
   showTask,
   showRun,
   validateWorkflowTool,
+  readWorkflow,
 } from "../src/mcp/server.mjs";
 
 import { safeRunnerEnv } from "../src/agent-runner.mjs";
@@ -135,6 +138,17 @@ test("createTask: rejects invalid mode strings", async () => {
   await assert.rejects(() => createTask({ prompt: "x", mode: "task; rm -rf /" }), /invalid_mode/);
 });
 
+test("createTask: rejects an invalid workflow name shape", async () => {
+  await assert.rejects(() => createTask({ prompt: "x", workflow: "Bad name" }), /invalid_workflow/);
+  await assert.rejects(() => createTask({ prompt: "x", workflow: "_x" }), /invalid_workflow/);
+});
+
+test("buildTaskArgv: includes --workflow and ends options with --", () => {
+  const argv = buildTaskArgv("/bin/maestro.mjs", { mode: "task", workflow: "solo", prompt: "do it" });
+  assert.deepEqual(argv, ["/bin/maestro.mjs", "task", "--mode", "task", "--workflow", "solo", "--", "do it"]);
+  assert.ok(WORKFLOW_NAME_RE.test("solo"));
+});
+
 test("resolveValidModes: always includes base modes", async () => {
   const modes = await resolveValidModes();
   for (const mode of VALID_MODES) assert.ok(modes.has(mode));
@@ -147,6 +161,12 @@ test("validateWorkflowTool: returns {ok, errors, warnings} shape", async () => {
   assert.equal(typeof result.ok, "boolean");
   assert.ok(Array.isArray(result.errors));
   assert.ok(Array.isArray(result.warnings));
+});
+
+test("readWorkflow: returns only workflow_json (no dropped front-matter field)", async () => {
+  const result = await readWorkflow();
+  assert.ok(Object.hasOwn(result, "workflow_json"));
+  assert.equal(Object.hasOwn(result, "workflow_md"), false);
 });
 
 // ── showTask / showRun: id validation ─────────────────────────────────────────

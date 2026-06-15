@@ -67,6 +67,7 @@ Key fields:
   "default_role": "executor",
   "stale_after_ms": 86400000,
   "stream_tail_bytes": 8192,
+  "regression_attempts": 1,         // SP4: default retries for kind:"regression" cases
   "context_retry_limit": 3,
 
   // Worktree settings
@@ -113,15 +114,49 @@ Key fields:
     "close_tab_on": "success"     // "success" | "terminal" | "never"
   },
 
-  // HTTP server (maestro serve)
+  // Server mode (maestro serve) — see "Server-mode Config" below
   "server": {
-    "port": 4000                  // set to null to disable
+    "workflow": "default",        // named graph workflow to run per issue
+    "port": 4000,                 // HTTP API port; null disables
+    "tracker": { "kind": "linear", "api_key": "$LINEAR_API_KEY", "project_slug": "team" },
+    "polling": { "interval_ms": 30000 },
+    "workspace": { "root": "/maestro_workspaces" },
+    "agent": { "max_concurrent_agents": 10, "stall_timeout_ms": 300000 },
+    "intake_template": "..."      // Liquid → dispatched task prompt
   },
 
   // Security
   "host_command_allow": []        // exact basenames; network binaries hard-denied
 }
 ```
+
+### Server-mode Config
+
+`maestro serve` polls a tracker and dispatches each eligible issue as a graph
+task (the same LangGraph engine `maestro task` uses). All of its settings live
+in the `server` block of `config.json`; the block is read **once** at startup
+(edits require a restart). One graph task is created per issue, keyed by a
+`source_issue_id` field so repeated polls re-run the same task rather than
+duplicating it.
+
+| Field | Meaning |
+|---|---|
+| `server.workflow` | Named graph workflow (`.maestro/workflows/<name>.json`) run for each dispatched issue. |
+| `server.port` | HTTP API port; `null` disables the HTTP server. The `--port` flag overrides this. |
+| `server.tracker` | `{ kind: "linear", endpoint?, api_key, project_slug, active_states?, terminal_states? }`. `api_key` accepts a `$VAR` reference. |
+| `server.polling.interval_ms` | Poll cadence (default 30000). |
+| `server.workspace.root` | Base dir for per-issue workspaces (`~`, `$VAR`, and relative paths expand). |
+| `server.hooks` | `after_create` / `before_run` / `after_run` / `before_remove` shell hooks + `timeout_ms`. |
+| `server.agent` | `max_concurrent_agents`, `max_turns`, `max_retry_backoff_ms`, `stall_timeout_ms`, `max_concurrent_agents_by_state`. |
+| `server.intake_template` | Liquid template rendered into each dispatched task's prompt. Context: `{ issue, attempt }`. |
+
+> **Migration:** earlier releases configured the server through a dispatch
+> front-matter file. That file and its loader have been removed — move
+> `tracker`/`polling`/`workspace`/`hooks`/`agent` under `server.*`, put the old
+> prompt body in `server.intake_template`, and map
+> `codex.stall_timeout_ms` → `server.agent.stall_timeout_ms`. The old `codex.*`
+> sandbox keys are dropped (the graph engine's adapters own sandboxing). See the
+> BREAKING entry in `CHANGELOG.md`.
 
 ### Herdr Tab Lifecycle
 
@@ -152,7 +187,7 @@ multiple workers share a database, or for persisting state outside the project
 directory.
 
 ```bash
-DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve workflow.json
+DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve
 ```
 
 The schema is created automatically on first connection. Both backends expose
@@ -220,9 +255,10 @@ the hook is defense-in-depth against the agent that drives maestro. Use
 
 ---
 
-## `workflow.json` (v1)
+## `workflow.json` (v2)
 
-Defines the role graph loaded by LangGraph. `maestro init --workflow <name>`
+Defines the role graph loaded by LangGraph. The default workflow declares
+`"version": 2`; v1 workflows remain valid (all v2 additions are optional). `maestro init --workflow <name>`
 (or `maestro workflow use <name>` after init) writes a built-in template:
 
 | Template | Pipeline |
@@ -235,6 +271,25 @@ Defines the role graph loaded by LangGraph. `maestro init --workflow <name>`
 Both `maestro import` and `maestro workflow use` back up the previous file to
 `workflow.json.bak` before writing (`workflow use` fully replaces the file;
 `import` merges).
+
+### Named workflows (multi-workflow selection)
+
+A single state dir can hold multiple named workflows under
+`.maestro/workflows/<name>.json`, selectable per task. The legacy
+`.maestro/workflow.json` is treated as the **`default`** workflow — there is no
+forced migration, so existing setups keep working unchanged.
+
+- Names must match `^[a-z0-9][a-z0-9_-]{0,63}$`.
+- Precedence: if both `.maestro/workflows/default.json` and the legacy
+  `.maestro/workflow.json` exist, the named file wins and a
+  `workflow_precedence` warning is emitted so you can reconcile them.
+- Create a named slot from a template with
+  `maestro workflow use <template> --as <name>`, list them with
+  `maestro workflow list`, and run one with `maestro task --workflow <name>`.
+- A task records its workflow name in its task JSON (`workflow` field, default
+  `"default"`). At run time an unknown non-`default` name surfaces a typed
+  `unknown_workflow` blocker (the task waits for the user rather than falling
+  back silently).
 
 ```jsonc
 {
@@ -293,10 +348,9 @@ Both `maestro import` and `maestro workflow use` back up the previous file to
 }
 ```
 
-The workflow can also be accompanied by a `WORKFLOW.md` file in the same
-`.maestro/` directory (`.maestro/WORKFLOW.md`), which defines per-role Liquid
-prompt templates in human-readable Markdown. A legacy `WORKFLOW.md` at the repo
-root is still read when no `.maestro/WORKFLOW.md` exists.
+Per-role prompt templates live inline in `workflow.json` under
+`roles.<role>.prompt_template` (Liquid syntax). See
+[Custom Workflow Templates](#custom-workflow-templates) below.
 
 ### Role fields for imported/custom roles
 
@@ -312,6 +366,330 @@ Reserved events that handoff payloads may not redefine: `done`, `error`,
 declared in `transitions[role]` to be honored. Validate with
 `maestro workflow validate` — unterminated cycles produce a warning with a
 recommended termination clause. See [import-export.md](import-export.md).
+
+### Stage I/O contracts (manifest v2)
+
+A role may declare the structured-output schema its agent should emit. SP1
+ships this vocabulary plus **soft** validation: a non-conforming payload is
+recorded as evidence, never blocked, and routing is unaffected.
+
+| Field | Description |
+|---|---|
+| `output_schema` | A built-in registry name (string) **or** an inline JSON Schema object (draft 2020-12). |
+| `output_schema_ref` | A path, relative to the state dir, to a JSON Schema file. Must not be absolute or escape the state dir (`..`). |
+| `gates` (top-level) | Quality gate declarations. Enforced by a `kind: "scoring"` role (SP5); a workflow with no scoring role declares gates as documentation only. |
+
+Resolution order when more than one is set: inline `output_schema` object >
+`output_schema_ref` > `output_schema` registry name.
+
+Built-in registry schema names: `implementation`, `static_analysis`, `review`,
+`threat_model`, `edge_cases`, `tests`, `evaluation`, `regression`, `scoring`,
+`stage_event`. Each is strict on required keys, value types and enums but
+permissive on extra keys (`additionalProperties: true`).
+
+```jsonc
+{
+  "version": 2,
+  "roles": {
+    "executor": { "output_schema": "implementation" },
+    "auditor":  { "output_schema_ref": "schemas/audit.schema.json" }
+  },
+  "gates": {
+    "min_coverage": 90,                  // number 0–100
+    "no_high_severity_findings": true,   // boolean
+    "all_regressions_pass": true,        // boolean
+    "min_overall_confidence": 0.8        // number 0–1
+  }
+}
+```
+
+When an agent emits a `MAESTRO_HANDOFF` marker and its role resolves a schema,
+Maestro records `schema_validation: { ok, errors, schema }` alongside the
+handoff — in graph state (`priorHandoffs`), the `handoff.<role>.json` run-dir
+file, and the database `handoffs` row. No marker emitted ⇒ no
+`schema_validation` (nothing to check).
+
+`maestro workflow validate` reports new codes: `unknown_output_schema` (string
+name not in the registry), `bad_output_schema` (inline schema fails to compile,
+or a bad `output_schema_ref` path), `bad_gates` (unknown gate key or
+out-of-range/typed value), and a `missing_output_schema` warning for a role
+whose name matches a verifier stage (review/threat_model/edge_cases/tests/
+evaluation/regression) but declares no schema.
+
+### Role `kind` and the verification pipeline (manifest v2)
+
+Two additive role fields drive the SP2 verification spine:
+
+| Field | Description |
+|---|---|
+| `kind` | `"agent"` (default; absent ⇒ agent) runs the role's provider as usual. `"stub"` skips provider resolution and the agent call entirely, emitting a minimal payload conforming to the role's `output_schema` (empty/zero values; first enum member for enum keys) with `event: "done"`. `"command"` (SP3) runs declared shell commands instead of an LLM (see below). Neither a stub nor a command role invokes a provider, so neither can fail on availability. |
+| `verifies` | `true` marks the role a verification stage. Inert at runtime in SP2; it is read by the independence rule (below) and reserved for later scoring. |
+
+For a role that is **not** planner/executor/reviewer (i.e. uses the generic
+prompt), when it declares a resolvable `output_schema` Maestro renders that
+schema's required-key skeleton plus any enum constraints into the
+`MAESTRO_HANDOFF` example in the prompt, so verifier agents reliably emit
+conforming JSON. Verifier roles can route work back for rework by emitting a
+custom `event` (e.g. `"changes_requested"`) declared in their transitions.
+
+`maestro workflow validate` adds the `non_independent_role` error: a single
+role must not be both an implementation entry role (`initial` /
+`modes.<mode>.initial`) and a verifier (`verifies: true`) — distinct roles ⇒
+distinct sessions ⇒ independent verification by construction.
+
+#### `full-audit-sweep` template
+
+A built-in template wiring the full 10-stage pipeline:
+
+```
+implementation → static_analysis → review → threat_model → edge_cases
+  → tests → evaluation → regression → scoring → human_approval ($complete)
+
+rework loops:
+  review / threat_model / edge_cases → implementation (event: changes_requested)
+  regression → implementation (event: regressions_found)
+  scoring → $halt (event: blocked) — only when a gates: block is declared
+```
+
+`static_analysis` is a `kind: "stub"` pass-through (real logic arrives in a later
+sub-project); `evaluation` is a `kind: "command"` stage (SP3, below) shipped with
+an empty `commands: []` (a vacuous no-op until you populate it); `regression` is
+a `kind: "regression"` corpus runner (SP4, below) with an empty corpus by
+default; `scoring` is a `kind: "scoring"` stage (SP5, below) that derives the six
+reliability scores and enforces declared gates — the shipped template declares
+**no** `gates:`, so scoring is purely informational (always routes `passed →
+human_approval`) until you add a gates block; the rest are agent roles, each with
+an `output_schema`. Rework loops are bounded by
+`loop_limits.default_max_visits: 3` (escalates to the user on exceed).
+`human_approval` summarizes the recorded artifacts for a human to inspect, then
+completes.
+
+It is **opt-in** (not scaffolded by `maestro init`). Install and run it with:
+
+```sh
+maestro workflow use full-audit-sweep --as full-audit-sweep
+maestro task "…" --workflow full-audit-sweep
+```
+
+#### `kind: "command"` — the automated evaluation stage (SP3)
+
+A `kind: "command"` role is a **non-LLM** stage that runs declared shell
+commands in the task's working tree (`worktree_path ?? cwd`), collects their
+results, and maps them to the `evaluation` schema `{pass_rate, failures,
+coverage}`. It is evidence-gathering only — **no gating**: every command runs
+and the stage always emits `event: "done"` (a failing command lowers
+`pass_rate` but never halts the run). The agent runner is never invoked.
+
+The role declares a `commands` array. Each command:
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Unique within the role. |
+| `run` | yes | Shell string, executed via `sh -lc`. |
+| `category` | no | Free-form label (e.g. `lint`, `typecheck`, `unit`, `integration`, `e2e`, `security`). Permissive — unknown values are not rejected. |
+| `timeout_ms` | no | Per-command timeout. Falls back to `config.command_timeout_ms`, then `120000`. On timeout the child is killed (`SIGTERM`), `timed_out: true`. |
+| `allow_failure` | no | `true` ⇒ the command still runs and is recorded, but is excluded from both `pass_rate` and `failures`. |
+| `parser` | no | `{passed?, failed?, total?}` of regex strings (below). |
+
+**`pass_rate` (hybrid).** Each non-`allow_failure` command contributes
+`(passed, total)`:
+
+- No parser, or parser did not produce a derivable total ⇒ exit-code
+  granularity: `total = 1`, `passed = (exit_code === 0 && !timed_out &&
+  !spawn_error) ? 1 : 0`.
+- Parser produced counts ⇒ those `total`/`passed`.
+
+`pass_rate = round4(Σpassed / Σtotal)`, defined as `1.0` when `Σtotal === 0`
+(no commands). Empty `commands: []` ⇒ `pass_rate: 1.0`, `failures: []`.
+
+**`parser` sufficiency rule (never fabricate a pass-rate).** The first capture
+group of each regex is parsed as an integer against `stdout + "\n" + stderr`. A
+total is used only when it is *derivable*: either a `total` regex matched, OR
+**both** `passed` and `failed` matched (then `total = passed + failed`). A
+parser that yields only `passed`, only `failed`, or nothing returns no counts —
+the command falls back to exit-code granularity. (A failing run still lowers
+`pass_rate` through its non-zero exit.)
+
+**`failures[]`.** One entry per non-`allow_failure` command that did not fully
+pass (`exit_code !== 0`, `timed_out`, a spawn error, or `parsed.passed <
+parsed.total`): `{name, run, category, exit_code, signal, timed_out,
+output_tail, parsed?}`. `output_tail` is the bounded combined output (last
+`config.stream_tail_bytes` bytes, default 65536). A spawn error (missing `sh`,
+bad cwd, thrown/absent runner) is captured as `exit_code: 127`.
+
+**`coverage`** is always `{}` in SP3 (coverage parsing is a future concern).
+
+Validation (`maestro workflow validate`) adds `bad_command_spec`: a command
+missing a non-empty `name` or `run`, a duplicate `name`, or a non-array
+`commands` is rejected. An empty `commands: []` is valid.
+
+The shipped `full-audit-sweep` `evaluation` role declares `commands: []`, so the
+default runner is never invoked by the shipped manifest until you opt in:
+
+```jsonc
+"evaluation": {
+  "kind": "command",
+  "output_schema": "evaluation",
+  "commands": [
+    { "name": "lint", "run": "npm run lint", "category": "lint" },
+    { "name": "unit", "run": "npm test", "category": "unit",
+      "parser": { "passed": "# pass (\\d+)", "failed": "# fail (\\d+)" } }
+  ]
+}
+```
+
+Relevant config knobs (both optional, read with fallbacks — neither is added to
+the default config): `command_timeout_ms` (default `120000`) and
+`stream_tail_bytes` (default `65536`, already used for agent output).
+
+#### `kind: "regression"` — the regression corpus stage (SP4)
+
+A `kind: "regression"` role is a **non-LLM** stage (sibling to `kind: "command"`)
+that maintains a persistent **corpus** of past failures — one JSON file per case
+under the task's working tree (default `<cwd>/.maestro/regression/*.json`,
+override with `corpus_dir`). On every run it (1) re-runs every corpus case via
+the same `commandRunner` to detect regressions, and (2) auto-promotes the
+upstream `evaluation` stage's `failures[]` into new corpus cases. It maps results
+to the `regression` schema `{regressions_run, new_failures, promoted_tests}`
+(plus `corpus_load_errors` and `outcome`). The agent runner is never invoked, and
+a case failure, corpus load error, or promotion write error never throws — each
+is captured as evidence.
+
+**Case file shape** (written by promotion, validated on load):
+
+```jsonc
+{
+  "id": "lint-a1b2c3",              // required, unique
+  "source": "evaluation.failures",  // provenance
+  "added": "2026-06-14",            // ISO date promoted
+  "origin_task": "<task-id>",       // nullable
+  "category": "lint",               // optional
+  "command": {                       // required
+    "run": "npm run lint",          // required, shell string (via sh -lc)
+    "timeout_ms": null,             // optional; null ⇒ config.command_timeout_ms / 120000
+    "parser": null                  // optional; stored for future use (ignored by pass/fail)
+  }
+}
+```
+
+A case missing `id` or `command.run`, or that fails to parse, is a load error
+(skipped, recorded in `corpus_load_errors`, never run). A missing corpus dir is
+treated as an empty corpus.
+
+**Pass/fail + retries.** A case **passes** iff `exit_code === 0 && !timed_out &&
+!spawn_error`. Each case is re-run up to an effective `attempts` count
+(`case.attempts ?? role.attempts ?? config.regression_attempts ?? 1`), stopping
+early on the first pass; a case is a regression only when **all** attempts fail.
+The `attempts` made are recorded per case.
+
+**Auto-promotion.** The most recent prior `evaluation` handoff's `failures[]` are
+read; each failure whose derived id (`slug(name)-shortHash(run)`) is not already
+in the corpus is written as a new case during the run and listed in
+`promoted_tests[]`. Idempotent: the deterministic id means re-running the same
+failing evaluation never double-writes.
+
+**Outcome routing.** After building the payload the stage emits `done` when
+`new_failures.length < fail_threshold` (default `1`), else the role's `fail_event`
+(default `regressions_found`). The stage never halts — the manifest's
+`transitions` decide where each event routes (e.g. `regressions_found →
+implementation`). `outcome` mirrors the emitted event (`"clean"` for `done`).
+
+Role fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `corpus_dir` | no | Corpus directory, resolved against `cwd`. Default `.maestro/regression`. |
+| `attempts` | no | Positive integer retries before a final fail (default `1`). |
+| `fail_threshold` | no | Positive integer `new_failures` count that routes the fail event (default `1`). |
+| `fail_event` | no | Outcome event name when the threshold is met (default `regressions_found`). Must have a declared transition. |
+
+Validation (`maestro workflow validate`) adds `bad_regression_spec`: a
+`kind: "regression"` role must declare both a `done` and its effective
+`fail_event` transition; `attempts`/`fail_threshold`, if present, must be positive
+integers.
+
+Relevant config knob: `regression_attempts` (default `1`) — a first-class config
+key (carried across migration) that sets the default retry count when neither the
+case nor the role specifies `attempts`.
+
+#### `kind: "scoring"` — the reliability scoring + gates stage (SP5)
+
+A `kind: "scoring"` role is a **non-LLM** stage (sibling to
+`command`/`regression`) that reads every prior stage handoff, derives the six SP1
+`scoring` numbers **from actual evidence**, enforces the manifest's declared
+`gates:`, and routes the workflow on the outcome. The agent runner is never
+invoked and the stage never throws — missing or garbage evidence is handled by
+the rules below.
+
+**Never fabricate confidence.** Each sub-score is a pure function of one upstream
+field:
+
+| score | evidence | rule |
+|---|---|---|
+| `correctness_score` | `evaluation.pass_rate` | the unit pass-rate directly |
+| `test_score` | `tests.tests_created` | `length > 0 ? 1.0 : 0.0` (presence of authored tests) |
+| `review_score` | `review.severity` | none→1.0, low→0.75, medium→0.5, high→0.25, critical→0.0 |
+| `security_score` | `threat_model.{threats,mitigations}` | no threats ⇒ 1.0, else `clamp(mitigations/threats, 0, 1)` |
+| `regression_score` | `regression.{regressions_run,new_failures}` | no runs ⇒ 1.0, else `clamp((run−fail)/run, 0, 1)` |
+| `overall_confidence` | the five above | their **product** |
+
+When the evidence for a score is **absent** (the role's handoff is missing, or
+the field is the wrong type) the sub-score is `0.0`, the role is added to
+`missing_evidence[]`, and `score_inputs[score] = { from, value: 0, missing: true }`
+— so a `0` from absence stays distinguishable from a `0` from bad results via the
+`score_inputs` provenance map. A vacuous-pass (e.g. an empty `regressions_run` —
+"nothing to fail") is `1.0` and **not** flagged. Because `overall_confidence` is
+the product, any zeroed axis (including a missing one) drives overall confidence
+to `0` (the most conservative, fail-honest aggregation). All scores are rounded
+to 4 decimals.
+
+**Gate enforcement.** The four SP1 gate keys are enforced only when present in
+the top-level `gates:` block (a role-level `gates` override is also accepted):
+
+| gate | passes iff |
+|---|---|
+| `min_coverage` (0–100) | a numeric coverage percent (`evaluation.coverage.{percent,lines,total}`, first found) is present **and** `>= min_coverage`. No coverage evidence ⇒ **fail** (fail-closed). |
+| `no_high_severity_findings` (bool) | when `true`: `review.severity ∉ {high,critical}` **and** no `static_analysis` finding is high/critical; no review evidence ⇒ **fail**. `false` ⇒ not enforced. |
+| `all_regressions_pass` (bool) | when `true`: the `regression` handoff is present **and** `new_failures.length === 0`; absent ⇒ **fail**. `false` ⇒ not enforced. |
+| `min_overall_confidence` (0–1) | the computed `overall_confidence >= min_overall_confidence`. |
+
+`passed` iff every present gate passed; `blocked_reasons[]` carries one
+human-readable string per failed gate. `gates` absent/`{}` ⇒ `passed: true`,
+empty `gates`/`blocked_reasons`. A `false`-valued bool gate is omitted from
+`gates` and `blocked_reasons` entirely.
+
+**Outcome routing.** The stage emits `pass_event` (default `passed`) when all
+gates pass, else `block_event` (default `blocked`). The stage never halts — the
+manifest's `transitions` decide where each event routes. The shipped
+`full-audit-sweep` routes `scoring.passed → human_approval` and
+`scoring.blocked → $halt`, but a workflow may redirect `blocked` elsewhere (e.g.
+back to `implementation`).
+
+Role fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `pass_event` | no | Event name emitted when all gates pass (default `passed`). Must have a declared transition. |
+| `block_event` | no | Event name emitted when any gate fails (default `blocked`). Must have a declared transition. |
+| `gates` | no | Role-level override for the gate block (the top-level `gates:` is the norm). |
+
+Validation (`maestro workflow validate`) adds `bad_scoring_spec`: a
+`kind: "scoring"` role must declare transitions for both its effective
+`pass_event` and `block_event`.
+
+The shipped `full-audit-sweep` inserts a `scoring` role between `regression` and
+`human_approval` but declares **no** `gates:` block — so scoring is purely
+informational there and nothing new blocks. Opt into enforcement by adding a
+top-level `gates:` block to your workflow.
+
+### YAML authoring
+
+A workflow may be authored in YAML instead of JSON:
+`.maestro/workflows/<name>.yaml` (named) or `.maestro/workflow.yaml` (default).
+`readWorkflow()` normalizes YAML to the same in-memory shape as the JSON
+equivalent. JSON remains canonical: when both a `.json` and `.yaml` exist for
+the same slot, the JSON wins and a `workflow_format_precedence` warning is
+emitted. Writers (`writeWorkflow`, templates) keep writing JSON.
 
 ---
 
@@ -352,8 +730,8 @@ Full guide: [local-llm.md](local-llm.md).
 
 ## Custom Workflow Templates
 
-Override the default prompt for any role by editing `workflow.json` `roles.<role>.prompt_template`
-or by defining a `## <Role>` section in `WORKFLOW.md`. Templates are rendered with
+Override the default prompt for any role by editing `workflow.json` `roles.<role>.prompt_template`.
+Templates are rendered with
 [LiquidJS](https://liquidjs.com) and receive context variables:
 
 | Variable | Description |
@@ -363,3 +741,150 @@ or by defining a `## <Role>` section in `WORKFLOW.md`. Templates are rendered wi
 | `priorHandoffs` | Array of typed handoffs from previous roles |
 | `userDirectives` | Resume directives (answers, approval text) |
 | `stepIndex` | Zero-based step counter |
+
+---
+
+## Stage events & observability
+
+Every stage execution is exposed as a structured `stage_event`. The stream is a
+**projection over `task.steps`** (the record maestro already keeps) — there is no
+separate events table and no second write path, so events can never diverge from
+the steps they describe. It is **per-step-transition**: a retried role honestly
+shows as two events, distinguished by `status`.
+
+Each event has the SP1 `stage_event` shape plus additive cross-reference fields:
+
+| Field | Source |
+|---|---|
+| `workflow_id` | `task.workflow` (`"default"` when unset) |
+| `stage` | the step's role |
+| `model` | the model for LLM stages; `""` for non-LLM (`stub`/`command`/`regression`/`scoring`) |
+| `tokens` | parsed from the agent's structured usage (see below); `0` for non-LLM |
+| `duration_ms` | `completed_at − started_at` (now real for non-LLM stages too) |
+| `status` | the step status (`succeeded`/`failed`/`retried`/…) |
+| `artifacts` | present subset of `[handoff_path, stdout_path, stderr_path]` |
+| `role` / `provider` | additive — for cross-referencing the source step |
+
+### `maestro events <id> [--json]`
+
+Prints the projected stream, one line per stage
+(`stage  status  model  tokens  duration_ms  [artifacts…]`), or a raw
+`stage_event` JSON array with `--json`.
+
+### Tokens
+
+`tokens` is parsed per provider from the structured usage each CLI emits — claude
+`stream-json` `result.usage`, codex `--json`, and
+copilot/antigravity/gemini JSON (incl. gemini `usageMetadata`). Providers that
+print no usage (ollama), unrecognised output, a parse error, or the 64KB
+log-tail truncation all yield `0`.
+
+### OpenTelemetry
+
+When a collector is configured via `OTEL_EXPORTER_OTLP_ENDPOINT`, each event is
+mirrored as a `maestro.stage` span with the event fields as `maestro.*`
+attributes. With no endpoint/SDK registered it is a fully-guarded no-op —
+emission never affects a run.
+
+## Artifacts & event history (SP6b)
+
+### `maestro artifacts <id> [<selector>] [--cat|--tail|--json]`
+
+A **derived index** of the files a run already wrote to its `run_dir` — there is
+no persisted manifest and no artifacts table; the index is recomputed by scanning
+`run_dir` on every call, so it can never drift from disk.
+
+With no selector, lists one row per file:
+
+| column     | meaning                                                              |
+| ---------- | ------------------------------------------------------------------- |
+| `role`     | the stage role the file belongs to (`-` for unclassified files)     |
+| `kind`     | `handoff` · `stdout` · `stderr` · `command` · `prompt` · `exit` · `other` |
+| `bytes`    | file size                                                           |
+| `modified` | mtime (ISO-8601)                                                    |
+| `sha256`   | streamed SHA-256 digest (short form in the table; full with `--json`) |
+| `name`     | filename                                                            |
+
+`--json` emits the full entries (`{role, kind, name, path, bytes, modified,
+sha256, status}`); `status` is joined from the latest matching `steps` entry.
+
+With a **selector** (`<role>.<kind>`, e.g. `implementation.stdout`, or a raw
+filename) it reads one file: `--cat` prints the whole file, `--tail` the bounded
+tail, `--json` the entry's metadata. The selector is resolved through
+`assertInsideDir(run_dir, …)` — a `../escape` or raw-path selector resolves to
+nothing and yields a clean `unknown_artifact` error, never a traversal.
+
+The per-artifact `sha256` is an integrity fingerprint that SP6c (reproducible
+re-runs) will verify against; SP6b only records it.
+
+### `maestro events --all [--stage S] [--status S] [--workflow W] [--json]`
+
+`maestro events <id>` is the **live projection** over a task's steps (correct
+even before materialisation or mid-run). At run completion the engine also
+**materialises** that projection into a queryable `events` table (delete-then-
+insert per task — a regenerable cache, never a second write path;
+`getStageEvents` stays canonical). `events --all` runs a cross-task/historical
+query over that table, optionally filtered by `--stage`, `--status`, and
+`--workflow`. On an older DB without the table, `events --all` returns an empty
+result rather than crashing.
+
+The `events` table mirrors across both backends (SQLite + PostgreSQL).
+
+## Reproducible re-runs (SP6c)
+
+Each run captures enough of its **inputs** to be replayed and compared. This is
+*reproducible inputs, not bit-identical output*: LLM stages are non-deterministic,
+so `stdout`/`handoff` artifacts differ across runs, while the deterministic
+inputs (`<role>.command.json`, `<role>.prompt.txt`) match when the replay is
+faithful.
+
+### `run-manifest.json`
+
+The engine writes `<run_dir>/run-manifest.json` at run start (best-effort — a
+write failure is logged to stderr and never breaks the run; idempotently
+overwritten on resume). It is **self-contained**:
+
+```jsonc
+{
+  "manifest_version": 1,
+  "maestro_version": "0.1.0",
+  "created_at": "…ISO…",
+  "source_task_id": "<id>",
+  "task": { /* the 19 replayable input knobs only */ },
+  "workflow_snapshot": { /* the full resolved workflow JSON, inlined */ },
+  "git": { "start_head": "<sha|null>" },
+  "run_dir": "<path>"
+}
+```
+
+The `task` block is an explicit allow-list of input knobs (`prompt`, `mode`,
+`workflow`, `cwd`, `planner_policy`, `review_enabled`, `timeout_ms`,
+`stream_tail_bytes`, `context_retry_limit`, `claude_command`, `codex_command`,
+`planner_model`, `claude_effort`, `executor_model`, `executor_effort`,
+`reviewer_model`, `reviewer_effort`, `worktree_mode`, `write_paths`). It
+deliberately omits identity/derived fields (`id`, `status`, `steps`,
+`start_head`, `branch`, `run_dir`, timestamps, …) so a replay is a clean new
+task, not a clone. Because the workflow snapshot is inlined, a later edit to the
+named workflow cannot change what a replay runs. The manifest is an internal
+artifact (shape-tested, not a registered JSON schema).
+
+### `maestro rerun <id> [--dry-run | --no-run]`
+
+Reads `<run_dir>/run-manifest.json` (missing ⇒ `no_run_manifest` — e.g. a
+pre-SP6c run), pins the captured `workflow_snapshot` to a workflow file named
+`rerun-<id>` (sanitized to the 64-char `isValidWorkflowName` limit), then
+`createTask`s a fresh task with the manifest's inputs and `workflow` set to that
+pinned name. Default = recreate + run, printing the new id. `--dry-run` prints
+the manifest + resolved inputs and writes nothing. `--no-run` creates the task
+queued and prints its id (run later via `maestro run-task <id>`). The new run
+writes its own manifest, so reruns are themselves reproducible.
+
+### `maestro compare <id1> <id2> [--json]`
+
+Builds the artifact index for both runs and joins entries by `(role, kind)`,
+classifying each by `sha256`: `MATCH` (both present, equal), `DIFFER` (both
+present, differing/null), or `ONLY-1` / `ONLY-2` (present on one side only).
+Matching `command`/`prompt` rows are the reproducibility signal — they confirm
+the replay fed each stage identical inputs — while LLM `stdout`/`handoff` rows
+legitimately `DIFFER`. The default output is a `role.kind  RESULT` table;
+`--json` emits `[{role, kind, result, sha256_1, sha256_2}]`.

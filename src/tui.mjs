@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
 
+import { isValidWorkflowName } from "./task-store.mjs";
 import { runWorkflowMenu } from "./tui-workflow.mjs";
 import { runProvidersMenu } from "./tui-providers.mjs";
 
@@ -102,6 +103,16 @@ const TASK_FIELDS = [
     label: "Mode",
     prompt: (defaults) => `Mode task|plan-only [${defaults.mode}]: `,
     parse: (value, defaults) => normalizeChoice(value, defaults.mode, ["task", "plan-only"]),
+  },
+  {
+    key: "workflow",
+    label: "Workflow",
+    prompt: (defaults) => `Workflow [${defaults.workflow ?? "default"}]: `,
+    parse: (value, defaults) => {
+      const next = String(value ?? "").trim();
+      if (!next) return defaults.workflow ?? "default";
+      return isValidWorkflowName(next) ? next : (defaults.workflow ?? "default");
+    },
   },
   {
     key: "timeout_ms",
@@ -341,6 +352,7 @@ export async function collectNewTaskForm({ ask, defaults, output = null, color =
       prompt: "",
       cwd: defaults.cwd,
       mode: defaults.mode ?? "task",
+      workflow: defaults.workflow ?? "default",
       timeout_ms: defaults.timeout_ms,
       ...(defaultRoleSkips ? { role_skips: defaultRoleSkips } : {}),
       cancelled: true,
@@ -350,6 +362,7 @@ export async function collectNewTaskForm({ ask, defaults, output = null, color =
     prompt,
     cwd: defaults.cwd,
     mode: defaults.mode ?? "task",
+    workflow: defaults.workflow ?? "default",
     timeout_ms: defaults.timeout_ms,
     ...(defaultRoleSkips ? { role_skips: defaultRoleSkips } : {}),
   };
