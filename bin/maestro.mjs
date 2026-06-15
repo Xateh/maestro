@@ -43,8 +43,12 @@ if (invokedAsMain) {
   main().catch((error) => {
     if (error?.code === "cli_usage") {
       process.stderr.write(error.cliHelp);
-    } else {
+    } else if (process.env.MAESTRO_DEBUG) {
       process.stderr.write(`maestro_failed ${error.stack ?? error.message}\n`);
+    } else {
+      // Typed errors carry a "code: detail" message that already reads as a
+      // friendly one-liner; raw fs/ENOENT errors fall back to .message too.
+      process.stderr.write(`maestro: ${error.message}\n`);
     }
     process.exitCode = 1;
   });

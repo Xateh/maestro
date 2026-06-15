@@ -902,7 +902,19 @@ export class LocalTaskStore {
   }
 
   async readTask(id) {
-    const text = await fs.readFile(this.taskPath(id), "utf8");
+    let text;
+    try {
+      text = await fs.readFile(this.taskPath(id), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        // Friendly one-liner for the CLI handler; keep .code so existing
+        // ENOENT-based control flow (e.g. optional reads) still works.
+        const notFound = new Error(`task_not_found: ${id} — run \`maestro status\` to list tasks`);
+        notFound.code = "ENOENT";
+        throw notFound;
+      }
+      throw error;
+    }
     return JSON.parse(text);
   }
 
@@ -917,7 +929,17 @@ export class LocalTaskStore {
   }
 
   async readProject(id) {
-    const text = await fs.readFile(this.projectPath(id), "utf8");
+    let text;
+    try {
+      text = await fs.readFile(this.projectPath(id), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        const notFound = new Error(`project_not_found: ${id} — run \`maestro project status\` to list projects`);
+        notFound.code = "ENOENT";
+        throw notFound;
+      }
+      throw error;
+    }
     return JSON.parse(text);
   }
 

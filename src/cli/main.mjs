@@ -24,6 +24,11 @@ export async function main() {
   }
   if (route.kind === "local") {
     const invocation = resolveWorkspaceLocalInvocation({ args: rawArgs });
+    if (invocation.usedPackageFallback) {
+      process.stderr.write(
+        "maestro: no .maestro/ found here — using the package default; run `maestro init` to create one (or pass --state-dir <path>)\n",
+      );
+    }
     await runLocalMaestroCommand(invocation);
     return;
   }
