@@ -178,6 +178,8 @@ export const DEFAULT_SERVER_CONFIG = {
     project_slug: null,
     active_states: DEFAULT_ACTIVE_STATES,
     terminal_states: DEFAULT_TERMINAL_STATES,
+    done_state: null,
+    blocked_state: null,
   },
   polling: { interval_ms: 30_000 },
   workspace: { root: "/maestro_workspaces" },

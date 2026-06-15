@@ -170,6 +170,7 @@ export class MaestroOrchestrator {
         status: result?.status ?? "succeeded",
         completed_at: nowIso(),
       });
+      await this.applyTransition(issue, result?.status ?? "succeeded");
       // Re-dispatch at the polling interval (not 1 s) so we don't hammer
       // fetchIssueStatesByIds on every active run. The timer fires even on
       // "succeeded" so the tracker can detect external state changes (R4).
@@ -184,6 +185,23 @@ export class MaestroOrchestrator {
       this.scheduleRetry(issue, { attempt: attempt + 1, continuation: false, reason: error.code ?? "worker_error" });
     } finally {
       this.runtime.running.delete(issue.id);
+    }
+  }
+
+  // Opt-in Linear write-back. Best-effort: a tracker failure logs a warning and
+  // never breaks dispatch. Default null done/blocked states = no-op (humans move
+  // the card).
+  async applyTransition(issue, status) {
+    const tracker = this.config.tracker;
+    let target = null;
+    if (status === "succeeded" && tracker.doneState) target = tracker.doneState;
+    else if ((status === "waiting_user" || status === "waiting_approval") && tracker.blockedState) target = tracker.blockedState;
+    if (!target) return;
+    try {
+      await this.tracker.transitionIssue(issue.id, target);
+      this.logger.info("dispatch_issue_transitioned", { issue_identifier: issue.identifier, state: target });
+    } catch (error) {
+      this.logger.warn("dispatch_transition_failed", { issue_identifier: issue.identifier, state: target, error: error.message });
     }
   }
 

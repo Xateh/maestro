@@ -491,6 +491,9 @@ test("orchestrator retry timer can relaunch its own claimed issue", async () => 
     reason: "continuation_check",
   });
   scheduled();
+  // runIssue now awaits best-effort write-back (applyTransition) before
+  // scheduling the continuation retry; drain the extra microtask.
+  await Promise.resolve();
   await Promise.resolve();
 
   assert.deepEqual(runs, ["OPS-RETRY:1"]);

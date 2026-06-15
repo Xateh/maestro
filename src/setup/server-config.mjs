@@ -124,6 +124,8 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
       projectSlug: tracker.project_slug ?? DEFAULT_SERVER_CONFIG.tracker.project_slug,
       activeStates: listOfStrings(tracker.active_states, DEFAULT_ACTIVE_STATES),
       terminalStates: listOfStrings(tracker.terminal_states, DEFAULT_TERMINAL_STATES),
+      doneState: tracker.done_state || null,
+      blockedState: tracker.blocked_state || null,
     },
     polling: {
       intervalMs: positiveInteger(polling.interval_ms, 30_000, "invalid_poll_interval"),
@@ -160,6 +162,12 @@ export function validateServerConfig(config) {
   }
   if (!config.tracker.projectSlug) {
     throw typedError("missing_tracker_project_slug");
+  }
+  if (config.tracker.doneState !== null && typeof config.tracker.doneState !== "string") {
+    throw typedError("invalid_tracker_done_state", "expected string or null");
+  }
+  if (config.tracker.blockedState !== null && typeof config.tracker.blockedState !== "string") {
+    throw typedError("invalid_tracker_blocked_state", "expected string or null");
   }
   return true;
 }
