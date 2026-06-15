@@ -47,6 +47,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Verification pipeline spine (SP2)** — the 9-stage reliability pipeline as a
+  runnable, opt-in named workflow. Additive only; the default
+  planner→executor→reviewer workflow is unchanged.
+  - **Role `kind` discriminator**: `kind: "agent"` (default; absent ⇒ agent)
+    preserves existing behavior. `kind: "stub"` skips provider resolution and
+    the agent call entirely, emitting a schema-conforming placeholder payload
+    with `event: "done"` (the seam SP3 extends with `kind: "command"`).
+  - **`verifies: true`** role flag tags verification stages declaratively
+    (inert at runtime in SP2; consumed by the new validation rule and later
+    scoring).
+  - **Schema-aware prompts**: the generic (custom-role) prompt now renders the
+    role's `output_schema` required-key skeleton plus enum notes into the
+    `MAESTRO_HANDOFF` example, so verifier agents emit conforming JSON. Schema
+    helpers `emptyPayloadForSchema` and `schemaSkeleton` added to
+    `src/schemas/`. Planner/executor/reviewer prompts are unchanged.
+  - **Independence validation**: `validateWorkflow` reports
+    `non_independent_role` (error) when a role is both an implementation entry
+    role and a verifier — distinct roles ⇒ distinct sessions ⇒ independent.
+  - **`full-audit-sweep` template**: a new `WORKFLOW_TEMPLATES` entry —
+    implementation → static_analysis → review → threat_model → edge_cases →
+    tests → evaluation → regression → human_approval, with bounded
+    `changes_requested` rework loops from the discovery verifiers back to
+    implementation (`loop_limits.default_max_visits: 3`). Opt in with
+    `maestro workflow use full-audit-sweep --as full-audit-sweep` and run via
+    a task's `workflow` field. Not auto-scaffolded by `maestro init`.
 - **Manifest & stage I/O contracts (SP1)** — a shared, declarative vocabulary
   for reliable pipelines.
   - **Schema registry** (`src/schemas/`): 10 canonical named JSON Schemas

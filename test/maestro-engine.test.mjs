@@ -15,9 +15,12 @@ import { test } from "node:test";
 
 import { buildGraph } from "../src/langgraph/graph.mjs";
 import { makeRoleNode } from "../src/langgraph/nodes.mjs";
+import { buildPromptFromHandoffs } from "../src/langgraph/prompt.mjs";
 import { runLangGraphTask } from "../src/langgraph/engine.mjs";
 import { SqliteTaskStore } from "../src/db/store.mjs";
 import { DEFAULT_WORKFLOW, LocalTaskStore } from "../src/task-store.mjs";
+import { emptyPayloadForSchema, getSchema } from "../src/schemas/index.mjs";
+import { resolveWorkflowTemplate } from "../src/setup/workflow-templates.mjs";
 
 const DEFAULT_CONFIG = {
   default_role: "executor",
@@ -329,6 +332,103 @@ test("makeRoleNode: inline output_schema validated via validateInline", async ()
     db.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ── makeRoleNode: kind:"stub" pass-through (SP2) ─────────────────────────────────
+
+const THROWING_RUNNER = {
+  runStep: async () => { throw new Error("runner must never be called for a stub role"); },
+};
+
+test("makeRoleNode: stub role emits schema-conforming payload", async () => {
+  const roleDef = { kind: "stub", prompt_template: "static_analysis", output_schema: "static_analysis", permission: "read" };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.deepEqual(result.priorHandoffs[0].payload, emptyPayloadForSchema(getSchema("static_analysis")));
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.equal(result.priorHandoffs[0].provider, null, "engine-visible handoff has no provider");
+    assert.equal(handoffs[0].provider, "stub", "DB row uses the stub sentinel (provider column is NOT NULL)");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: stub role does not invoke the runner (runStep throws)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-stub-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000001-stub";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const roleDef = { kind: "stub", prompt_template: "static_analysis", output_schema: "static_analysis", permission: "read" };
+    const node = makeRoleNode(roleDef, { db, runner: THROWING_RUNNER, providerDef: null });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.equal(result.currentState, "static_analysis");
+    assert.deepEqual(result.visits, { static_analysis: 1 });
+    assert.deepEqual(result.priorHandoffs[0].payload, emptyPayloadForSchema(getSchema("static_analysis")));
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: stub role with no output_schema → payload {} and schema_validation omitted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-stub-noschema-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000002-stub";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const roleDef = { kind: "stub", prompt_template: "noop", permission: "read" };
+    const node = makeRoleNode(roleDef, { db, runner: THROWING_RUNNER, providerDef: null });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.deepEqual(result.priorHandoffs[0].payload, {});
+    assert.equal(result.priorHandoffs[0].schema_validation, undefined);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: stub already in priorHandoffs resume-skips, runner not called", async () => {
+  const roleDef = { kind: "stub", prompt_template: "static_analysis", output_schema: "static_analysis", permission: "read" };
+  const node = makeRoleNode(roleDef, {
+    db: { getTask: () => { throw new Error("db should not be called on resume skip"); } },
+    runner: THROWING_RUNNER,
+    providerDef: null,
+  });
+  const result = await node({
+    task: { id: "t" },
+    priorHandoffs: [{ role: "static_analysis", payload: {} }],
+    event: null,
+    currentState: null,
+  });
+  assert.equal(result.event, "done");
+  assert.equal(result.currentState, "static_analysis");
+});
+
+// ── buildPromptFromHandoffs: schema-aware generic prompt (SP2) ────────────────────
+
+test("buildPromptFromHandoffs: generic role with outputSchema renders skeleton + enum note", () => {
+  const prompt = buildPromptFromHandoffs({
+    role: "review",
+    task: { prompt: "x" },
+    outputSchema: getSchema("review"),
+  });
+  assert.ok(prompt.includes("severity"));
+  assert.ok(prompt.includes("findings"));
+  assert.ok(prompt.includes("recommendations"));
+  assert.ok(prompt.includes("severity ∈ {none,low,medium,high,critical}"));
+});
+
+test("buildPromptFromHandoffs: generic role with no outputSchema keeps the legacy example", () => {
+  const prompt = buildPromptFromHandoffs({ role: "review", task: { prompt: "x" } });
+  assert.ok(prompt.includes('{"summary":"","details":{}}'));
+  assert.ok(!prompt.includes("severity"));
 });
 
 // ── runLangGraphTask: herdr tab close policy ─────────────────────────────────────
@@ -899,6 +999,175 @@ test("runLangGraphTask surfaces unknown_workflow as waiting_user", async () => {
     assert.equal(finalTask.blockers[0].workflow, "nope");
     assert.equal(ran, false, "graph must not build for an unknown workflow");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── full-audit-sweep: e2e spine + loop-back routing (SP2) ────────────────────
+
+// Schema-conforming MAESTRO_HANDOFF per agent role; stubs are skipped by the
+// runner (kind:"stub"). Used by the e2e test below.
+const AUDIT_AGENT_OUTPUTS = {
+  implementation: { summary: "did it", files_changed: ["a.js"], assumptions: [], risks: [] },
+  review: { severity: "none", findings: [], recommendations: [] },
+  threat_model: { threats: [], mitigations: [] },
+  edge_cases: { edge_cases: [] },
+  tests: { tests_created: [], coverage_targets: [] },
+  human_approval: {},
+};
+
+test("full-audit-sweep: e2e runs the spine to human_approval, one handoff per stage", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const ranRoles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        ranRoles.push(role);
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+
+    assert.equal(finalTask.status, "succeeded");
+    // stubs never reach the runner
+    for (const stub of ["static_analysis", "evaluation", "regression"]) {
+      assert.ok(!ranRoles.includes(stub), `stub ${stub} must not call the runner`);
+    }
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const handoffs = await db.getHandoffs(task.id);
+      const byRole = new Set(handoffs.map((h) => h.role));
+      for (const role of Object.keys(template.roles)) {
+        assert.ok(byRole.has(role), `missing handoff for ${role}`);
+      }
+      assert.equal(handoffs.length, 9, "exactly one handoff per stage");
+      for (const h of handoffs) {
+        if (h.schema_validation) assert.equal(h.schema_validation.ok, true, `${h.role} not conforming`);
+      }
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: review changes_requested routes back to implementation", () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  assert.equal(template.transitions.review.changes_requested, "implementation");
+  assert.equal(template.transitions.threat_model.changes_requested, "implementation");
+  assert.equal(template.transitions.edge_cases.changes_requested, "implementation");
+});
+
+test("full-audit-sweep: review node emits changes_requested when handoff requests it", async () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-review-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000003-review";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const stubRunner = {
+      runStep: async () => ({
+        stdout: 'MAESTRO_HANDOFF: {"severity":"high","findings":["x"],"recommendations":[],"event":"changes_requested"}',
+        stderr: "", stdoutPath: null, stderrPath: null,
+      }),
+    };
+    const node = makeRoleNode(template.roles.review, {
+      db,
+      runner: stubRunner,
+      providerDef: DEFAULT_CONFIG.providers.claude,
+      workflow: template,
+      stateName: "review",
+      availabilityProbe: () => true,
+      config: DEFAULT_CONFIG,
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "changes_requested");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: persistent changes_requested pauses after the visit cap", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-loop-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "loop it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        if (role === "review") {
+          return {
+            stdout: 'MAESTRO_HANDOFF: {"severity":"high","findings":["x"],"recommendations":[],"event":"changes_requested"}',
+            stderr: "", stdoutPath: null, stderrPath: null,
+          };
+        }
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "waiting_user");
+    assert.ok((finalTask.blockers ?? []).some((b) => b.code === "loop_limit_exceeded"));
+    assert.ok(finalTask.active_question);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("full-audit-sweep: malformed verifier output records ok:false but advances", async () => {
+  const template = resolveWorkflowTemplate("full-audit-sweep");
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-bad-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000004-bad-review";
+    await db.createTask({ id: taskId, status: "running", prompt: "x", cwd: dir, mode: "task", run_dir: null });
+    const stubRunner = {
+      runStep: async () => ({
+        stdout: 'MAESTRO_HANDOFF: {"severity":"none","recommendations":[]}', // missing findings
+        stderr: "", stdoutPath: null, stderrPath: null,
+      }),
+    };
+    const node = makeRoleNode(template.roles.review, {
+      db,
+      runner: stubRunner,
+      providerDef: DEFAULT_CONFIG.providers.claude,
+      workflow: template,
+      stateName: "review",
+      availabilityProbe: () => true,
+      config: DEFAULT_CONFIG,
+    });
+    const result = await node({ task: { id: taskId, run_dir: null }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done", "soft validation must not gate routing");
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, false);
+  } finally {
+    db.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

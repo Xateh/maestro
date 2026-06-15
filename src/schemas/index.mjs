@@ -89,3 +89,58 @@ export function resolveRoleSchema(roleDef = {}) {
   }
   return { name: null, schema: null, source: "none" };
 }
+
+// Build a minimal payload covering a schema's `required` keys, with each value
+// the empty/zero instance of its declared type. Required keys whose property has
+// an `enum` take the FIRST enum member (so enum-bearing stubs validate clean).
+// A falsy schema or one without `properties`/`required` yields {}.
+export function emptyPayloadForSchema(schema) {
+  if (!schema || typeof schema !== "object") return {};
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const properties = schema.properties ?? {};
+  const out = {};
+  for (const key of required) {
+    const prop = properties[key] ?? {};
+    if (Array.isArray(prop.enum) && prop.enum.length > 0) {
+      out[key] = prop.enum[0];
+      continue;
+    }
+    switch (prop.type) {
+      case "array":
+        out[key] = [];
+        break;
+      case "object":
+        out[key] = {};
+        break;
+      case "number":
+      case "integer":
+        out[key] = 0;
+        break;
+      case "boolean":
+        out[key] = false;
+        break;
+      default:
+        out[key] = "";
+    }
+  }
+  return out;
+}
+
+// Produce a prompt-facing skeleton of a schema's required keys plus a list of
+// human-readable enum constraint notes (e.g. "severity ∈ {none,low,high}").
+// Tolerant of undefined/falsy schemas → { skeleton:{}, enumNotes:[] }.
+export function schemaSkeleton(schema) {
+  const skeleton = emptyPayloadForSchema(schema);
+  const enumNotes = [];
+  if (schema && typeof schema === "object") {
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    const properties = schema.properties ?? {};
+    for (const key of required) {
+      const prop = properties[key] ?? {};
+      if (Array.isArray(prop.enum) && prop.enum.length > 0) {
+        enumNotes.push(`${key} ∈ {${prop.enum.join(",")}}`);
+      }
+    }
+  }
+  return { skeleton, enumNotes };
+}

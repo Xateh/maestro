@@ -28,7 +28,7 @@ import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../sta
 import { resolveProviderEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
-import { resolveRoleSchema, validatePayload, validateInline } from "../schemas/index.mjs";
+import { resolveRoleSchema, validatePayload, validateInline, emptyPayloadForSchema } from "../schemas/index.mjs";
 
 const INSTRUCTION_FILE_CAP = 16 * 1024;
 const INSTRUCTION_TOTAL_CAP = 64 * 1024;
@@ -232,6 +232,65 @@ export function makeRoleNode(roleDef, {
       await db.deleteHandoffsByRole(task.id, roleKey);
     }
 
+    // ── stub role: no provider, no agent — emit a schema-conforming payload ──
+    // Stubs still honor resume-skip + loop bounding (above) but NEVER touch the
+    // runner or provider availability. SP3 extends this seam with kind:"command".
+    if (roleDef.kind === "stub") {
+      const resolved = resolveRoleSchema(roleDef);
+      const payload = resolved.schema ? emptyPayloadForSchema(resolved.schema) : {};
+      let schemaValidation = null;
+      if (resolved.source === "name" && resolved.schema) {
+        const r = validatePayload(resolved.name, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
+      } else if (resolved.source === "inline" && resolved.schema) {
+        const r = validateInline(resolved.schema, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
+      }
+      let handoffPath = null;
+      if (task.run_dir) {
+        try {
+          handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
+            role: roleKey,
+            provider: null,
+            payload,
+            schemaValidation,
+            stdoutPath: null,
+            stderrPath: null,
+          });
+        } catch (err) {
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+        }
+      }
+      // The handoffs.provider column is NOT NULL, so the DB row carries the
+      // "stub" sentinel; the engine-visible handoff (state slice + on-disk file)
+      // keeps provider:null since a stub has no real LLM provider.
+      await db.appendStep(task.id, {
+        role: roleKey,
+        provider: "stub",
+        status: "succeeded",
+        handoff_path: handoffPath,
+      });
+      await db.addHandoff(task.id, {
+        role: roleKey,
+        provider: "stub",
+        payload,
+        logPath: null,
+        schemaValidation,
+      });
+      return {
+        priorHandoffs: [{
+          role: roleKey,
+          provider: null,
+          payload,
+          log_path: null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
+        event: "done",
+        currentState: roleKey,
+        visits: { [roleKey]: 1 },
+      };
+    }
+
     // ── reviewer: synthetic skip when review_enabled === false ───────────────
     if (roleKey === "reviewer" && currentTask.review_enabled === false) {
       const reviewSkipped = skippedReview();
@@ -372,6 +431,7 @@ export function makeRoleNode(roleDef, {
         priorHandoffs,
         handoffMode,
         roleInstructions: await _roleInstructions(roleDef),
+        outputSchema: resolveRoleSchema(roleDef).schema ?? null,
       });
 
       // Apply the resolved alias/model over the role defaults so a substituted

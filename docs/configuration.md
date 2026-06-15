@@ -415,6 +415,53 @@ out-of-range/typed value), and a `missing_output_schema` warning for a role
 whose name matches a verifier stage (review/threat_model/edge_cases/tests/
 evaluation/regression) but declares no schema.
 
+### Role `kind` and the verification pipeline (manifest v2)
+
+Two additive role fields drive the SP2 verification spine:
+
+| Field | Description |
+|---|---|
+| `kind` | `"agent"` (default; absent ⇒ agent) runs the role's provider as usual. `"stub"` skips provider resolution and the agent call entirely, emitting a minimal payload conforming to the role's `output_schema` (empty/zero values; first enum member for enum keys) with `event: "done"`. A stub never invokes a provider, so it cannot fail on availability. |
+| `verifies` | `true` marks the role a verification stage. Inert at runtime in SP2; it is read by the independence rule (below) and reserved for later scoring. |
+
+For a role that is **not** planner/executor/reviewer (i.e. uses the generic
+prompt), when it declares a resolvable `output_schema` Maestro renders that
+schema's required-key skeleton plus any enum constraints into the
+`MAESTRO_HANDOFF` example in the prompt, so verifier agents reliably emit
+conforming JSON. Verifier roles can route work back for rework by emitting a
+custom `event` (e.g. `"changes_requested"`) declared in their transitions.
+
+`maestro workflow validate` adds the `non_independent_role` error: a single
+role must not be both an implementation entry role (`initial` /
+`modes.<mode>.initial`) and a verifier (`verifies: true`) — distinct roles ⇒
+distinct sessions ⇒ independent verification by construction.
+
+#### `full-audit-sweep` template
+
+A built-in template wiring the full 9-stage pipeline:
+
+```
+implementation → static_analysis → review → threat_model → edge_cases
+  → tests → evaluation → regression → human_approval ($complete)
+
+rework loops (event: changes_requested):
+  review / threat_model / edge_cases → implementation
+```
+
+`static_analysis`, `evaluation`, and `regression` are `kind: "stub"`
+pass-throughs (real logic arrives in later sub-projects); the rest are agent
+roles, each with an `output_schema`. Rework loops are bounded by
+`loop_limits.default_max_visits: 3` (escalates to the user on exceed).
+`human_approval` summarizes the recorded artifacts for a human to inspect, then
+completes.
+
+It is **opt-in** (not scaffolded by `maestro init`). Install and run it with:
+
+```sh
+maestro workflow use full-audit-sweep --as full-audit-sweep
+maestro task "…" --workflow full-audit-sweep
+```
+
 ### YAML authoring
 
 A workflow may be authored in YAML instead of JSON:

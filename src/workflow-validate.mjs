@@ -202,6 +202,24 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
   }
 
+  // ── session-level independence (SP2) ───────────────────────────────────────
+  // A role that is an implementation entry role (workflow.initial or any
+  // modes.<mode>.initial) MUST NOT also be a verifier — that would let one
+  // session both implement and verify its own work. Distinct roles ⇒ distinct
+  // sessions ⇒ independent by construction. Pure check, no runtime cost.
+  const entryRoles = new Set(
+    [workflow.initial, ...Object.values(workflow.modes ?? {}).map((m) => m?.initial)]
+      .filter((s) => roleNames.has(s)),
+  );
+  for (const roleName of entryRoles) {
+    if (roles[roleName]?.verifies === true) {
+      errors.push(issue(
+        "non_independent_role",
+        `role "${roleName}" is both an implementation entry role and a verifier`,
+      ));
+    }
+  }
+
   // ── top-level gates block (manifest v2) ────────────────────────────────────
   if (workflow.gates !== undefined) {
     const gates = workflow.gates;
