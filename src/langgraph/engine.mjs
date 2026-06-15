@@ -18,6 +18,7 @@ import { buildGraph } from "./graph.mjs";
 import { resolveInitialState, isTerminalAfterState } from "../state-machine.mjs";
 import { findCycles, validateWorkflow } from "../workflow-validate.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
+import { buildRunManifest, readMaestroVersion } from "../run-manifest.mjs";
 import { REVIEW_MAX_CONTINUATIONS, skippedReview } from "../markers.mjs";
 import { emitOtelStageEvent, getStageEvents } from "../stage-events.mjs";
 
@@ -347,6 +348,30 @@ export async function runLangGraphTask(taskId, {
     const blockedTask = await db.getTask(taskId);
     await taskStore.updateTask(taskId, _mirrorPatch(blockedTask));
     return { task: blockedTask };
+  }
+
+  // ── reproducibility: snapshot run inputs (SP6c) ───────────────────────────
+  // Write a self-contained run-manifest.json (resolved workflow snapshot +
+  // allow-listed task inputs + git start_head + maestro version) so the run can
+  // be replayed via `maestro rerun`. Best-effort: any failure is logged to
+  // stderr and swallowed — a manifest problem must never break a run. Idempotent
+  // overwrite on resume. gitRunner/cwd are not in scope here, so start_head is
+  // task.start_head if known, else null (Flag 1).
+  try {
+    const manifest = buildRunManifest({
+      task,
+      workflow,
+      maestroVersion: readMaestroVersion(),
+      startHead: task.start_head ?? null,
+    });
+    if (task.run_dir) {
+      await fs.writeFile(
+        path.join(task.run_dir, "run-manifest.json"),
+        `${JSON.stringify(manifest, null, 2)}\n`,
+      );
+    }
+  } catch (err) {
+    write(stderr, `run-manifest write failed: ${err?.message ?? err}`);
   }
 
   // Surface workflow problems (e.g. unterminated cycles) without blocking the run.
