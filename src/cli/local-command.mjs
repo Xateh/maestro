@@ -683,7 +683,7 @@ export async function runLocalMaestroCommand({
     } else if (parsed.tail) {
       const text = await tailFile(resolved.path);
       writeLine(stdout, text ?? "");
-    } else {
+    } else if (parsed.cat || (!parsed.tail && !parsed.json)) {
       const text = await fs.readFile(resolved.path, "utf8").catch(() => "");
       writeLine(stdout, text);
     }
