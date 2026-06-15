@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { openStore } from "../db/store.mjs";
 import { assertInsideDir, listDir, tailFile } from "../fs-safe.mjs";
+import { WORKFLOW_NAME_RE } from "../task-store.mjs";
 
 // ── Root discovery ────────────────────────────────────────────────────────────
 
@@ -47,9 +48,9 @@ function maestroPaths() {
 // (e.g. imported standalone roles) which are validated at call time.
 const VALID_MODES = new Set(["task", "plan-only"]);
 const MODE_NAME_RE = /^[a-z0-9_-]+$/;
+// WORKFLOW_NAME_RE imported from ../task-store.mjs (single source of truth).
 // Validate the workflow name *shape* here (like mode); existence is deferred to
 // the spawned CLI, which raises unknown_workflow. Keeps the MCP server off disk.
-const WORKFLOW_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 // Build the argv for the spawned `maestro task ...` child. Pure so it can be
 // unit-tested without spawning. "--" ends option parsing so prompts that look

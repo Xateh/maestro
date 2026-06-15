@@ -265,7 +265,7 @@ test("computeEvaluation: empty results → pass_rate 1, no failures", () => {
 
 test("parseCommandCounts: passed+failed regex on '# pass 8 # fail 2' → {total:10,passed:8}", () => {
   const parser = { passed: "# pass (\\d+)", failed: "# fail (\\d+)" };
-  assert.deepEqual(parseCommandCounts(parser, "# pass 8 # fail 2"), { total: 10, passed: 8 });
+  assert.deepEqual(parseCommandCounts(parser, "# pass 8 # fail 2"), { total: 10, passed: 8, onlyTotal: false });
 });
 
 test("computeEvaluation: parser path '# pass 8 # fail 2' → 0.8 + failure with parsed", () => {
@@ -296,7 +296,29 @@ test("computeEvaluation: only-passed parser falls back to exit code", () => {
 });
 
 test("parseCommandCounts: total regex derives total directly", () => {
-  assert.deepEqual(parseCommandCounts({ total: "ran (\\d+)", failed: "fail (\\d+)" }, "ran 10 fail 3"), { total: 10, passed: 7 });
+  assert.deepEqual(parseCommandCounts({ total: "ran (\\d+)", failed: "fail (\\d+)" }, "ran 10 fail 3"), { total: 10, passed: 7, onlyTotal: false });
+});
+
+test("parseCommandCounts: only-total parser flags onlyTotal (provisional full pass)", () => {
+  assert.deepEqual(parseCommandCounts({ total: "total (\\d+)" }, "total 10"), { total: 10, passed: 10, onlyTotal: true });
+});
+
+test("computeEvaluation: only-total parser + exit 0 → counts as full pass", () => {
+  const parser = { total: "total (\\d+)" };
+  const out = computeEvaluation([okResult({ output_tail: "total 10", parser })]);
+  assert.equal(out.pass_rate, 1); // 10/10
+  assert.deepEqual(out.failures, []);
+});
+
+test("computeEvaluation: only-total parser + non-zero exit → 0 passed AND in failures (consistent)", () => {
+  const parser = { total: "total (\\d+)" };
+  const out = computeEvaluation([okResult({ name: "bad", exit_code: 1, output_tail: "total 10", parser })]);
+  // contributes 0 (not 10) to pass_rate: 0/10 = 0
+  assert.equal(out.pass_rate, 0);
+  // and is still recorded as a failure — no longer contradictory
+  assert.equal(out.failures.length, 1);
+  assert.equal(out.failures[0].name, "bad");
+  assert.deepEqual(out.failures[0].parsed, { total: 10, passed: 10 });
 });
 
 test("computeEvaluation: allow_failure failing command excluded from pass_rate + failures", () => {
