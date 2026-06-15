@@ -47,6 +47,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Regression corpus stage (SP4)** — the `full-audit-sweep` `regression` stage
+  is now real. Additive only; the default workflow stays byte-identical.
+  - **Role `kind: "regression"`**: a non-LLM stage that loads an on-disk corpus
+    (`<cwd>/.maestro/regression/*.json`, override via `corpus_dir`), re-runs each
+    case via the SP3 `commandRunner`, auto-promotes upstream
+    `evaluation.failures[]` into new corpus cases, and maps results to the
+    `regression` schema `{regressions_run, new_failures, promoted_tests}` (plus
+    `corpus_load_errors` and `outcome`). The agent runner is never invoked; a
+    case failure, corpus load error, or promotion write error never throws —
+    each is captured as evidence.
+  - **Configurable `attempts`** (case ⟶ role ⟶ `config.regression_attempts` ⟶
+    `1`): a case passes if any attempt passes, is a regression only after all
+    attempts fail, and the first pass stops early. The `attempts` made are
+    recorded per case.
+  - **Outcome-driven routing**: emits `done` when `new_failures.length <
+    fail_threshold` (default `1`), else the role's `fail_event` (default
+    `regressions_found`). The stage never halts — the manifest's `transitions`
+    decide routing; `error` stays reserved for internal faults.
+  - **`regressionStore` op**: a new injectable (`src/regression-corpus.mjs`,
+    fs-backed default, wired into the CLI ops bundle) with `loadCorpus` /
+    `promoteFailures` / `deriveCaseId`; tests inject a fake.
+  - **`bad_regression_spec` validation**: a `kind: "regression"` role must
+    declare both a `done` and its effective `fail_event` transition;
+    `attempts`/`fail_threshold`, if present, must be positive integers.
+  - **Template**: `full-audit-sweep` `regression` converts from `kind: "stub"`
+    to `kind: "regression"` and gains `regressions_found → implementation`
+    (a loop-back bounded by `loop_limits`). New optional config key
+    `regression_attempts` (default `1`, carried across config migration).
+
 - **Automated evaluation stage (SP3)** — the `full-audit-sweep` `evaluation`
   stage is now real. Additive only; the default workflow, SP2 `kind: "stub"`
   behavior, and `static_analysis`/`regression` (still stubs) are unchanged.

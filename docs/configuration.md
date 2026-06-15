@@ -67,6 +67,7 @@ Key fields:
   "default_role": "executor",
   "stale_after_ms": 86400000,
   "stream_tail_bytes": 8192,
+  "regression_attempts": 1,         // SP4: default retries for kind:"regression" cases
   "context_retry_limit": 3,
 
   // Worktree settings
@@ -444,14 +445,16 @@ A built-in template wiring the full 9-stage pipeline:
 implementation → static_analysis → review → threat_model → edge_cases
   → tests → evaluation → regression → human_approval ($complete)
 
-rework loops (event: changes_requested):
-  review / threat_model / edge_cases → implementation
+rework loops:
+  review / threat_model / edge_cases → implementation (event: changes_requested)
+  regression → implementation (event: regressions_found)
 ```
 
-`static_analysis` and `regression` are `kind: "stub"` pass-throughs (real logic
-arrives in later sub-projects); `evaluation` is a `kind: "command"` stage (SP3,
-below) shipped with an empty `commands: []` (a vacuous no-op until you populate
-it); the rest are agent roles, each with an `output_schema`. Rework loops are
+`static_analysis` is a `kind: "stub"` pass-through (real logic arrives in a later
+sub-project); `evaluation` is a `kind: "command"` stage (SP3, below) shipped with
+an empty `commands: []` (a vacuous no-op until you populate it); `regression` is
+a `kind: "regression"` corpus runner (SP4, below) with an empty corpus by
+default; the rest are agent roles, each with an `output_schema`. Rework loops are
 bounded by
 `loop_limits.default_max_visits: 3` (escalates to the user on exceed).
 `human_approval` summarizes the recorded artifacts for a human to inspect, then
@@ -534,6 +537,76 @@ default runner is never invoked by the shipped manifest until you opt in:
 Relevant config knobs (both optional, read with fallbacks — neither is added to
 the default config): `command_timeout_ms` (default `120000`) and
 `stream_tail_bytes` (default `65536`, already used for agent output).
+
+#### `kind: "regression"` — the regression corpus stage (SP4)
+
+A `kind: "regression"` role is a **non-LLM** stage (sibling to `kind: "command"`)
+that maintains a persistent **corpus** of past failures — one JSON file per case
+under the task's working tree (default `<cwd>/.maestro/regression/*.json`,
+override with `corpus_dir`). On every run it (1) re-runs every corpus case via
+the same `commandRunner` to detect regressions, and (2) auto-promotes the
+upstream `evaluation` stage's `failures[]` into new corpus cases. It maps results
+to the `regression` schema `{regressions_run, new_failures, promoted_tests}`
+(plus `corpus_load_errors` and `outcome`). The agent runner is never invoked, and
+a case failure, corpus load error, or promotion write error never throws — each
+is captured as evidence.
+
+**Case file shape** (written by promotion, validated on load):
+
+```jsonc
+{
+  "id": "lint-a1b2c3",              // required, unique
+  "source": "evaluation.failures",  // provenance
+  "added": "2026-06-14",            // ISO date promoted
+  "origin_task": "<task-id>",       // nullable
+  "category": "lint",               // optional
+  "command": {                       // required
+    "run": "npm run lint",          // required, shell string (via sh -lc)
+    "timeout_ms": null,             // optional; null ⇒ config.command_timeout_ms / 120000
+    "parser": null                  // optional; stored for future use (ignored by pass/fail)
+  }
+}
+```
+
+A case missing `id` or `command.run`, or that fails to parse, is a load error
+(skipped, recorded in `corpus_load_errors`, never run). A missing corpus dir is
+treated as an empty corpus.
+
+**Pass/fail + retries.** A case **passes** iff `exit_code === 0 && !timed_out &&
+!spawn_error`. Each case is re-run up to an effective `attempts` count
+(`case.attempts ?? role.attempts ?? config.regression_attempts ?? 1`), stopping
+early on the first pass; a case is a regression only when **all** attempts fail.
+The `attempts` made are recorded per case.
+
+**Auto-promotion.** The most recent prior `evaluation` handoff's `failures[]` are
+read; each failure whose derived id (`slug(name)-shortHash(run)`) is not already
+in the corpus is written as a new case during the run and listed in
+`promoted_tests[]`. Idempotent: the deterministic id means re-running the same
+failing evaluation never double-writes.
+
+**Outcome routing.** After building the payload the stage emits `done` when
+`new_failures.length < fail_threshold` (default `1`), else the role's `fail_event`
+(default `regressions_found`). The stage never halts — the manifest's
+`transitions` decide where each event routes (e.g. `regressions_found →
+implementation`). `outcome` mirrors the emitted event (`"clean"` for `done`).
+
+Role fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `corpus_dir` | no | Corpus directory, resolved against `cwd`. Default `.maestro/regression`. |
+| `attempts` | no | Positive integer retries before a final fail (default `1`). |
+| `fail_threshold` | no | Positive integer `new_failures` count that routes the fail event (default `1`). |
+| `fail_event` | no | Outcome event name when the threshold is met (default `regressions_found`). Must have a declared transition. |
+
+Validation (`maestro workflow validate`) adds `bad_regression_spec`: a
+`kind: "regression"` role must declare both a `done` and its effective
+`fail_event` transition; `attempts`/`fail_threshold`, if present, must be positive
+integers.
+
+Relevant config knob: `regression_attempts` (default `1`) — a first-class config
+key (carried across migration) that sets the default retry count when neither the
+case nor the role specifies `attempts`.
 
 ### YAML authoring
 

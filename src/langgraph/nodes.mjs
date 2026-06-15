@@ -184,6 +184,7 @@ export function makeRoleNode(roleDef, {
     gitRunner = null,
     markActiveStep = null,
     commandRunner = null,
+    regressionStore = null,
   } = ops;
 
   return async function roleNode(state) {
@@ -408,6 +409,192 @@ export function makeRoleNode(roleDef, {
           ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
         }],
         event: "done",
+        currentState: roleKey,
+        visits: { [roleKey]: 1 },
+      };
+    }
+
+    // ── regression role: non-LLM corpus runner (SP4) ─────────────────────────
+    // Sibling to stub/command: honors resume-skip + loop bounding (above), NEVER
+    // touches the agent runner. Loads an on-disk corpus, re-runs each case (with
+    // retries) via commandRunner, auto-promotes upstream evaluation.failures[]
+    // into new cases, and emits an OUTCOME-DEPENDENT event (done / fail_event).
+    // It NEVER throws on a case failure, load error, or write error — each is
+    // captured as evidence; only new_failures vs fail_threshold drives the event.
+    if (roleDef.kind === "regression") {
+      const cwd = currentTask.worktree_path
+        ?? (currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd());
+      const corpusDir = roleDef.corpus_dir
+        ? path.resolve(cwd, roleDef.corpus_dir)
+        : path.join(cwd, ".maestro", "regression");
+      const maxTailBytes = config?.stream_tail_bytes ?? COMMAND_DEFAULT_TAIL_BYTES;
+      const env = _maestroEnv(currentTask, roleKey);
+
+      // effective attempts (>=1): case.attempts ?? roleDef.attempts ??
+      // config.regression_attempts ?? 1
+      const roleAttempts = Number.isInteger(roleDef.attempts) && roleDef.attempts > 0
+        ? roleDef.attempts : null;
+      const cfgAttempts = Number.isInteger(config?.regression_attempts) && config.regression_attempts > 0
+        ? config.regression_attempts : null;
+
+      // ── load corpus (tolerant; absent store ⇒ empty) ──────────────────────
+      let cases = [];
+      let loadErrors = [];
+      if (regressionStore) {
+        try {
+          const loaded = await regressionStore.loadCorpus(corpusDir);
+          cases = loaded?.cases ?? [];
+          loadErrors = loaded?.loadErrors ?? [];
+        } catch (err) {
+          loadErrors = [{ file: corpusDir, error: err?.message ?? String(err) }];
+        }
+      }
+
+      // ── re-run each case with retries (stop early on first pass) ───────────
+      const regressionsRun = [];
+      const newFailures = [];
+      for (const c of cases) {
+        const run = c?.command?.run;
+        const timeoutMs = c?.command?.timeout_ms
+          ?? config?.command_timeout_ms ?? COMMAND_DEFAULT_TIMEOUT_MS;
+        const caseAttempts = Number.isInteger(c?.attempts) && c.attempts > 0 ? c.attempts : null;
+        const attemptsCap = caseAttempts ?? roleAttempts ?? cfgAttempts ?? 1;
+
+        let lastResult = null;
+        let passed = false;
+        let attemptsMade = 0;
+        for (let a = 0; a < attemptsCap; a++) {
+          attemptsMade = a + 1;
+          let result;
+          try {
+            if (!commandRunner) throw new Error("commandRunner not provided");
+            result = await commandRunner({ run, cwd, timeoutMs, env, maxTailBytes });
+          } catch (err) {
+            result = {
+              exit_code: 127,
+              signal: null,
+              stdout: "",
+              stderr: err?.message ?? String(err),
+              timed_out: false,
+              spawn_error: true,
+            };
+          }
+          lastResult = result;
+          // pass iff exit 0 AND not timed_out AND not spawn_error
+          if (result.exit_code === 0 && !result.timed_out && result.spawn_error !== true) {
+            passed = true;
+            break; // stop early on first pass
+          }
+        }
+        const outputTail = _boundedCommandTail(
+          `${lastResult?.stdout ?? ""}\n${lastResult?.stderr ?? ""}`,
+          maxTailBytes,
+        );
+        const entry = {
+          id: c.id,
+          run: run ?? null,
+          category: c?.category ?? null,
+          exit_code: lastResult?.exit_code ?? null,
+          signal: lastResult?.signal ?? null,
+          timed_out: lastResult?.timed_out === true,
+          passed,
+          attempts: attemptsMade,
+          output_tail: outputTail,
+        };
+        regressionsRun.push(entry);
+        if (!passed) {
+          // new_failures entry — same fields minus `passed`
+          const { passed: _omit, ...failEntry } = entry;
+          newFailures.push(failEntry);
+        }
+      }
+
+      // ── promote from the most recent prior evaluation handoff ──────────────
+      const evalHandoff = [...priorHandoffs].reverse().find((h) => h.role === "evaluation");
+      const failuresToPromote = Array.isArray(evalHandoff?.payload?.failures)
+        ? evalHandoff.payload.failures : [];
+      const existingIds = new Set(cases.map((c) => c.id));
+      let promotedTests = [];
+      if (regressionStore && failuresToPromote.length > 0) {
+        try {
+          const res = await regressionStore.promoteFailures({
+            dir: corpusDir,
+            failures: failuresToPromote,
+            existingIds,
+            date: new Date().toISOString().slice(0, 10),
+            taskId: currentTask.id ?? null,
+          });
+          promotedTests = res?.promoted ?? [];
+          // res.writeErrors are intentionally swallowed (read-only tree etc.);
+          // affected ids simply do not appear in promoted_tests.
+        } catch {
+          promotedTests = [];
+        }
+      }
+
+      // ── build payload + soft schema validation ────────────────────────────
+      const failThreshold = Number.isInteger(roleDef.fail_threshold) && roleDef.fail_threshold > 0
+        ? roleDef.fail_threshold : 1;
+      const failEvent = roleDef.fail_event ?? "regressions_found";
+      const outcome = newFailures.length >= failThreshold ? failEvent : "done";
+      const payload = {
+        regressions_run: regressionsRun,
+        new_failures: newFailures,
+        promoted_tests: promotedTests,
+        corpus_load_errors: loadErrors,
+        outcome: outcome === "done" ? "clean" : outcome, // "clean" | fail_event name
+      };
+
+      const resolved = resolveRoleSchema(roleDef);
+      let schemaValidation = null;
+      if (resolved.source === "name" && resolved.schema) {
+        const r = validatePayload(resolved.name, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
+      } else if (resolved.source === "inline" && resolved.schema) {
+        const r = validateInline(resolved.schema, payload);
+        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
+      }
+
+      // ── persist (DB sentinel "regression"; engine-visible provider null) ──
+      let handoffPath = null;
+      if (task.run_dir) {
+        try {
+          handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
+            role: roleKey,
+            provider: null,
+            payload,
+            schemaValidation,
+            stdoutPath: null,
+            stderrPath: null,
+          });
+        } catch (err) {
+          process.stderr.write(`[maestro] handoff_write_failed role=${roleKey} task=${task.id} err=${err?.message}\n`);
+        }
+      }
+      // The handoffs.provider column is NOT NULL, so the DB row carries the
+      // "regression" sentinel; the engine-visible handoff keeps provider:null.
+      await db.appendStep(task.id, {
+        role: roleKey,
+        provider: "regression",
+        status: "succeeded",
+        handoff_path: handoffPath,
+      });
+      await db.addHandoff(task.id, {
+        role: roleKey,
+        provider: "regression",
+        payload,
+        logPath: null,
+        schemaValidation,
+      });
+      return {
+        priorHandoffs: [{
+          role: roleKey,
+          provider: null,
+          payload,
+          log_path: null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
+        event: outcome, // done | fail_event
         currentState: roleKey,
         visits: { [roleKey]: 1 },
       };

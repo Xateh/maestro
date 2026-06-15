@@ -208,6 +208,7 @@ export const DEFAULT_LOCAL_CONFIG_V2 = {
   worktree_mode_default: "auto",
   max_parallel_worktrees: 4,
   stream_tail_bytes: 65_536,
+  regression_attempts: 1,
   context_retry_limit: 1,
   stale_after_ms: 300_000,
   project_close_merge_mode: "squash",
@@ -345,6 +346,7 @@ function buildMigratedV2(v1) {
   const CARRY_KEYS = [
     "cwd", "planner_policy", "review_enabled", "timeout_ms", "worktree_root",
     "worktree_mode_default", "max_parallel_worktrees", "stream_tail_bytes",
+    "regression_attempts",
     "context_retry_limit", "stale_after_ms", "project_close_merge_mode",
     "delete_closed_project_branches", "local_file_sync_profiles",
   ];

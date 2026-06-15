@@ -183,6 +183,32 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
       }
     }
 
+    // ── regression role spec (SP4 kind:"regression") ───────────────────────
+    // A regression role must declare both a "done" and its effective fail_event
+    // transition (default "regressions_found") so an unmapped event cannot throw
+    // inside LangGraph at runtime; attempts/fail_threshold, if present, must be
+    // positive integers.
+    if (role?.kind === "regression") {
+      const failEvent = role.fail_event ?? "regressions_found";
+      const t = transitions[roleName] ?? {};
+      if (!("done" in t)) {
+        errors.push(issue("bad_regression_spec",
+          `role "${roleName}" (kind:"regression") must declare a "done" transition`));
+      }
+      if (!(failEvent in t)) {
+        errors.push(issue("bad_regression_spec",
+          `role "${roleName}" (kind:"regression") must declare its fail_event "${failEvent}" transition`));
+      }
+      if (role.attempts !== undefined && (!Number.isInteger(role.attempts) || role.attempts <= 0)) {
+        errors.push(issue("bad_regression_spec",
+          `role "${roleName}" attempts must be a positive integer, got ${JSON.stringify(role.attempts)}`));
+      }
+      if (role.fail_threshold !== undefined && (!Number.isInteger(role.fail_threshold) || role.fail_threshold <= 0)) {
+        errors.push(issue("bad_regression_spec",
+          `role "${roleName}" fail_threshold must be a positive integer, got ${JSON.stringify(role.fail_threshold)}`));
+      }
+    }
+
     // ── output schema declaration (manifest v2) ─────────────────────────────
     const resolved = resolveRoleSchema(role ?? {});
     if (resolved.source === "unknown") {
