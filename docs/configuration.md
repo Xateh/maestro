@@ -377,7 +377,7 @@ recorded as evidence, never blocked, and routing is unaffected.
 |---|---|
 | `output_schema` | A built-in registry name (string) **or** an inline JSON Schema object (draft 2020-12). |
 | `output_schema_ref` | A path, relative to the state dir, to a JSON Schema file. Must not be absolute or escape the state dir (`..`). |
-| `gates` (top-level) | Quality gate declarations (defined and validated now; enforcement is a later sub-project). |
+| `gates` (top-level) | Quality gate declarations. Enforced by a `kind: "scoring"` role (SP5); a workflow with no scoring role declares gates as documentation only. |
 
 Resolution order when more than one is set: inline `output_schema` object >
 `output_schema_ref` > `output_schema` registry name.
@@ -439,23 +439,27 @@ distinct sessions ⇒ independent verification by construction.
 
 #### `full-audit-sweep` template
 
-A built-in template wiring the full 9-stage pipeline:
+A built-in template wiring the full 10-stage pipeline:
 
 ```
 implementation → static_analysis → review → threat_model → edge_cases
-  → tests → evaluation → regression → human_approval ($complete)
+  → tests → evaluation → regression → scoring → human_approval ($complete)
 
 rework loops:
   review / threat_model / edge_cases → implementation (event: changes_requested)
   regression → implementation (event: regressions_found)
+  scoring → $halt (event: blocked) — only when a gates: block is declared
 ```
 
 `static_analysis` is a `kind: "stub"` pass-through (real logic arrives in a later
 sub-project); `evaluation` is a `kind: "command"` stage (SP3, below) shipped with
 an empty `commands: []` (a vacuous no-op until you populate it); `regression` is
 a `kind: "regression"` corpus runner (SP4, below) with an empty corpus by
-default; the rest are agent roles, each with an `output_schema`. Rework loops are
-bounded by
+default; `scoring` is a `kind: "scoring"` stage (SP5, below) that derives the six
+reliability scores and enforces declared gates — the shipped template declares
+**no** `gates:`, so scoring is purely informational (always routes `passed →
+human_approval`) until you add a gates block; the rest are agent roles, each with
+an `output_schema`. Rework loops are bounded by
 `loop_limits.default_max_visits: 3` (escalates to the user on exceed).
 `human_approval` summarizes the recorded artifacts for a human to inspect, then
 completes.
@@ -607,6 +611,76 @@ integers.
 Relevant config knob: `regression_attempts` (default `1`) — a first-class config
 key (carried across migration) that sets the default retry count when neither the
 case nor the role specifies `attempts`.
+
+#### `kind: "scoring"` — the reliability scoring + gates stage (SP5)
+
+A `kind: "scoring"` role is a **non-LLM** stage (sibling to
+`command`/`regression`) that reads every prior stage handoff, derives the six SP1
+`scoring` numbers **from actual evidence**, enforces the manifest's declared
+`gates:`, and routes the workflow on the outcome. The agent runner is never
+invoked and the stage never throws — missing or garbage evidence is handled by
+the rules below.
+
+**Never fabricate confidence.** Each sub-score is a pure function of one upstream
+field:
+
+| score | evidence | rule |
+|---|---|---|
+| `correctness_score` | `evaluation.pass_rate` | the unit pass-rate directly |
+| `test_score` | `tests.tests_created` | `length > 0 ? 1.0 : 0.0` (presence of authored tests) |
+| `review_score` | `review.severity` | none→1.0, low→0.75, medium→0.5, high→0.25, critical→0.0 |
+| `security_score` | `threat_model.{threats,mitigations}` | no threats ⇒ 1.0, else `clamp(mitigations/threats, 0, 1)` |
+| `regression_score` | `regression.{regressions_run,new_failures}` | no runs ⇒ 1.0, else `clamp((run−fail)/run, 0, 1)` |
+| `overall_confidence` | the five above | their **product** |
+
+When the evidence for a score is **absent** (the role's handoff is missing, or
+the field is the wrong type) the sub-score is `0.0`, the role is added to
+`missing_evidence[]`, and `score_inputs[score] = { from, value: 0, missing: true }`
+— so a `0` from absence stays distinguishable from a `0` from bad results via the
+`score_inputs` provenance map. A vacuous-pass (e.g. an empty `regressions_run` —
+"nothing to fail") is `1.0` and **not** flagged. Because `overall_confidence` is
+the product, any zeroed axis (including a missing one) drives overall confidence
+to `0` (the most conservative, fail-honest aggregation). All scores are rounded
+to 4 decimals.
+
+**Gate enforcement.** The four SP1 gate keys are enforced only when present in
+the top-level `gates:` block (a role-level `gates` override is also accepted):
+
+| gate | passes iff |
+|---|---|
+| `min_coverage` (0–100) | a numeric coverage percent (`evaluation.coverage.{percent,lines,total}`, first found) is present **and** `>= min_coverage`. No coverage evidence ⇒ **fail** (fail-closed). |
+| `no_high_severity_findings` (bool) | when `true`: `review.severity ∉ {high,critical}` **and** no `static_analysis` finding is high/critical; no review evidence ⇒ **fail**. `false` ⇒ not enforced. |
+| `all_regressions_pass` (bool) | when `true`: the `regression` handoff is present **and** `new_failures.length === 0`; absent ⇒ **fail**. `false` ⇒ not enforced. |
+| `min_overall_confidence` (0–1) | the computed `overall_confidence >= min_overall_confidence`. |
+
+`passed` iff every present gate passed; `blocked_reasons[]` carries one
+human-readable string per failed gate. `gates` absent/`{}` ⇒ `passed: true`,
+empty `gates`/`blocked_reasons`. A `false`-valued bool gate is omitted from
+`gates` and `blocked_reasons` entirely.
+
+**Outcome routing.** The stage emits `pass_event` (default `passed`) when all
+gates pass, else `block_event` (default `blocked`). The stage never halts — the
+manifest's `transitions` decide where each event routes. The shipped
+`full-audit-sweep` routes `scoring.passed → human_approval` and
+`scoring.blocked → $halt`, but a workflow may redirect `blocked` elsewhere (e.g.
+back to `implementation`).
+
+Role fields:
+
+| Field | Required | Description |
+|---|---|---|
+| `pass_event` | no | Event name emitted when all gates pass (default `passed`). Must have a declared transition. |
+| `block_event` | no | Event name emitted when any gate fails (default `blocked`). Must have a declared transition. |
+| `gates` | no | Role-level override for the gate block (the top-level `gates:` is the norm). |
+
+Validation (`maestro workflow validate`) adds `bad_scoring_spec`: a
+`kind: "scoring"` role must declare transitions for both its effective
+`pass_event` and `block_event`.
+
+The shipped `full-audit-sweep` inserts a `scoring` role between `regression` and
+`human_approval` but declares **no** `gates:` block — so scoring is purely
+informational there and nothing new blocks. Opt into enforcement by adding a
+top-level `gates:` block to your workflow.
 
 ### YAML authoring
 

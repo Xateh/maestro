@@ -47,6 +47,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reliability scoring + gates engine (SP5)** — the `full-audit-sweep` gains a
+  real, deterministic scoring stage. Additive only; the default 3-role workflow
+  stays byte-identical.
+  - **Role `kind: "scoring"`**: a non-LLM stage (sibling to
+    `stub`/`command`/`regression`; the agent runner is never invoked and it never
+    throws) that reads every prior stage handoff, derives the six SP1 `scoring`
+    numbers, enforces the manifest's declared `gates:`, and emits an
+    outcome-dependent event (`passed`/`blocked`, overridable via
+    `pass_event`/`block_event`).
+  - **Never fabricate confidence**: each sub-score is a pure function of one
+    upstream field — `correctness_score`←`evaluation.pass_rate`,
+    `test_score`←`tests.tests_created` (presence), `review_score`←`review.severity`
+    (none→1.0 … critical→0.0), `security_score`←`threat_model` mitigation ratio,
+    `regression_score`←`regression` pass ratio. Absent evidence (missing handoff
+    or wrong-typed field) ⇒ `0.0`, the role named in `missing_evidence[]`, and
+    `score_inputs[score].missing: true` — a `0` from absence stays distinguishable
+    from a `0` from bad results. A vacuous-pass (e.g. empty `regressions_run`) is
+    `1.0` and not flagged. `overall_confidence` is the **product** of the five
+    sub-scores, so any zeroed axis drives it to `0`.
+  - **Gate enforcement** of the four SP1 keys (`min_coverage`,
+    `no_high_severity_findings`, `all_regressions_pass`, `min_overall_confidence`):
+    only present keys are enforced; a `false`-valued bool gate is skipped; a gate
+    with no evidence fails closed (e.g. `min_coverage` while `coverage:{}`).
+    `gates` absent/`{}` ⇒ `passed` (informational). Gates are read from the
+    top-level manifest `gates:` (a role-level `gates` override is also accepted).
+  - **Pure module `src/scoring.mjs`** (`deriveScores` + `enforceGates`): no I/O,
+    no imports, both total — trivially unit-testable.
+  - **`bad_scoring_spec` validation**: a `kind: "scoring"` role must declare both
+    its effective `pass_event` (default `passed`) and `block_event` (default
+    `blocked`) transitions.
+  - **Template**: `full-audit-sweep` inserts a `scoring` role between
+    `regression` and `human_approval` (`regression.done` repointed to `scoring`;
+    `scoring.passed → human_approval`, `scoring.blocked → $halt`). No `gates:`
+    block is declared, so scoring is purely informational by default — users opt
+    into enforcement by adding a `gates:` block. No new config key, no schema
+    change.
+
 - **Regression corpus stage (SP4)** — the `full-audit-sweep` `regression` stage
   is now real. Additive only; the default workflow stays byte-identical.
   - **Role `kind: "regression"`**: a non-LLM stage that loads an on-disk corpus
