@@ -21,14 +21,20 @@ import {
   parseAgentActionRequests,
   parseReviewerOutput,
   isContextWindowFailure,
+  isUsageLimitFailure,
   skippedReview,
 } from "../markers.mjs";
 import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../state-machine.mjs";
 import { resolveProviderEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
+import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
+import { resolveRoleSchema, validatePayload, validateInline } from "../schemas/index.mjs";
 
 const INSTRUCTION_FILE_CAP = 16 * 1024;
 const INSTRUCTION_TOTAL_CAP = 64 * 1024;
+// Max times a single step may hop to a different provider after a usage/quota
+// limit before giving up and asking the user.
+const USAGE_RETRY_LIMIT = 2;
 
 function _expandHome(filePath) {
   if (filePath === "~" || filePath.startsWith("~/")) {
@@ -69,6 +75,22 @@ async function _gitStdout(gitRunner, cwd, args) {
   } catch { return null; }
 }
 
+// Apply a per-task role override (from "switch provider"). A new provider
+// invalidates the role's configured alias/model unless the override restates
+// them — otherwise the old provider's alias would bind to the new command.
+function applyRoleOverride(roleDef, override) {
+  if (!override) return roleDef;
+  const next = { ...roleDef };
+  if (override.provider) {
+    next.provider = override.provider;
+    next.alias = override.alias;
+    next.model = override.model;
+  }
+  if (override.alias !== undefined) next.alias = override.alias;
+  if (override.model !== undefined) next.model = override.model;
+  return next;
+}
+
 function _stepOptions(roleDef, task) {
   return {
     ...(roleDef.alias ? { alias: roleDef.alias } : {}),
@@ -90,11 +112,12 @@ function _maestroEnv(task, role) {
   };
 }
 
-async function _writeHandoffFile(runDir, role, { role: r, provider, payload, stdoutPath, stderrPath }) {
+async function _writeHandoffFile(runDir, role, { role: r, provider, payload, schemaValidation, stdoutPath, stderrPath }) {
   const handoff = {
     role: r,
     provider,
     payload,
+    ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
     stdout_path: stdoutPath ?? null,
     stderr_path: stderrPath ?? null,
     created_at: new Date().toISOString(),
@@ -126,6 +149,8 @@ export function makeRoleNode(roleDef, {
   db,
   runner,
   providerDef,
+  config = null,
+  availabilityProbe = null,
   contextRetryLimit = 1,
   workflow = null,
   stateName = null,
@@ -150,6 +175,13 @@ export function makeRoleNode(roleDef, {
     const priorHandoffs = state.priorHandoffs ?? [];
     const visitCount = state.visits?.[roleKey] ?? 0;
     const isRevisit = visitCount > 0;
+
+    // Provider actually executed this step. Defaults to the role's configured
+    // provider; availability resolution (below) may substitute a fallback.
+    let runProvider = roleDef.provider;
+    let runProviderDef = providerDef;
+    let runAlias = roleDef.alias || null;
+    let runModel = roleDef.model ?? "";
 
     // ── resume skip: role completed in a PREVIOUS run of this task ───────────
     // Only first arrivals skip; cycle revisits (visits > 0) must re-run.
@@ -187,7 +219,7 @@ export function makeRoleNode(roleDef, {
         active_question: {
           id: questionId,
           role: roleKey,
-          provider: roleDef.provider,
+          provider: runProvider,
           question: `Loop limit reached: role "${roleKey}" has run ${visitCount} times (max_visits: ${maxVisits}). Reply with guidance to continue another round, or cancel the task.`,
         },
       });
@@ -205,7 +237,7 @@ export function makeRoleNode(roleDef, {
       const reviewSkipped = skippedReview();
       await db.updateTask(task.id, { review: reviewSkipped });
       return {
-        priorHandoffs: [{ role: roleKey, provider: roleDef.provider, payload: reviewSkipped, log_path: null }],
+        priorHandoffs: [{ role: roleKey, provider: runProvider, payload: reviewSkipped, log_path: null }],
         event: "done",
         currentState: roleKey,
         visits: { [roleKey]: 1 },
@@ -232,13 +264,93 @@ export function makeRoleNode(roleDef, {
       }
     }
 
+    // ── provider availability: substitute a fallback, opt-out, or block ───────
+    // Probes live availability and walks roleDef.fallback. A per-task
+    // role_override (from a "switch provider" unblock) takes precedence.
+    if (config) {
+      const override = currentTask.role_overrides?.[roleKey] ?? null;
+      const effectiveRoleDef = applyRoleOverride(roleDef, override);
+      const probeCwd = currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd();
+      const resolution = await resolveRoleProvider({
+        roleDef: effectiveRoleDef,
+        config,
+        cwd: probeCwd,
+        ...(availabilityProbe ? { probe: availabilityProbe } : {}),
+      });
+
+      if (!resolution.ok) {
+        const reason = resolution.reasons[0] ?? { provider: effectiveRoleDef.provider, code: "provider_missing" };
+        const message = describeAvailabilityFailure(reason, { role: roleKey });
+        const blocker = { ...reason, role: roleKey, message };
+        const blockers = [blocker, ...(currentTask.blockers ?? [])];
+        await db.updateTask(task.id, {
+          status: "waiting_user",
+          active_step: null,
+          current_state: roleKey,
+          blockers,
+          unblock_options: buildUnblockOptions({ task: { ...currentTask, blockers }, includeRetry: true }),
+        });
+        if (releasePathLeases) await releasePathLeases(currentTask);
+        if (markProjectTaskStatus) await markProjectTaskStatus(currentTask, "waiting_user");
+        return { event: "error", currentState: roleKey };
+      }
+
+      // First substitution in a task pauses for confirmation; once approved
+      // (auto_fallback_confirmed), all later substitutions proceed-with-notice.
+      if (resolution.substituted && !override && currentTask.auto_fallback_confirmed !== true) {
+        const message = `Provider "${effectiveRoleDef.provider}" is unavailable for role "${roleKey}". `
+          + `Substitute "${resolution.provider}" and continue (applies to the rest of this run)?`;
+        const blocker = {
+          code: "provider_substitution_pending",
+          role: roleKey,
+          from: effectiveRoleDef.provider,
+          to: resolution.provider,
+          message,
+        };
+        const blockers = [blocker, ...(currentTask.blockers ?? [])];
+        await db.updateTask(task.id, {
+          status: "waiting_user",
+          active_step: null,
+          current_state: roleKey,
+          blockers,
+          pending_substitution: { role: roleKey, from: effectiveRoleDef.provider, to: resolution.provider },
+          unblock_options: buildUnblockOptions({ task: { ...currentTask, blockers } }),
+        });
+        if (markProjectTaskStatus) await markProjectTaskStatus(currentTask, "waiting_user");
+        return { event: "error", currentState: roleKey };
+      }
+
+      runProvider = resolution.provider;
+      runProviderDef = resolution.providerDef;
+      runAlias = resolution.alias;
+      runModel = resolution.model;
+
+      if (resolution.substituted) {
+        await db.appendStep(task.id, {
+          role: roleKey,
+          provider: runProvider,
+          status: "substituted",
+          note: `provider substituted from "${effectiveRoleDef.provider}" to "${runProvider}" (unavailable)`,
+        });
+      } else if (resolution.modelDefaulted) {
+        await db.appendStep(task.id, {
+          role: roleKey,
+          provider: runProvider,
+          status: "model_defaulted",
+          note: `model "${effectiveRoleDef.model}" unavailable for "${runProvider}"; using provider default`,
+        });
+      }
+    }
+
     // ── update DB: mark this role as running ─────────────────────────────────
-    const activeStep = { role: roleKey, provider: roleDef.provider, status: "running" };
+    const activeStep = { role: roleKey, provider: runProvider, status: "running" };
     await db.updateTask(task.id, { status: "running", current_state: roleKey, active_step: activeStep });
     if (markActiveStep) await markActiveStep(task.id, activeStep);
 
     let handoffMode = "normal";
     let contextRetryUsed = 0;
+    let usageRetryUsed = 0;
+    const usageExhausted = new Set();
 
     while (true) {
       currentTask = await db.getTask(task.id);
@@ -262,19 +374,27 @@ export function makeRoleNode(roleDef, {
         roleInstructions: await _roleInstructions(roleDef),
       });
 
+      // Apply the resolved alias/model over the role defaults so a substituted
+      // provider (or a defaulted model) is what actually runs.
+      const stepOptions = _stepOptions(roleDef, currentTask);
+      delete stepOptions.alias;
+      delete stepOptions.model;
+      if (runAlias) stepOptions.alias = runAlias;
+      if (runModel) stepOptions.model = runModel;
+
       const stepStartedAt = new Date().toISOString();
       let result;
       try {
         result = await runner.runStep({
           role: roleKey,
-          provider: roleDef.provider,
+          provider: runProvider,
           prompt,
           cwd: taskCwd,
           logDir: currentTask.run_dir,
-          options: _stepOptions(roleDef, currentTask),
-          providerDef,
+          options: stepOptions,
+          providerDef: runProviderDef,
           env: _maestroEnv(currentTask, roleKey),
-          providerEnv: resolveProviderEnv(providerDef),
+          providerEnv: resolveProviderEnv(runProviderDef),
         });
       } catch (err) {
         // ── context-window retry ──────────────────────────────────────────────
@@ -283,7 +403,7 @@ export function makeRoleNode(roleDef, {
           handoffMode = "strict";
           await db.appendStep(task.id, {
             role: roleKey,
-            provider: roleDef.provider,
+            provider: runProvider,
             status: "retried",
             started_at: stepStartedAt,
             error: err.message,
@@ -293,17 +413,55 @@ export function makeRoleNode(roleDef, {
           });
           continue;
         }
+        // ── usage / quota limit: switch to an available fallback provider ──────
+        if (isUsageLimitFailure(err) && config && usageRetryUsed < USAGE_RETRY_LIMIT) {
+          usageExhausted.add(runProvider);
+          const override = currentTask.role_overrides?.[roleKey] ?? null;
+          const effectiveRoleDef = applyRoleOverride(roleDef, override);
+          const resolution = await resolveRoleProvider({
+            roleDef: effectiveRoleDef,
+            config,
+            cwd: taskCwd,
+            exclude: usageExhausted,
+            ...(availabilityProbe ? { probe: availabilityProbe } : {}),
+          });
+          if (resolution.ok) {
+            usageRetryUsed += 1;
+            await db.appendStep(task.id, {
+              role: roleKey,
+              provider: runProvider,
+              status: "retried",
+              started_at: stepStartedAt,
+              error: err.message,
+              recovery: "usage_limit_fallback",
+              note: `provider "${runProvider}" usage-limited; switching to "${resolution.provider}"`,
+              stdout_path: err.stdoutPath ?? null,
+              stderr_path: err.stderrPath ?? null,
+            });
+            runProvider = resolution.provider;
+            runProviderDef = resolution.providerDef;
+            runAlias = resolution.alias;
+            runModel = resolution.model;
+            continue;
+          }
+        }
         // ── hard failure ──────────────────────────────────────────────────────
+        const usageLimited = isUsageLimitFailure(err);
         const failureCode = err.code === "ETIMEDOUT" || /timeout|timed out/i.test(err.message ?? "")
           ? "agent_timeout"
-          : "failed_agent";
-        const failureBlockers = [
-          { code: failureCode, role: roleKey, provider: roleDef.provider, error: err.message },
-          ...(currentTask.blockers ?? []),
-        ];
+          : usageLimited
+            ? "usage_limited"
+            : err.exitCode === 127
+              ? "provider_missing"
+              : "failed_agent";
+        const failureBlocker = { code: failureCode, role: roleKey, provider: runProvider, error: err.message };
+        if (failureCode === "provider_missing" || failureCode === "usage_limited") {
+          failureBlocker.message = describeAvailabilityFailure({ provider: runProvider, code: failureCode }, { role: roleKey });
+        }
+        const failureBlockers = [failureBlocker, ...(currentTask.blockers ?? [])];
         await db.appendStep(task.id, {
           role: roleKey,
-          provider: roleDef.provider,
+          provider: runProvider,
           status: "failed",
           started_at: stepStartedAt,
           error: err.message,
@@ -338,7 +496,7 @@ export function makeRoleNode(roleDef, {
         }));
         await db.appendStep(task.id, {
           role: roleKey,
-          provider: roleDef.provider,
+          provider: runProvider,
           status: "waiting",
           started_at: stepStartedAt,
           stdout_path: result.stdoutPath,
@@ -377,7 +535,7 @@ export function makeRoleNode(roleDef, {
         const questionId = `q${(currentTask.question_answers ?? []).length + 1}`;
         await db.appendStep(task.id, {
           role: roleKey,
-          provider: roleDef.provider,
+          provider: runProvider,
           status: "waiting",
           started_at: stepStartedAt,
           stdout_path: result.stdoutPath,
@@ -387,13 +545,17 @@ export function makeRoleNode(roleDef, {
           status: "waiting_user",
           active_step: null,
           current_state: roleKey,
-          active_question: { id: questionId, role: roleKey, provider: roleDef.provider, question },
+          active_question: { id: questionId, role: roleKey, provider: runProvider, question },
         });
         if (markProjectTaskStatus) await markProjectTaskStatus(currentTask, "waiting_user");
         return { event: "question", currentState: roleKey };
       }
 
       // ── parse handoff payload ─────────────────────────────────────────────
+      // rawHandoff is the parsed MAESTRO_HANDOFF marker (null when none emitted).
+      // Soft schema validation only runs when a marker was actually emitted —
+      // an absent marker leaves nothing to validate (schema_validation omitted).
+      const rawHandoff = parseAgentHandoff(combined);
       let payload;
       if (roleKey === "reviewer") {
         const review = parseReviewerOutput(combined, currentTask.review ?? null);
@@ -408,7 +570,20 @@ export function makeRoleNode(roleDef, {
         };
         await db.updateTask(task.id, { review });
       } else {
-        payload = parseAgentHandoff(combined) ?? {};
+        payload = rawHandoff ?? {};
+      }
+
+      // ── soft schema validation (additive evidence; never alters routing) ────
+      let schemaValidation = null;
+      if (rawHandoff != null) {
+        const resolved = resolveRoleSchema(roleDef);
+        if (resolved.source === "name" && resolved.schema) {
+          const result = validatePayload(resolved.name, payload);
+          schemaValidation = { ok: result.ok, errors: result.errors, schema: resolved.name };
+        } else if (resolved.source === "inline" && resolved.schema) {
+          const result = validateInline(resolved.schema, payload);
+          schemaValidation = { ok: result.ok, errors: result.errors, schema: "inline" };
+        }
       }
 
       // ── custom event passthrough: handoff may route a declared transition ──
@@ -432,8 +607,9 @@ export function makeRoleNode(roleDef, {
         try {
           handoffPath = await _writeHandoffFile(task.run_dir, roleKey, {
             role: roleKey,
-            provider: roleDef.provider,
+            provider: runProvider,
             payload,
+            schemaValidation,
             stdoutPath: result.stdoutPath,
             stderrPath: result.stderrPath,
           });
@@ -445,7 +621,7 @@ export function makeRoleNode(roleDef, {
       // ── persist step + handoff to DB ─────────────────────────────────────
       await db.appendStep(task.id, {
         role: roleKey,
-        provider: roleDef.provider,
+        provider: runProvider,
         status: "succeeded",
         started_at: stepStartedAt,
         stdout_path: result.stdoutPath,
@@ -456,9 +632,10 @@ export function makeRoleNode(roleDef, {
       });
       await db.addHandoff(task.id, {
         role: roleKey,
-        provider: roleDef.provider,
+        provider: runProvider,
         payload,
         logPath: result.stdoutPath,
+        schemaValidation,
       });
 
       // ── git HEAD guard: non-reviewer roles with branch tracking ──────────
@@ -495,7 +672,13 @@ export function makeRoleNode(roleDef, {
       }
 
       return {
-        priorHandoffs: [{ role: roleKey, provider: roleDef.provider, payload, log_path: result.stdoutPath ?? null }],
+        priorHandoffs: [{
+          role: roleKey,
+          provider: runProvider,
+          payload,
+          log_path: result.stdoutPath ?? null,
+          ...(schemaValidation ? { schema_validation: schemaValidation } : {}),
+        }],
         event,
         currentState: roleKey,
         visits: { [roleKey]: 1 },

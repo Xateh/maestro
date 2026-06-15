@@ -287,6 +287,7 @@ export async function runLangGraphTask(taskId, {
   stdout = process.stdout,
   stderr = process.stderr,
   ops = {},
+  availabilityProbe = null,
 } = {}) {
   const write = (stream, msg) => { try { stream.write(`${msg}\n`); } catch {} };
 
@@ -304,7 +305,9 @@ export async function runLangGraphTask(taskId, {
   const INPUT_SYNC_FIELDS = [
     "prompt", "question_answers", "approval_decisions", "continuation_prompt",
     "action_requests", "review_enabled", "timeout_ms", "role_skips",
-    "planner_policy", "cwd", "branch", "run_dir", "mode", "worktree_path",
+    // Provider-availability recovery inputs (switch_provider / approve_substitution).
+    "role_overrides", "auto_fallback_confirmed",
+    "planner_policy", "cwd", "branch", "run_dir", "mode", "workflow", "worktree_path",
     "project_id", "start_head", "stream_tail_bytes",
     // User-visible audit trail — readable by prompts and callers via result.task.
     "interactions",
@@ -325,11 +328,25 @@ export async function runLangGraphTask(taskId, {
     await fs.mkdir(task.run_dir, { recursive: true });
   }
 
-  // ── load workflow + config ────────────────────────────────────────────────
+  // ── load workflow (by task.workflow) + config ─────────────────────────────
+  const workflowName = task.workflow ?? "default";
   const [workflow, config] = await Promise.all([
-    taskStore.readWorkflow(),
+    taskStore.readWorkflow(workflowName),
     taskStore.readConfig(),
   ]);
+
+  // Unknown non-default workflow → surface as a recoverable waiting_user blocker
+  // (typed, not a throw) before the graph builds.
+  if (!workflow) {
+    await db.updateTask(taskId, {
+      status: "waiting_user",
+      active_step: null,
+      blockers: [{ code: "unknown_workflow", workflow: workflowName }],
+    });
+    const blockedTask = await db.getTask(taskId);
+    await taskStore.updateTask(taskId, _mirrorPatch(blockedTask));
+    return { task: blockedTask };
+  }
 
   // Surface workflow problems (e.g. unterminated cycles) without blocking the run.
   const validation = validateWorkflow(workflow, { config });
@@ -392,6 +409,7 @@ export async function runLangGraphTask(taskId, {
     ops: graphOps,
     entry: resolveInitialState(workflow, { mode: task.mode }),
     resumeCompletedRoles: new Set(priorHandoffs.map((h) => h.role)),
+    availabilityProbe,
   });
 
   // ── run the graph ─────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import path from "node:path";
 import readline from "node:readline";
 
 import { ENV_KEY_DENYLIST } from "../agent-runner.mjs";
-import { resolveDollarValue } from "../workflow.mjs";
+import { resolveDollarValue } from "./server-config.mjs";
 import { decryptSecrets, encryptSecrets, isEncryptedEnvelope } from "./secret-crypto.mjs";
 import { getPassphrase } from "./secret-passphrase.mjs";
 import { readSecretMasked } from "./secret-prompt.mjs";

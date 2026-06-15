@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (BREAKING)
+
+- **Dispatch consolidation & WORKFLOW.md removal (SP0b)** — the server (Linear
+  poll → auto-dispatch) now runs issues through the *same* LangGraph task engine
+  as `maestro task`. The standalone dispatch front-matter file and its bespoke
+  Codex client are gone; configuration moves into `config.json`'s `server`
+  block, and dispatched issues become graph tasks (one per issue, idempotent via
+  a new `source_issue_id` field).
+  - **Removed:** the dispatch front-matter file and its loader (`src/workflow.mjs`),
+    the dispatch-only Codex client (`src/codex-client.mjs`), the
+    `--workflow-path` flag, the positional dispatch-file argument to
+    `maestro serve`, and the deprecated `maestro <file>.md` entry point.
+  - **`maestro serve` surface:** now `maestro serve [--config <path>]
+    [--state-dir <dir>] [--port <n>]` only. The tracker/workspace/agent settings
+    come from `config.json`.
+  - **Live config reload dropped:** `config.json` is read once at server start;
+    changes require a restart.
+  - **Cancellation is bookkeeping-only:** a terminal/stalled issue clears the
+    orchestrator's running/retry maps; an in-flight graph run is left to finish
+    (real mid-run engine cancellation is deferred).
+  - **MCP `maestro_read_workflow`** no longer returns `workflow_md` (only
+    `workflow_json`). Export bundles no longer include a dispatch front-matter
+    file.
+  - **Migration (manual):** move your old dispatch front-matter into
+    `config.json` under `server`:
+
+    | Old front-matter           | New `config.json` location                  |
+    | -------------------------- | ------------------------------------------- |
+    | `tracker.*`                | `server.tracker.*`                          |
+    | `polling.*`                | `server.polling.*`                          |
+    | `workspace.*`              | `server.workspace.*`                        |
+    | `hooks.*`                  | `server.hooks.*`                            |
+    | `agent.*`                  | `server.agent.*`                            |
+    | `codex.stall_timeout_ms`   | `server.agent.stall_timeout_ms`             |
+    | `codex.*` (sandbox)        | **dropped** (graph engine adapters own sandboxing) |
+    | prompt body (Markdown)     | `server.intake_template` (Liquid string)    |
+    | *(new)*                    | `server.workflow` (named graph workflow to run) |
+
+### Added
+
+- **Manifest & stage I/O contracts (SP1)** — a shared, declarative vocabulary
+  for reliable pipelines.
+  - **Schema registry** (`src/schemas/`): 10 canonical named JSON Schemas
+    (draft 2020-12) — `implementation`, `static_analysis`, `review`,
+    `threat_model`, `edge_cases`, `tests`, `evaluation`, `regression`,
+    `scoring`, `stage_event` — compiled once with ajv. API: `getSchema`,
+    `listSchemas`, `validatePayload`, `validateInline`, `resolveRoleSchema`.
+  - **Workflow manifest v2**: roles may declare `output_schema` (registry name
+    or inline JSON Schema) or `output_schema_ref` (relative path), plus a
+    top-level `gates` block (`min_coverage`, `no_high_severity_findings`,
+    `all_regressions_pass`, `min_overall_confidence`). `DEFAULT_WORKFLOW` is now
+    `version: 2`; v1 workflows stay valid. Gates are validated now; enforcement
+    is a later sub-project.
+  - **Validation**: `validateWorkflow` reports `unknown_output_schema`,
+    `bad_output_schema`, `bad_gates` (errors) and `missing_output_schema`
+    (warning for verifier-named roles without a schema). Still pure / no I/O.
+  - **Soft runtime validation**: when an agent emits a `MAESTRO_HANDOFF` and the
+    role resolves a schema, `schema_validation: { ok, errors, schema }` is
+    recorded in `priorHandoffs`, `handoff.<role>.json`, and the DB `handoffs`
+    row (new nullable `schema_validation` column in both SQLite and Postgres).
+    Additive evidence only — routing is never changed.
+  - **YAML authoring**: workflows may be authored as `.maestro/workflows/<name>.yaml`
+    or `.maestro/workflow.yaml`; JSON wins (with a `workflow_format_precedence`
+    warning) when both exist for a slot.
+  - Adds `ajv` as a direct dependency.
+- **Multi-workflow selection (SP0a)** — a single state dir can hold multiple
+  named workflows under `.maestro/workflows/<name>.json`, selectable per task.
+  The legacy `.maestro/workflow.json` is treated as the `default` workflow (no
+  forced migration; named `default.json` takes precedence with a
+  `workflow_precedence` warning when both exist).
+  - Store API: `readWorkflow(name)`, `writeWorkflow(name, workflow)` (back-compat
+    single-arg default write retained), `listWorkflows()`,
+    `applyWorkflowTemplate({name, as})`, plus `isValidWorkflowName` and the
+    `^[a-z0-9][a-z0-9_-]{0,63}$` name rule.
+  - Tasks carry a `workflow` field (default `"default"`); the engine loads the
+    selected workflow and surfaces a typed `unknown_workflow` blocker for an
+    unknown name instead of falling back silently.
+  - CLI: `maestro task --workflow <name>`, `maestro workflow list`, and
+    `maestro workflow use <name> --as <slot>`.
+  - MCP: optional `workflow` param on `maestro_create_task` (name shape
+    validated; existence checked by the spawned CLI).
+  - TUI: workflow picker on task creation and a workflows list/edit view
+    (defaults to `default`).
+
 ## [0.1.0] - 2026-06-14
 
 Initial release.

@@ -49,6 +49,9 @@ export function createTuiApp({
     config: null,
     rawConfig: null,
     workflow: null,
+    // SP0a MVP: which named workflow the graph editor reads/writes. Defaults to
+    // "default" so existing behavior is unchanged.
+    workflowName: "default",
     graphSel: 0,
     graphScroll: 0,
     settingsSel: 0,
@@ -75,7 +78,7 @@ export function createTuiApp({
       const [tasks, config, workflow, rawConfig] = await Promise.all([
         store.listTasks(),
         store.readConfig(),
-        store.readWorkflow(),
+        store.readWorkflow(model.workflowName ?? "default"),
         // raw (non-overlay-merged) config — the write base for provider and
         // recent edits, so config.local.json values never leak into config.json
         typeof store.readConfigRaw === "function" ? store.readConfigRaw() : Promise.resolve(null),
@@ -321,7 +324,7 @@ export function createTuiApp({
             const providerDef = model.config?.providers?.[provider];
             if (!providerDef) { flash(`unknown provider "${provider}"`); return; }
             await act(`add role ${roleKey}`, async () => {
-              await store.writeWorkflow(addRolePatch(model.workflow ?? {}, roleKey, provider, providerDef));
+              await store.writeWorkflow(model.workflowName ?? "default", addRolePatch(model.workflow ?? {}, roleKey, provider, providerDef));
             });
             model.screen = "role-edit";
             model.roleKey = roleKey;
@@ -333,7 +336,7 @@ export function createTuiApp({
           if (!value) { flash("unchanged"); return; }
           const patch = setInitialPatch(model.workflow ?? {}, value);
           if (!patch) { flash(`unknown role "${value}"`); return; }
-          await act(`initial → ${value}`, () => store.writeWorkflow(patch));
+          await act(`initial → ${value}`, () => store.writeWorkflow(model.workflowName ?? "default", patch));
         });
       }
     }
@@ -459,7 +462,7 @@ export function createTuiApp({
   function roleWrite(roleKey, field) {
     return async (value) => {
       try {
-        await store.writeWorkflow(rolePatch(model.workflow ?? {}, roleKey, { [field.path[0]]: value }));
+        await store.writeWorkflow(model.workflowName ?? "default", rolePatch(model.workflow ?? {}, roleKey, { [field.path[0]]: value }));
         if (field.recent) {
           const role = model.workflow?.roles?.[roleKey] ?? {};
           const recentKey = field.recent === "providers_by_role" ? roleKey : (role.provider ?? roleKey);
@@ -499,7 +502,7 @@ export function createTuiApp({
         const [event, target] = transitions[sel - ROLE_FIELDS.length];
         const targets = transitionTargets(model.workflow ?? {});
         const next = targets[(targets.indexOf(target) + 1) % targets.length];
-        await act(`${event} → ${next}`, () => store.writeWorkflow(setTransitionPatch(model.workflow ?? {}, roleKey, event, next)));
+        await act(`${event} → ${next}`, () => store.writeWorkflow(model.workflowName ?? "default", setTransitionPatch(model.workflow ?? {}, roleKey, event, next)));
       }
     } else if (key.name === "char") {
       if (key.ch === "j") move(1);
@@ -514,13 +517,13 @@ export function createTuiApp({
           const targets = transitionTargets(model.workflow ?? {});
           openInput(`Target for ${event} (${targets.join("/")}):`, async (target) => {
             if (!targets.includes(target)) { flash(`unknown target "${target}"`); return; }
-            await act(`${event} → ${target}`, () => store.writeWorkflow(setTransitionPatch(model.workflow ?? {}, roleKey, event, target)));
+            await act(`${event} → ${target}`, () => store.writeWorkflow(model.workflowName ?? "default", setTransitionPatch(model.workflow ?? {}, roleKey, event, target)));
           });
         });
       } else if (key.ch === "D") {
         if (sel >= ROLE_FIELDS.length) {
           const [event] = transitions[sel - ROLE_FIELDS.length];
-          await act(`delete transition ${event}`, () => store.writeWorkflow(deleteTransitionPatch(model.workflow ?? {}, roleKey, event)));
+          await act(`delete transition ${event}`, () => store.writeWorkflow(model.workflowName ?? "default", deleteTransitionPatch(model.workflow ?? {}, roleKey, event)));
         } else {
           flash("select a transition to delete");
         }

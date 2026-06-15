@@ -113,15 +113,49 @@ Key fields:
     "close_tab_on": "success"     // "success" | "terminal" | "never"
   },
 
-  // HTTP server (maestro serve)
+  // Server mode (maestro serve) — see "Server-mode Config" below
   "server": {
-    "port": 4000                  // set to null to disable
+    "workflow": "default",        // named graph workflow to run per issue
+    "port": 4000,                 // HTTP API port; null disables
+    "tracker": { "kind": "linear", "api_key": "$LINEAR_API_KEY", "project_slug": "team" },
+    "polling": { "interval_ms": 30000 },
+    "workspace": { "root": "/maestro_workspaces" },
+    "agent": { "max_concurrent_agents": 10, "stall_timeout_ms": 300000 },
+    "intake_template": "..."      // Liquid → dispatched task prompt
   },
 
   // Security
   "host_command_allow": []        // exact basenames; network binaries hard-denied
 }
 ```
+
+### Server-mode Config
+
+`maestro serve` polls a tracker and dispatches each eligible issue as a graph
+task (the same LangGraph engine `maestro task` uses). All of its settings live
+in the `server` block of `config.json`; the block is read **once** at startup
+(edits require a restart). One graph task is created per issue, keyed by a
+`source_issue_id` field so repeated polls re-run the same task rather than
+duplicating it.
+
+| Field | Meaning |
+|---|---|
+| `server.workflow` | Named graph workflow (`.maestro/workflows/<name>.json`) run for each dispatched issue. |
+| `server.port` | HTTP API port; `null` disables the HTTP server. The `--port` flag overrides this. |
+| `server.tracker` | `{ kind: "linear", endpoint?, api_key, project_slug, active_states?, terminal_states? }`. `api_key` accepts a `$VAR` reference. |
+| `server.polling.interval_ms` | Poll cadence (default 30000). |
+| `server.workspace.root` | Base dir for per-issue workspaces (`~`, `$VAR`, and relative paths expand). |
+| `server.hooks` | `after_create` / `before_run` / `after_run` / `before_remove` shell hooks + `timeout_ms`. |
+| `server.agent` | `max_concurrent_agents`, `max_turns`, `max_retry_backoff_ms`, `stall_timeout_ms`, `max_concurrent_agents_by_state`. |
+| `server.intake_template` | Liquid template rendered into each dispatched task's prompt. Context: `{ issue, attempt }`. |
+
+> **Migration:** earlier releases configured the server through a dispatch
+> front-matter file. That file and its loader have been removed — move
+> `tracker`/`polling`/`workspace`/`hooks`/`agent` under `server.*`, put the old
+> prompt body in `server.intake_template`, and map
+> `codex.stall_timeout_ms` → `server.agent.stall_timeout_ms`. The old `codex.*`
+> sandbox keys are dropped (the graph engine's adapters own sandboxing). See the
+> BREAKING entry in `CHANGELOG.md`.
 
 ### Herdr Tab Lifecycle
 
@@ -152,7 +186,7 @@ multiple workers share a database, or for persisting state outside the project
 directory.
 
 ```bash
-DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve workflow.json
+DATABASE_URL=postgres://user:pass@localhost:5432/maestro maestro serve
 ```
 
 The schema is created automatically on first connection. Both backends expose
@@ -220,9 +254,10 @@ the hook is defense-in-depth against the agent that drives maestro. Use
 
 ---
 
-## `workflow.json` (v1)
+## `workflow.json` (v2)
 
-Defines the role graph loaded by LangGraph. `maestro init --workflow <name>`
+Defines the role graph loaded by LangGraph. The default workflow declares
+`"version": 2`; v1 workflows remain valid (all v2 additions are optional). `maestro init --workflow <name>`
 (or `maestro workflow use <name>` after init) writes a built-in template:
 
 | Template | Pipeline |
@@ -235,6 +270,25 @@ Defines the role graph loaded by LangGraph. `maestro init --workflow <name>`
 Both `maestro import` and `maestro workflow use` back up the previous file to
 `workflow.json.bak` before writing (`workflow use` fully replaces the file;
 `import` merges).
+
+### Named workflows (multi-workflow selection)
+
+A single state dir can hold multiple named workflows under
+`.maestro/workflows/<name>.json`, selectable per task. The legacy
+`.maestro/workflow.json` is treated as the **`default`** workflow — there is no
+forced migration, so existing setups keep working unchanged.
+
+- Names must match `^[a-z0-9][a-z0-9_-]{0,63}$`.
+- Precedence: if both `.maestro/workflows/default.json` and the legacy
+  `.maestro/workflow.json` exist, the named file wins and a
+  `workflow_precedence` warning is emitted so you can reconcile them.
+- Create a named slot from a template with
+  `maestro workflow use <template> --as <name>`, list them with
+  `maestro workflow list`, and run one with `maestro task --workflow <name>`.
+- A task records its workflow name in its task JSON (`workflow` field, default
+  `"default"`). At run time an unknown non-`default` name surfaces a typed
+  `unknown_workflow` blocker (the task waits for the user rather than falling
+  back silently).
 
 ```jsonc
 {
@@ -293,10 +347,9 @@ Both `maestro import` and `maestro workflow use` back up the previous file to
 }
 ```
 
-The workflow can also be accompanied by a `WORKFLOW.md` file in the same
-`.maestro/` directory (`.maestro/WORKFLOW.md`), which defines per-role Liquid
-prompt templates in human-readable Markdown. A legacy `WORKFLOW.md` at the repo
-root is still read when no `.maestro/WORKFLOW.md` exists.
+Per-role prompt templates live inline in `workflow.json` under
+`roles.<role>.prompt_template` (Liquid syntax). See
+[Custom Workflow Templates](#custom-workflow-templates) below.
 
 ### Role fields for imported/custom roles
 
@@ -312,6 +365,64 @@ Reserved events that handoff payloads may not redefine: `done`, `error`,
 declared in `transitions[role]` to be honored. Validate with
 `maestro workflow validate` — unterminated cycles produce a warning with a
 recommended termination clause. See [import-export.md](import-export.md).
+
+### Stage I/O contracts (manifest v2)
+
+A role may declare the structured-output schema its agent should emit. SP1
+ships this vocabulary plus **soft** validation: a non-conforming payload is
+recorded as evidence, never blocked, and routing is unaffected.
+
+| Field | Description |
+|---|---|
+| `output_schema` | A built-in registry name (string) **or** an inline JSON Schema object (draft 2020-12). |
+| `output_schema_ref` | A path, relative to the state dir, to a JSON Schema file. Must not be absolute or escape the state dir (`..`). |
+| `gates` (top-level) | Quality gate declarations (defined and validated now; enforcement is a later sub-project). |
+
+Resolution order when more than one is set: inline `output_schema` object >
+`output_schema_ref` > `output_schema` registry name.
+
+Built-in registry schema names: `implementation`, `static_analysis`, `review`,
+`threat_model`, `edge_cases`, `tests`, `evaluation`, `regression`, `scoring`,
+`stage_event`. Each is strict on required keys, value types and enums but
+permissive on extra keys (`additionalProperties: true`).
+
+```jsonc
+{
+  "version": 2,
+  "roles": {
+    "executor": { "output_schema": "implementation" },
+    "auditor":  { "output_schema_ref": "schemas/audit.schema.json" }
+  },
+  "gates": {
+    "min_coverage": 90,                  // number 0–100
+    "no_high_severity_findings": true,   // boolean
+    "all_regressions_pass": true,        // boolean
+    "min_overall_confidence": 0.8        // number 0–1
+  }
+}
+```
+
+When an agent emits a `MAESTRO_HANDOFF` marker and its role resolves a schema,
+Maestro records `schema_validation: { ok, errors, schema }` alongside the
+handoff — in graph state (`priorHandoffs`), the `handoff.<role>.json` run-dir
+file, and the database `handoffs` row. No marker emitted ⇒ no
+`schema_validation` (nothing to check).
+
+`maestro workflow validate` reports new codes: `unknown_output_schema` (string
+name not in the registry), `bad_output_schema` (inline schema fails to compile,
+or a bad `output_schema_ref` path), `bad_gates` (unknown gate key or
+out-of-range/typed value), and a `missing_output_schema` warning for a role
+whose name matches a verifier stage (review/threat_model/edge_cases/tests/
+evaluation/regression) but declares no schema.
+
+### YAML authoring
+
+A workflow may be authored in YAML instead of JSON:
+`.maestro/workflows/<name>.yaml` (named) or `.maestro/workflow.yaml` (default).
+`readWorkflow()` normalizes YAML to the same in-memory shape as the JSON
+equivalent. JSON remains canonical: when both a `.json` and `.yaml` exist for
+the same slot, the JSON wins and a `workflow_format_precedence` warning is
+emitted. Writers (`writeWorkflow`, templates) keep writing JSON.
 
 ---
 
@@ -352,8 +463,8 @@ Full guide: [local-llm.md](local-llm.md).
 
 ## Custom Workflow Templates
 
-Override the default prompt for any role by editing `workflow.json` `roles.<role>.prompt_template`
-or by defining a `## <Role>` section in `WORKFLOW.md`. Templates are rendered with
+Override the default prompt for any role by editing `workflow.json` `roles.<role>.prompt_template`.
+Templates are rendered with
 [LiquidJS](https://liquidjs.com) and receive context variables:
 
 | Variable | Description |

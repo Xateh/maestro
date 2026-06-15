@@ -27,6 +27,25 @@ export function isContextWindowFailure(error) {
   return CONTEXT_WINDOW_PATTERNS.some((p) => p.test(text));
 }
 
+// ─── usage / quota failure ────────────────────────────────────────────────────
+// A provider hit a rate/usage/quota/credit limit. Distinct from a context-window
+// overflow (which auto-compacts) — this routes into provider fallback instead.
+const USAGE_LIMIT_PATTERNS = [
+  /rate limit/i,
+  /usage limit/i,
+  /\bquota\b/i,
+  /too many requests/i,
+  /\b429\b/,
+  /insufficient.*credit/i,
+  /out of (?:tokens|credits|quota)/i,
+  /reached your .*limit/i,
+];
+
+export function isUsageLimitFailure(error) {
+  const text = [error?.message, error?.stdout, error?.stderr].filter(Boolean).join("\n");
+  return USAGE_LIMIT_PATTERNS.some((p) => p.test(text));
+}
+
 // ─── MAESTRO_QUESTION ───────────────────────────────────────────────────────
 
 function _questionFromText(value = "") {

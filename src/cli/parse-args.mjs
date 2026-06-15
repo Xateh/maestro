@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore, slugifyTaskTitle } from "../task-store.mjs";
+import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore, WORKFLOW_NAME_RE, slugifyTaskTitle } from "../task-store.mjs";
 
 import { normalizeGitActionArgs } from "./git-intent.mjs";
 import { sanitizeEnvObject } from "./util.mjs";
@@ -26,6 +26,7 @@ export function makeStore(parsed, store) {
 
 export function parseTaskArgs(args, cwd) {
   let mode = "task";
+  let workflow = "default";
   let stateDir = path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);
   let taskCwd = null;
   let timeoutMs = null;
@@ -53,6 +54,14 @@ export function parseTaskArgs(args, cwd) {
       mode = args[index] ?? "";
       if (!/^[a-z0-9_-]+$/.test(mode)) {
         throw new Error(`invalid_mode: ${mode}`);
+      }
+      continue;
+    }
+    if (arg === "--workflow") {
+      index += 1;
+      workflow = args[index] ?? "";
+      if (!WORKFLOW_NAME_RE.test(workflow)) {
+        throw new Error(`invalid_workflow: ${workflow}`);
       }
       continue;
     }
@@ -126,6 +135,7 @@ export function parseTaskArgs(args, cwd) {
   }
   return {
     mode,
+    workflow,
     prompt,
     stateDir,
     taskCwd,
@@ -351,4 +361,54 @@ export function parseProjectArgs(args, cwd) {
 // Returns any --flag items in `args` not present in `knownFlags`.
 export function findUnknownFlags(args, knownFlags) {
   return args.filter((a) => a.startsWith("--") && !knownFlags.has(a));
+}
+
+function serverArgsError(code, message = code) {
+  const error = new Error(`${code}: ${message}`);
+  error.code = code;
+  return error;
+}
+
+// Parse `maestro serve` flags. The server's tracker/workflow now come from
+// config.json's `server` block, so there is no legacy dispatch-file flag or
+// positional dispatch-file surface — only --config, --state-dir, --port.
+export function parseServerArgs(argv = process.argv) {
+  const args = argv.slice(2);
+  let configPath = null;
+  let stateDir = null;
+  let port = null;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--port") {
+      const value = args[index + 1];
+      index += 1;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        throw serverArgsError("invalid_port", String(value));
+      }
+      port = parsed;
+      continue;
+    }
+    if (arg === "--config") {
+      const value = args[index + 1];
+      index += 1;
+      if (!value) throw serverArgsError("missing_config_path");
+      configPath = value;
+      continue;
+    }
+    if (arg === "--state-dir") {
+      const value = args[index + 1];
+      index += 1;
+      if (!value) throw serverArgsError("missing_state_dir");
+      stateDir = value;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw serverArgsError("unknown_cli_arg", arg);
+    }
+    throw serverArgsError("unexpected_cli_arg", arg);
+  }
+
+  return { configPath, stateDir, port };
 }

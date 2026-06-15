@@ -22,6 +22,7 @@ import { runProjectCommand } from "./projects.mjs";
 import { attachReceipt, feedbackReceipt, withReceipt, writeResultReceipt } from "./receipts.mjs";
 import {
   handleApproveAction,
+  handleApproveSubstitution,
   handleCancelTask,
   handleDenyAction,
   handleEditAction,
@@ -29,6 +30,8 @@ import {
   handleMarkDone,
   handleRetryTask,
   handleRunAction,
+  handleSkipRole,
+  handleSwitchProvider,
 } from "./task-handlers.mjs";
 import {
   createLocalTaskFromParsed,
@@ -53,6 +56,7 @@ export async function runLocalMaestroCommand({
   stderr = process.stderr,
   store = null,
   runner = null,
+  availabilityProbe = null,
   gitRunner = defaultGitRunner,
   hostRunner = defaultHostRunner,
   onTaskCreated = null,
@@ -251,8 +255,13 @@ export async function runLocalMaestroCommand({
     const parsed = parseTaskArgs(args, cwd);
     const taskStore = makeStore(parsed, store);
     const defaults = await taskStore.readConfig();
+    const workflowName = parsed.workflow ?? "default";
+    const workflow = await taskStore.readWorkflow(workflowName);
+    // Non-default names have no implicit fallback — a missing file is an error.
+    if (!workflow) {
+      throw new Error(`unknown_workflow: ${workflowName}`);
+    }
     if (parsed.mode !== "task") {
-      const workflow = await taskStore.readWorkflow();
       if (!workflow.modes?.[parsed.mode]) {
         throw new Error(`unknown_mode: ${parsed.mode} (defined modes: ${Object.keys(workflow.modes ?? {}).join(", ")})`);
       }
@@ -261,7 +270,7 @@ export async function runLocalMaestroCommand({
     if (onTaskCreated) {
       onTaskCreated(task);
     }
-    return runCreatedLocalTask({ taskStore, taskId: task.id, cwd, stdout, stderr, runner, gitRunner });
+    return runCreatedLocalTask({ taskStore, taskId: task.id, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
   }
 
   if (command === "run-task") {
@@ -270,7 +279,7 @@ export async function runLocalMaestroCommand({
     const taskId = parsed.positional[0];
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
-    return runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner });
+    return runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
   }
 
   if (command === "approve" || command === "deny") {
@@ -285,7 +294,7 @@ export async function runLocalMaestroCommand({
     writeLine(stdout, `task ${task.id} approval ${approved ? "approved" : "denied"}`);
     let result = { task };
     if (task.status === "queued") {
-      result = await runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner });
+      result = await runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
     }
     result = attachReceipt(result, feedbackReceipt({
       kind: command,
@@ -392,7 +401,7 @@ export async function runLocalMaestroCommand({
       continuation_prompt: parsed.note ? `User message:\n${parsed.note}` : null,
     });
     writeLine(stdout, `task ${task.id} queued with message`);
-    const resumed = await runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner });
+    const resumed = await runCreatedLocalTask({ taskStore, taskId, cwd, stdout, stderr, runner, gitRunner, availabilityProbe });
     const result = attachReceipt(resumed, feedbackReceipt({
       kind: "message",
       message: "message queued",
@@ -494,6 +503,48 @@ export async function runLocalMaestroCommand({
     if (!taskId) throw new Error("missing_task_id");
     const taskStore = makeStore(parsed, store);
     const result = await handleCancelTask({ taskStore, taskId, note: parsed.note, stdout });
+    writeResultReceipt(stdout, result);
+    return result;
+  }
+
+  if (command === "approve-substitution") {
+    const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "approve-substitution", stderr);
+    const taskId = parsed.positional[0];
+    if (!taskId) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const result = await handleApproveSubstitution({
+      taskStore, taskId, note: parsed.note, cwd, stdout, stderr, runner, gitRunner, availabilityProbe,
+    });
+    writeResultReceipt(stdout, result);
+    return result;
+  }
+
+  if (command === "skip-role") {
+    const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "skip-role", stderr);
+    const taskId = parsed.positional[0];
+    if (!taskId) throw new Error("missing_task_id");
+    const role = parsed.positional[1] ?? null;
+    const taskStore = makeStore(parsed, store);
+    const result = await handleSkipRole({
+      taskStore, taskId, role, note: parsed.note, cwd, stdout, stderr, runner, gitRunner, availabilityProbe,
+    });
+    writeResultReceipt(stdout, result);
+    return result;
+  }
+
+  if (command === "switch-provider") {
+    const parsed = parseActionArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "switch-provider", stderr);
+    const taskId = parsed.positional[0];
+    if (!taskId) throw new Error("missing_task_id");
+    const provider = parsed.positional[1];
+    if (!provider) throw new Error("missing_provider");
+    const taskStore = makeStore(parsed, store);
+    const result = await handleSwitchProvider({
+      taskStore, taskId, provider, note: parsed.note, cwd, stdout, stderr, runner, gitRunner, availabilityProbe,
+    });
     writeResultReceipt(stdout, result);
     return result;
   }
@@ -701,10 +752,52 @@ export async function runLocalMaestroCommand({
       }
       return result;
     }
+    if (action === "list") {
+      warnFlags(findUnknownFlags(rest, new Set(["--json"])), "workflow list", stderr);
+      const taskStore = makeStore(parsed, store);
+      const workflows = await taskStore.listWorkflows();
+      if (rest.includes("--json")) {
+        writeLine(stdout, JSON.stringify(workflows, null, 2));
+      } else if (workflows.length === 0) {
+        writeLine(stdout, "no workflows (run 'maestro init' or 'maestro workflow use <name>')");
+      } else {
+        for (const wf of workflows) {
+          writeLine(stdout, `${wf.name} (${wf.source})`);
+        }
+      }
+      return { workflows };
+    }
     if (action === "use") {
-      warnFlags(findUnknownFlags(rest, new Set()), "workflow use", stderr);
-      const name = rest.find((arg) => !arg.startsWith("-"));
+      warnFlags(findUnknownFlags(rest, new Set(["--as"])), "workflow use", stderr);
+      const positional = [];
+      let asName = null;
+      let asSeen = false;
+      for (let index = 0; index < rest.length; index += 1) {
+        if (rest[index] === "--as") {
+          asSeen = true;
+          index += 1;
+          asName = rest[index] ?? "";
+          continue;
+        }
+        if (!rest[index].startsWith("-")) positional.push(rest[index]);
+      }
+      // A bare "--as" with no value must error, not silently fall back to the
+      // legacy default-slot path.
+      if (asSeen && !asName) throw usageError(["workflow", "use"]);
+      const name = positional[0];
       if (!name) throw usageError(["workflow", "use"]);
+      // With --as: write into a named slot (workflows/<as>.json). Without:
+      // legacy behavior — replace the default workflow.json via the module path.
+      if (asName) {
+        const taskStore = makeStore(parsed, store);
+        const result = await taskStore.applyWorkflowTemplate({ name, as: asName });
+        const roles = Object.entries(result.workflow.roles)
+          .map(([role, def]) => `${role}(${def.provider})`)
+          .join(" → ");
+        writeLine(stdout, `workflow "${asName}" now uses template "${name}": ${roles}`);
+        writeLine(stdout, `modes: ${Object.keys(result.workflow.modes ?? {}).join(", ")}`);
+        return result;
+      }
       const { applyWorkflowTemplate } = await import("../setup/workflow-templates.mjs");
       const result = await applyWorkflowTemplate({ name, stateDir: parsed.stateDir });
       if (result.backupPath) {

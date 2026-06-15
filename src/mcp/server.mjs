@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { openStore } from "../db/store.mjs";
+import { WORKFLOW_NAME_RE } from "../task-store.mjs";
 
 // ── Root discovery ────────────────────────────────────────────────────────────
 
@@ -46,6 +47,16 @@ function maestroPaths() {
 // (e.g. imported standalone roles) which are validated at call time.
 const VALID_MODES = new Set(["task", "plan-only"]);
 const MODE_NAME_RE = /^[a-z0-9_-]+$/;
+// WORKFLOW_NAME_RE imported from ../task-store.mjs (single source of truth).
+// Validate the workflow name *shape* here (like mode); existence is deferred to
+// the spawned CLI, which raises unknown_workflow. Keeps the MCP server off disk.
+
+// Build the argv for the spawned `maestro task ...` child. Pure so it can be
+// unit-tested without spawning. "--" ends option parsing so prompts that look
+// like flags are never interpreted by the child.
+function buildTaskArgv(binPath, { mode, workflow, prompt }) {
+  return [binPath, "task", "--mode", mode, "--workflow", workflow, "--", prompt];
+}
 
 async function resolveValidModes() {
   const modes = new Set(VALID_MODES);
@@ -235,24 +246,25 @@ async function showRun({ id } = {}) {
   return result;
 }
 
-async function createTask({ prompt, mode = "task" } = {}) {
+async function createTask({ prompt, mode = "task", workflow = "default" } = {}) {
   if (typeof prompt !== "string" || prompt.length === 0) throw new Error("prompt required");
   if (Buffer.byteLength(prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error("prompt_too_large");
   if (!MODE_NAME_RE.test(mode) || !(await resolveValidModes()).has(mode)) {
     throw new Error(`invalid_mode: ${mode}`);
+  }
+  if (!WORKFLOW_NAME_RE.test(workflow)) {
+    throw new Error(`invalid_workflow: ${workflow}`);
   }
   const { ROOT } = maestroPaths();
   return new Promise((resolve, reject) => {
     // Invoke the bundled bin directly so this package is self-contained
     // (no npm run maestro shim required in the caller's directory).
     const binPath = fileURLToPath(new URL("../../bin/maestro.mjs", import.meta.url));
-    // "--" ends option parsing so a prompt like "--timeout-ms 1 do X" is never
-    // interpreted as CLI flags by the spawned process.
     // MAESTRO_CALLER_CWD aligns the child's state-dir with ROOT so MCP readers
     // see the same tasks the server does (critical when installed as a dependency).
     const proc = spawn(
       process.execPath,
-      [binPath, "task", "--mode", mode, "--", prompt],
+      buildTaskArgv(binPath, { mode, workflow, prompt }),
       { cwd: ROOT, env: { ...process.env, MAESTRO_CALLER_CWD: ROOT }, stdio: ["ignore", "pipe", "pipe"] },
     );
     let stdout = "";
@@ -321,14 +333,11 @@ async function getState() {
   return { source: "files", config: redactConfig(config), workflow, live_tasks: liveTasks };
 }
 
-async function readWorkflow() {
-  const { MAESTRO_DIR, ROOT } = maestroPaths();
+export async function readWorkflow() {
+  const { MAESTRO_DIR } = maestroPaths();
   const workflowPath = path.join(MAESTRO_DIR, "workflow.json");
   const workflow = await readJSON(workflowPath).catch(() => null);
-  // WORKFLOW.md lives in .maestro/; fall back to the legacy repo-root location.
-  const wfMd = await fs.readFile(path.join(MAESTRO_DIR, "WORKFLOW.md"), "utf8").catch(() => null)
-    ?? await fs.readFile(path.join(ROOT, "WORKFLOW.md"), "utf8").catch(() => null);
-  return { workflow_json: workflow, workflow_md: wfMd };
+  return { workflow_json: workflow };
 }
 
 async function validateWorkflowTool() {
@@ -393,6 +402,7 @@ const TOOLS = [
       properties: {
         prompt: { type: "string", description: "The task prompt" },
         mode: { type: "string", description: "'task' (default) or 'plan-only'" },
+        workflow: { type: "string", description: "Named workflow to run (default: 'default'). Must match ^[a-z0-9][a-z0-9_-]{0,63}$." },
       },
       required: ["prompt"],
     },
@@ -404,7 +414,7 @@ const TOOLS = [
   },
   {
     name: "maestro_read_workflow",
-    description: "Return the current .maestro/workflow.json and WORKFLOW.md template (if present).",
+    description: "Return the current .maestro/workflow.json graph definition (if present).",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -441,7 +451,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // Export helpers for testing without starting the server.
-export { isValidId, assertInsideDir, redactConfig, VALID_MODES, resolveValidModes, createTask, getState, showTask, showRun, listTasks, validateWorkflowTool };
+export { isValidId, assertInsideDir, redactConfig, VALID_MODES, WORKFLOW_NAME_RE, buildTaskArgv, resolveValidModes, createTask, getState, showTask, showRun, listTasks, validateWorkflowTool };
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {

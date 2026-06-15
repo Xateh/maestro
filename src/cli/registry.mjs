@@ -12,7 +12,7 @@ export const COMMAND_TREE = {
   synopsis: "maestro <command> [args]",
   flags: [
     STATE_DIR_FLAG,
-    { flag: "--workflow-path <path>", desc: "workflow file (server mode)" },
+    { flag: "--config <path>", desc: "config.json path (server mode)" },
     { flag: "--port <n>", desc: "HTTP port (server mode)" },
   ],
   subcommands: [
@@ -24,6 +24,7 @@ export const COMMAND_TREE = {
       flags: [
         { flag: "--plan-only", desc: "planner only; stops at the plan handoff" },
         { flag: "--mode <name>", desc: "run any mode defined in workflow.json" },
+        { flag: "--workflow <name>", desc: "named workflow to run (default: default)" },
         { flag: "--cwd <path>", desc: "working directory for the task" },
         { flag: "--timeout-ms <n>", desc: "per-step timeout (-1 = none)" },
         { flag: "--planner auto|on|off", desc: "planner policy override" },
@@ -186,6 +187,27 @@ export const COMMAND_TREE = {
       flags: [{ flag: "--note <text>", desc: "attach a note" }, STATE_DIR_FLAG],
     },
     {
+      name: "approve-substitution",
+      kind: "local",
+      synopsis: "maestro approve-substitution <id>",
+      summary: "approve an auto provider substitution and continue",
+      flags: [{ flag: "--note <text>", desc: "attach a note" }, STATE_DIR_FLAG],
+    },
+    {
+      name: "skip-role",
+      kind: "local",
+      synopsis: "maestro skip-role <id> [<role>]",
+      summary: "skip a role whose provider is unavailable",
+      flags: [{ flag: "--note <text>", desc: "attach a note" }, STATE_DIR_FLAG],
+    },
+    {
+      name: "switch-provider",
+      kind: "local",
+      synopsis: "maestro switch-provider <id> <provider>",
+      summary: "switch a blocked role to another provider",
+      flags: [{ flag: "--note <text>", desc: "attach a note" }, STATE_DIR_FLAG],
+    },
+    {
       name: "project",
       kind: "local",
       synopsis: "maestro project <subcommand>",
@@ -274,10 +296,22 @@ export const COMMAND_TREE = {
           ],
         },
         {
+          name: "list",
+          synopsis: "maestro workflow list",
+          summary: "list available workflows (named + legacy default)",
+          flags: [
+            { flag: "--json", desc: "JSON output" },
+            STATE_DIR_FLAG,
+          ],
+        },
+        {
           name: "use",
-          synopsis: "maestro workflow use <name>",
-          summary: "switch workflow.json to a built-in template (backs up the old file)",
-          flags: [STATE_DIR_FLAG],
+          synopsis: "maestro workflow use <name> [--as <slot>]",
+          summary: "apply a built-in template (default slot, or --as a named slot)",
+          flags: [
+            { flag: "--as <name>", desc: "write into workflows/<name>.json instead of the default" },
+            STATE_DIR_FLAG,
+          ],
         },
       ],
     },
@@ -308,11 +342,12 @@ export const COMMAND_TREE = {
     {
       name: "serve",
       kind: "server",
-      synopsis: "maestro serve [WORKFLOW.md]",
+      synopsis: "maestro serve [--config <path>] [--state-dir <dir>] [--port <n>]",
       summary: "server mode: poll Linear, auto-dispatch issues",
       flags: [
+        { flag: "--config <path>", desc: "config.json path" },
+        STATE_DIR_FLAG,
         { flag: "--port <n>", desc: "HTTP port" },
-        { flag: "--workflow-path <path>", desc: "workflow file" },
       ],
     },
   ],
@@ -448,9 +483,8 @@ function commandTokens(args) {
   return tokens;
 }
 
-// Pure routing decision for main(). `fileExists` is injected so the routing
-// stays testable without touching the filesystem.
-export function routeCli(rawArgs = [], { fileExists = () => false } = {}) {
+// Pure routing decision for main().
+export function routeCli(rawArgs = []) {
   const dashIndex = rawArgs.indexOf("--");
   const preDashDash = dashIndex === -1 ? rawArgs : rawArgs.slice(0, dashIndex);
   const first = rawArgs[0];
@@ -477,9 +511,6 @@ export function routeCli(rawArgs = [], { fileExists = () => false } = {}) {
   }
   if (first === undefined || first.startsWith("-")) {
     return { kind: "server" };
-  }
-  if (first.endsWith(".md") && fileExists(first)) {
-    return { kind: "server-deprecated", workflowPath: first };
   }
   return { kind: "error", text: usageError([first]).cliHelp, exitCode: 1 };
 }

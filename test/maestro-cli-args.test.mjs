@@ -12,6 +12,7 @@ import {
   parseEditActionArgs,
   parseInspectArgs,
   parseProjectArgs,
+  parseServerArgs,
   parseTaskArgs,
 } from "../src/cli/parse-args.mjs";
 
@@ -33,6 +34,25 @@ function captureWriter() {
 }
 
 // --- findUnknownFlags utility -------------------------------------------------
+
+test("parseServerArgs accepts --config, --state-dir, and --port", () => {
+  assert.deepEqual(
+    parseServerArgs(["node", "maestro", "--config", "ops/config.json", "--state-dir", "st", "--port", "8080"]),
+    { configPath: "ops/config.json", stateDir: "st", port: 8080 },
+  );
+  assert.deepEqual(parseServerArgs(["node", "maestro"]), {
+    configPath: null,
+    stateDir: null,
+    port: null,
+  });
+});
+
+test("parseServerArgs rejects the removed workflow-path flag, positional files, and bad ports", () => {
+  // The old dispatch flag and positional dispatch file are no longer accepted.
+  assert.throws(() => parseServerArgs(["node", "maestro", `--workflow${"-"}path`, "x.md"]), /unknown_cli_arg/);
+  assert.throws(() => parseServerArgs(["node", "maestro", "ops/flow.md"]), /unexpected_cli_arg/);
+  assert.throws(() => parseServerArgs(["node", "maestro", "--port", "nope"]), /invalid_port/);
+});
 
 test("findUnknownFlags returns only unrecognized --flags", () => {
   const result = findUnknownFlags(
@@ -82,6 +102,32 @@ test("parseTaskArgs still accepts recognized flags", () => {
   assert.equal(parsed.mode, "plan-only");
   assert.equal(parsed.plannerPolicy, "off");
   assert.equal(parsed.prompt, "ship it");
+});
+
+// --- parseTaskArgs --workflow (SP0a) -----------------------------------------
+
+test("parseTaskArgs parses --workflow", () => {
+  const parsed = parseTaskArgs(["task", "--workflow", "solo", "do", "it"], CWD);
+  assert.equal(parsed.workflow, "solo");
+  assert.equal(parsed.prompt, "do it");
+});
+
+test("parseTaskArgs defaults workflow to 'default'", () => {
+  const parsed = parseTaskArgs(["task", "do", "it"], CWD);
+  assert.equal(parsed.workflow, "default");
+});
+
+test("parseTaskArgs rejects an invalid --workflow name", () => {
+  assert.throws(
+    () => parseTaskArgs(["task", "--workflow", "Bad Name", "x"], CWD),
+    /invalid_workflow/,
+  );
+});
+
+test("parseTaskArgs treats --workflow after -- as literal prompt text", () => {
+  const parsed = parseTaskArgs(["task", "--", "use", "--workflow", "solo"], CWD);
+  assert.equal(parsed.workflow, "default");
+  assert.equal(parsed.prompt, "use --workflow solo");
 });
 
 // --- collecting parsers expose unknownFlags ----------------------------------

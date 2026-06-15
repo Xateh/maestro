@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -193,6 +193,144 @@ test("makeRoleNode: returns done and records handoff when agent emits MAESTRO_HA
   }
 });
 
+// ── makeRoleNode: soft schema validation (SP1) ───────────────────────────────────
+
+const IMPL_OK = {
+  summary: "did the thing",
+  files_changed: ["a.js"],
+  assumptions: [],
+  risks: [],
+};
+
+async function runNodeWithSchema({ roleDef, stdout, runDir = null }) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-schema-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  const taskId = "20260614-000001-schema";
+  await db.createTask({
+    id: taskId,
+    status: "running",
+    prompt: "do work",
+    cwd: dir,
+    mode: "task",
+    run_dir: runDir,
+    planner_policy: "on",
+  });
+  const stubRunner = {
+    runStep: async () => ({ stdout, stderr: "", stdoutPath: null, stderrPath: null }),
+  };
+  const node = makeRoleNode(roleDef, {
+    db,
+    runner: stubRunner,
+    providerDef: DEFAULT_CONFIG.providers.codex,
+  });
+  const result = await node({ task: { id: taskId, run_dir: runDir }, priorHandoffs: [], event: null, currentState: null });
+  const handoffs = await db.getHandoffs(taskId);
+  return { dir, db, result, handoffs };
+}
+
+test("makeRoleNode: conformant payload records schema_validation.ok === true", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+    assert.equal(result.priorHandoffs[0].schema_validation.schema, "implementation");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: non-conformant payload records ok:false but routing unchanged", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "missing arrays" })}`,
+  });
+  try {
+    assert.equal(result.event, "done"); // routing NOT blocked
+    const sv = result.priorHandoffs[0].schema_validation;
+    assert.equal(sv.ok, false);
+    assert.ok(sv.errors.length > 0);
+    // DB carries schema_validation too.
+    assert.equal(handoffs[0].schema_validation.ok, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: schema_validation written to handoff.<role>.json on disk", async () => {
+  const runDir = await mkdtemp(path.join(tmpdir(), "maestro-schema-run-"));
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+    runDir,
+  });
+  try {
+    const onDisk = JSON.parse(await readFile(path.join(runDir, "handoff.executor.json"), "utf8"));
+    assert.equal(onDisk.schema_validation.ok, true);
+    assert.equal(onDisk.schema_validation.schema, "implementation");
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+    await rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: no MAESTRO_HANDOFF emitted → schema_validation omitted", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+    stdout: "just some text, no marker",
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].schema_validation, undefined);
+    assert.equal(handoffs[0].schema_validation, undefined);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: role with no schema → schema_validation omitted", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor }; // no output_schema
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+  });
+  try {
+    assert.equal(result.priorHandoffs[0].schema_validation, undefined);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: inline output_schema validated via validateInline", async () => {
+  const roleDef = {
+    ...DEFAULT_WORKFLOW.roles.executor,
+    output_schema: { type: "object", required: ["x"], properties: { x: { type: "number" } } },
+  };
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ x: "not a number" })}`,
+  });
+  try {
+    const sv = result.priorHandoffs[0].schema_validation;
+    assert.equal(sv.schema, "inline");
+    assert.equal(sv.ok, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ── runLangGraphTask: herdr tab close policy ─────────────────────────────────────
 
 const silent = { write: () => {} };
@@ -231,6 +369,7 @@ async function runTaskWithPolicy({ policy = null, emitQuestion = false } = {}) {
       runner: stubRunner,
       stdout: silent,
       stderr: silent,
+      availabilityProbe: () => true, // stub runner; don't probe the host PATH
     });
     return { finalTask, closedTabs, taskId: task.id };
   } finally {
@@ -264,6 +403,99 @@ test("runLangGraphTask: waiting_user leaves the tab open as a trail", async () =
   const { finalTask, closedTabs } = await runTaskWithPolicy({ emitQuestion: true });
   assert.equal(finalTask.status, "waiting_user");
   assert.deepEqual(closedTabs, [], "tab kept so the user can read the conversation");
+});
+
+// ── makeRoleNode: provider availability / fallback ───────────────────────────────
+
+const HANDOFF_OUT = { stdout: 'MAESTRO_HANDOFF: {"summary":"ok"}', stderr: "", stdoutPath: null, stderrPath: null };
+
+async function withRoleNode(taskPatch, fn) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-avail-"));
+  const db = new SqliteTaskStore(path.join(dir, "maestro.db"));
+  try {
+    const taskId = "20260614-000001-avail";
+    await db.createTask({ id: taskId, status: "running", prompt: "do it", cwd: dir, mode: "task", run_dir: null, ...taskPatch });
+    return await fn({ db, taskId, dir });
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("makeRoleNode: substitutes an available fallback once confirmed", async () => {
+  await withRoleNode({ auto_fallback_confirmed: true }, async ({ db, taskId }) => {
+    const role = { provider: "codex", fallback: ["claude"], prompt_template: "executor", permission: "write" };
+    const seen = [];
+    const runner = { runStep: async ({ provider }) => { seen.push(provider); return HANDOFF_OUT; } };
+    const node = makeRoleNode(role, {
+      db, runner, providerDef: DEFAULT_CONFIG.providers.codex, config: DEFAULT_CONFIG,
+      availabilityProbe: (alias) => alias === "claude", // codex missing
+    });
+    const result = await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.deepEqual(seen, ["claude"], "ran on the fallback provider");
+    assert.equal(result.priorHandoffs[0].provider, "claude");
+    const saved = await db.getTask(taskId);
+    assert.ok(saved.steps.some((s) => s.status === "substituted"), "records a substituted step");
+  });
+});
+
+test("makeRoleNode: first substitution pauses for confirmation", async () => {
+  await withRoleNode({}, async ({ db, taskId }) => {
+    const role = { provider: "codex", fallback: ["claude"], prompt_template: "executor", permission: "write" };
+    const runner = { runStep: async () => { throw new Error("should not run before approval"); } };
+    const node = makeRoleNode(role, {
+      db, runner, providerDef: DEFAULT_CONFIG.providers.codex, config: DEFAULT_CONFIG,
+      availabilityProbe: (alias) => alias === "claude",
+    });
+    const result = await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "error");
+    const saved = await db.getTask(taskId);
+    assert.equal(saved.status, "waiting_user");
+    assert.equal(saved.blockers[0].code, "provider_substitution_pending");
+    assert.equal(saved.pending_substitution.to, "claude");
+  });
+});
+
+test("makeRoleNode: blocks with provider_missing when nothing resolves", async () => {
+  await withRoleNode({}, async ({ db, taskId }) => {
+    const role = { provider: "codex", prompt_template: "executor", permission: "write" };
+    const runner = { runStep: async () => { throw new Error("should not run"); } };
+    const node = makeRoleNode(role, {
+      db, runner, providerDef: DEFAULT_CONFIG.providers.codex, config: DEFAULT_CONFIG,
+      availabilityProbe: () => false,
+    });
+    const result = await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "error");
+    const saved = await db.getTask(taskId);
+    assert.equal(saved.status, "waiting_user");
+    assert.equal(saved.blockers[0].code, "provider_missing");
+    assert.match(saved.blockers[0].message, /not installed/i);
+  });
+});
+
+test("makeRoleNode: usage-limit failure hops to an available fallback", async () => {
+  await withRoleNode({ auto_fallback_confirmed: true }, async ({ db, taskId }) => {
+    const role = { provider: "codex", fallback: ["claude"], prompt_template: "executor", permission: "write" };
+    const seen = [];
+    const runner = {
+      runStep: async ({ provider }) => {
+        seen.push(provider);
+        if (provider === "codex") { const e = new Error("429 rate limit"); e.stderr = "rate limit exceeded"; throw e; }
+        return HANDOFF_OUT;
+      },
+    };
+    const node = makeRoleNode(role, {
+      db, runner, providerDef: DEFAULT_CONFIG.providers.codex, config: DEFAULT_CONFIG,
+      availabilityProbe: () => true, // both installed; codex just rate-limited
+    });
+    const result = await node({ task: { id: taskId }, priorHandoffs: [], event: null, currentState: null });
+    assert.equal(result.event, "done");
+    assert.deepEqual(seen, ["codex", "claude"], "retried on the fallback after the limit");
+    assert.equal(result.priorHandoffs[0].provider, "claude");
+    const saved = await db.getTask(taskId);
+    assert.ok(saved.steps.some((s) => s.recovery === "usage_limit_fallback"), "records the usage-limit hop");
+  });
 });
 
 // ── loop support: custom events, visit counting, loop limits ──────────────────
@@ -302,7 +534,7 @@ async function runLoopGraph({ workflow = LOOP_WORKFLOW, runner, resumeCompletedR
   try {
     const taskId = "20260611-000001-loop-test";
     await db.createTask({ id: taskId, status: "running", prompt: "loop it", cwd: dir, mode: "task", run_dir: null });
-    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, resumeCompletedRoles });
+    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, resumeCompletedRoles, availabilityProbe: () => true });
     const finalState = await graph.invoke(
       { task: await db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
       { configurable: { thread_id: taskId }, recursionLimit: 50 },
@@ -415,7 +647,7 @@ test("standalone mode entry: imported role runs alone, default pipeline untouche
       },
     };
     // graph must compile even though planner/executor/reviewer are not on this run's path
-    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, entry: "system_evaluator" });
+    const graph = buildGraph(workflow, DEFAULT_CONFIG, { db, runner, entry: "system_evaluator", availabilityProbe: () => true });
     const final = await graph.invoke(
       { task: await db.getTask(taskId), priorHandoffs: [], currentState: null, event: null },
       { configurable: { thread_id: taskId }, recursionLimit: 50 },
@@ -606,4 +838,67 @@ test("formatDurationMs and formatBytes edge cases", async () => {
   assert.equal(formatBytes(812), "812B");
   assert.equal(formatBytes(18_432), "18.0KB");
   assert.equal(formatBytes(2_097_152), "2.0MB");
+});
+
+// ── runLangGraphTask: per-task workflow selection (SP0a) ─────────────────────
+
+test("runLangGraphTask runs the task's named workflow (solo = executor only)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-wf-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.applyWorkflowTemplate({ name: "solo", as: "solo" });
+    const task = await store.createTask({ prompt: "do it", cwd: dir, workflow: "solo" });
+
+    const roles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        roles.push(role);
+        return {
+          stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "done" })}`,
+          stderr: "",
+          stdoutPath: null,
+          stderrPath: null,
+        };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "succeeded");
+    assert.deepEqual([...new Set(roles)], ["executor"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runLangGraphTask surfaces unknown_workflow as waiting_user", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-wf-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do it", cwd: dir, workflow: "nope" });
+
+    let ran = false;
+    const stubRunner = { runStep: async () => { ran = true; return { stdout: "", stderr: "", stdoutPath: null, stderrPath: null }; } };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "waiting_user");
+    assert.equal(finalTask.blockers[0].code, "unknown_workflow");
+    assert.equal(finalTask.blockers[0].workflow, "nope");
+    assert.equal(ran, false, "graph must not build for an unknown workflow");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -10,6 +10,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { directCommandExists } from "../agent-runner.mjs";
+import { deepMergeConfig } from "../config-local.mjs";
+import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
 import { validateWorkflow } from "../workflow-validate.mjs";
 import { encryptedSecretsPath, secretsPath } from "./keys.mjs";
 import { CLI_PROVIDERS, LOCAL_AGENT_PROVIDERS } from "./scanners/local-agents.mjs";
@@ -105,6 +107,14 @@ export async function runDoctor({
   let config = null;
   try {
     config = JSON.parse(await fs.readFile(path.join(stateDir, "config.json"), "utf8"));
+    // Overlay the machine-local config so opt-outs (enabled:false) and
+    // discovered models are reflected, matching what a task run actually sees.
+    try {
+      const local = JSON.parse(await fs.readFile(path.join(stateDir, "config.local.json"), "utf8"));
+      config = deepMergeConfig(config, local);
+    } catch (localError) {
+      if (localError.code !== "ENOENT") throw localError;
+    }
     checks.push(check("config", "config.json", "pass", "parseable"));
   } catch (error) {
     checks.push(error.code === "ENOENT"
@@ -112,8 +122,9 @@ export async function runDoctor({
       : check("config", "config.json", "fail", `malformed: ${error.message}`));
   }
 
+  let workflow = null;
   try {
-    const workflow = JSON.parse(await fs.readFile(path.join(stateDir, "workflow.json"), "utf8"));
+    workflow = JSON.parse(await fs.readFile(path.join(stateDir, "workflow.json"), "utf8"));
     const result = validateWorkflow(workflow, { config });
     if (result.ok) {
       const warnings = result.warnings.length > 0 ? `${result.warnings.length} warning(s)` : "valid";
@@ -125,6 +136,25 @@ export async function runDoctor({
     checks.push(error.code === "ENOENT"
       ? check("workflow", "workflow.json", "skip", "missing")
       : check("workflow", "workflow.json", "fail", `malformed: ${error.message}`));
+  }
+
+  // Per-role provider availability: resolve each role's provider (and fallback)
+  // against the host so a missing/disabled provider surfaces before a task runs.
+  if (config?.providers && workflow?.roles) {
+    const cache = new Map();
+    const probe = (alias) => commandExists(alias, { cwd, env });
+    for (const [name, roleDef] of Object.entries(workflow.roles)) {
+      const resolution = await resolveRoleProvider({ roleDef, config, cwd, env, cache, probe });
+      if (resolution.ok && !resolution.substituted) {
+        checks.push(check(`role:${name}`, `role ${name}`, "pass", resolution.provider));
+      } else if (resolution.ok) {
+        checks.push(check(`role:${name}`, `role ${name}`, "warn",
+          `${roleDef.provider} unavailable — falls back to ${resolution.provider}`));
+      } else {
+        checks.push(check(`role:${name}`, `role ${name}`, "fail",
+          describeAvailabilityFailure(resolution.reasons[0], { role: name })));
+      }
+    }
   }
 
   try {

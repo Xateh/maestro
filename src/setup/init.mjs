@@ -13,7 +13,7 @@ import {
 } from "../task-store.mjs";
 import { ensureStateGitignore } from "./import.mjs";
 import { runKeysWizard } from "./keys.mjs";
-import { runLocalSetup } from "./local.mjs";
+import { runFallbackSetup, runLocalSetup } from "./local.mjs";
 import { resolveWorkflowTemplate } from "./workflow-templates.mjs";
 
 const SCAFFOLD_DIRS = ["tasks", "runs", "projects", "patches", "logs"];
@@ -113,6 +113,9 @@ export async function runInitWizard({
       config.cwd = path.dirname(root);
       await writeJsonAtomic(file.path, config);
     } else {
+      // Writes the legacy .maestro/workflow.json — the "default" workflow slot.
+      // Named workflows (SP0a) live in .maestro/workflows/<name>.json and are
+      // created via `maestro workflow use <name> --as <slot>`.
       await writeJsonAtomic(file.path, workflowTemplate);
     }
     created.push(file.name);
@@ -136,8 +139,10 @@ export async function runInitWizard({
     explain(stdout, "Looks for agent CLIs on your PATH and saves discovered models to .maestro/config.local.json (machine-local, never exported).");
     if (isYes(await askFn("Detect local agent runtimes (ollama/pi/hermes/openclaw)? [y/N]: "))) {
       const detectArgs = detect === undefined ? {} : { detect };
-      await runLocalSetup({ store: taskStore, args: ["--yes"], stdin, stdout, ...detectArgs });
+      const { results } = await runLocalSetup({ store: taskStore, args: ["--yes"], stdin, stdout, ...detectArgs });
       wizards.local = true;
+      // Offer a fallback provider for any role whose primary CLI is missing.
+      await runFallbackSetup({ store: taskStore, results, stdin, stdout, ask: askFn });
     }
     explain(stdout, "Optional — most provider CLIs handle their own auth. Keys go to .maestro/secrets.local.json (0600), for trackers or API-based local agents.");
     if (isYes(await askFn("Configure API keys now? [y/N]: "))) {

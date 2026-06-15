@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { main } from "../src/cli/main.mjs";
 
 export { parseReviewerOutput } from "../src/markers.mjs";
-export { parseCliArgs } from "../src/workflow.mjs";
+export { parseServerArgs } from "../src/cli/parse-args.mjs";
 export { canonicalizeActionRequestsForTask } from "../src/cli/action-requests.mjs";
 export { runLocalMaestroCommand } from "../src/cli/local-command.mjs";
 export { startMaestro } from "../src/cli/runtime.mjs";

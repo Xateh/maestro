@@ -224,7 +224,10 @@ test("init --dry-run writes nothing", async () => {
 test("init chains wizards via injected ask", async () => {
   await withTempDir(async (dir) => {
     const questions = [];
-    const answers = ["y", "n", "n"];
+    // detect=y → then a fallback prompt per role whose provider is missing
+    // (planner/executor/reviewer, since only ollama is installed) → skip each,
+    // then keys=n, import=n.
+    const answers = ["y", "", "", "", "n", "n"];
     const detect = async () => [
       { provider: "ollama", found: true, alias: "ollama", models: ["llama3.2"], notes: [] },
     ];
@@ -239,8 +242,9 @@ test("init chains wizards via injected ask", async () => {
       },
       detect,
     });
-    assert.equal(questions.length, 3);
+    assert.equal(questions.length, 6);
     assert.match(questions[0], /Detect local agent runtimes/);
+    assert.ok(questions.some((q) => /isn't installed/.test(q) && /Pick a fallback/.test(q)), "offers a fallback prompt");
     assert.match(out.text(), /saves discovered models to \.maestro\/config\.local\.json/);
     assert.match(out.text(), /secrets\.local\.json \(0600\)/);
     assert.match(out.text(), /merges them into workflow\.json/);
