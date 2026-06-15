@@ -18,6 +18,7 @@ import { makeRoleNode } from "../src/langgraph/nodes.mjs";
 import { buildPromptFromHandoffs } from "../src/langgraph/prompt.mjs";
 import { runLangGraphTask } from "../src/langgraph/engine.mjs";
 import { SqliteTaskStore } from "../src/db/store.mjs";
+import { getStageEvents } from "../src/stage-events.mjs";
 import { DEFAULT_WORKFLOW, LocalTaskStore } from "../src/task-store.mjs";
 import { emptyPayloadForSchema, getSchema } from "../src/schemas/index.mjs";
 import { resolveWorkflowTemplate } from "../src/setup/workflow-templates.mjs";
@@ -1061,6 +1062,55 @@ test("full-audit-sweep: e2e runs the spine to human_approval, one handoff per st
       for (const h of handoffs) {
         if (h.schema_validation) assert.equal(h.schema_validation.ok, true, `${h.role} not conforming`);
       }
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SP6b: engine seam materialises one events row per step, no dupes on re-run", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-events-seam-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const template = resolveWorkflowTemplate("full-audit-sweep");
+    await store.writeWorkflow("full-audit-sweep", template);
+    const task = await store.createTask({ prompt: "ship it", cwd: dir, workflow: "full-audit-sweep" });
+
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        const payload = AUDIT_AGENT_OUTPUTS[role] ?? {};
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify(payload)}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+
+    const runOnce = () => runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+
+    await runOnce();
+
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      const endTask = await db.getTask(task.id);
+      const projected = getStageEvents(endTask);
+      const materialised = await db.getStageEventsForTask(task.id);
+      assert.ok(projected.length > 0, "expected at least one projected event");
+      assert.equal(materialised.length, projected.length, "one row per projected step");
+      assert.deepEqual(materialised.map((e) => e.stage), projected.map((e) => e.stage));
+      assert.deepEqual(materialised.map((e) => e.status), projected.map((e) => e.status));
+
+      // Re-run / resume re-materialises without duplicating.
+      await runOnce();
+      const after = await db.getStageEventsForTask(task.id);
+      const reProjected = getStageEvents(await db.getTask(task.id));
+      assert.equal(after.length, reProjected.length, "re-run must not duplicate rows");
     } finally {
       db.close();
     }

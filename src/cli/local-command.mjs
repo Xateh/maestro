@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import path from "node:path";
 
+import { buildArtifactIndex, resolveArtifact } from "../artifacts.mjs";
+import { openStore } from "../db/store.mjs";
+import { tailFile } from "../fs-safe.mjs";
 import { usageError } from "./registry.mjs";
 import { loadLocalSecrets, runKeysWizard } from "../setup/keys.mjs";
 import { runLocalSetup } from "../setup/local.mjs";
@@ -15,7 +19,9 @@ import {
   findUnknownFlags,
   makeStore,
   parseActionArgs,
+  parseArtifactsArgs,
   parseEditActionArgs,
+  parseEventsArgs,
   parseInspectArgs,
   parseSharedStateArgs,
   parseTaskArgs,
@@ -579,11 +585,47 @@ export async function runLocalMaestroCommand({
   }
 
   if (command === "events") {
-    const parsed = parseInspectArgs(args, cwd, stdout);
+    const parsed = parseEventsArgs(args, cwd);
     warnFlags(parsed.unknownFlags, "events", stderr);
+    const taskStore = makeStore(parsed, store);
+
+    // Cross-task query over the materialised events table (--all). No task id.
+    if (parsed.all) {
+      let events = [];
+      try {
+        const db = store && typeof store.queryStageEvents === "function"
+          ? store
+          : await openStore(path.join(taskStore.root, "maestro.db"));
+        events = await db.queryStageEvents({
+          stage: parsed.stage ?? undefined,
+          status: parsed.status ?? undefined,
+          workflow_id: parsed.workflow ?? undefined,
+        });
+      } catch {
+        events = [];
+      }
+      if (parsed.json) {
+        writeLine(stdout, JSON.stringify(events, null, 2));
+      } else {
+        for (const event of events) {
+          const artifacts = (event.artifacts ?? []).length > 0 ? `  ${event.artifacts.join(" ")}` : "";
+          writeLine(stdout, [
+            String(event.task_id ?? "-").padEnd(20),
+            String(event.stage ?? "").padEnd(12),
+            String(event.status ?? "").padEnd(10),
+            String(event.model || "-").padEnd(16),
+            `${event.tokens ?? 0}t`.padStart(8),
+            formatDurationMs(event.duration_ms ?? 0).padStart(6),
+            artifacts,
+          ].join(" "));
+        }
+      }
+      return { events };
+    }
+
+    // Per-task live projection (correct even before materialisation / mid-run).
     const id = parsed.positional[0];
     if (!id) throw new Error("missing_task_id");
-    const taskStore = makeStore(parsed, store);
     const task = await taskStore.readTask(id);
     const events = getStageEvents(task);
     if (parsed.json) {
@@ -602,6 +644,50 @@ export async function runLocalMaestroCommand({
       }
     }
     return { task, events };
+  }
+
+  if (command === "artifacts") {
+    const parsed = parseArtifactsArgs(args, cwd);
+    warnFlags(parsed.unknownFlags, "artifacts", stderr);
+    const id = parsed.positional[0];
+    if (!id) throw new Error("missing_task_id");
+    const taskStore = makeStore(parsed, store);
+    const task = await taskStore.readTask(id).catch(() => null);
+    const runDir = task?.run_dir ?? path.join(taskStore.root, "runs", id);
+    const taskForIndex = { ...(task ?? {}), run_dir: runDir };
+    const selector = parsed.positional[1];
+
+    if (!selector) {
+      const entries = await buildArtifactIndex(taskForIndex);
+      if (parsed.json) {
+        writeLine(stdout, JSON.stringify(entries, null, 2));
+      } else {
+        for (const e of entries) {
+          writeLine(stdout, [
+            String(e.role ?? "-").padEnd(14),
+            String(e.kind).padEnd(8),
+            String(e.bytes ?? "-").padStart(9),
+            String(e.modified ?? "-").padEnd(26),
+            String(e.sha256 ?? "-").slice(0, 12).padEnd(12),
+            e.name,
+          ].join(" "));
+        }
+      }
+      return { entries };
+    }
+
+    const resolved = await resolveArtifact(taskForIndex, selector);
+    if (!resolved) throw new Error(`unknown_artifact: ${selector}`);
+    if (parsed.json) {
+      writeLine(stdout, JSON.stringify(resolved.entry, null, 2));
+    } else if (parsed.tail) {
+      const text = await tailFile(resolved.path);
+      writeLine(stdout, text ?? "");
+    } else {
+      const text = await fs.readFile(resolved.path, "utf8").catch(() => "");
+      writeLine(stdout, text);
+    }
+    return { entry: resolved.entry, path: resolved.path };
   }
 
   if (command === "init") {

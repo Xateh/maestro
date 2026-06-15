@@ -65,10 +65,26 @@ export const COMMAND_TREE = {
     {
       name: "events",
       kind: "local",
-      synopsis: "maestro events <id> [--json]",
-      summary: "list per-stage events (projection over task steps)",
+      synopsis: "maestro events <id> [--json] | maestro events --all [--stage S] [--status S] [--workflow W] [--json]",
+      summary: "list per-stage events (live projection per task, or --all cross-task from the materialised table)",
       flags: [
         { flag: "--json", desc: "raw stage_event JSON array" },
+        { flag: "--all", desc: "cross-task query over the materialised events table" },
+        { flag: "--stage <s>", desc: "filter --all by stage" },
+        { flag: "--status <s>", desc: "filter --all by status" },
+        { flag: "--workflow <w>", desc: "filter --all by workflow_id" },
+        STATE_DIR_FLAG,
+      ],
+    },
+    {
+      name: "artifacts",
+      kind: "local",
+      synopsis: "maestro artifacts <id> [<selector>] [--cat|--tail|--json]",
+      summary: "list a run's artifacts (derived from run_dir) or read one",
+      flags: [
+        { flag: "--cat", desc: "print the whole file" },
+        { flag: "--tail", desc: "print the bounded tail of the file" },
+        { flag: "--json", desc: "JSON output (full entries, or one entry's metadata)" },
         STATE_DIR_FLAG,
       ],
     },

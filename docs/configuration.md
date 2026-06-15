@@ -786,4 +786,46 @@ mirrored as a `maestro.stage` span with the event fields as `maestro.*`
 attributes. With no endpoint/SDK registered it is a fully-guarded no-op —
 emission never affects a run.
 
-A persisted, indexed events table and an artifact store are deferred to SP6b.
+## Artifacts & event history (SP6b)
+
+### `maestro artifacts <id> [<selector>] [--cat|--tail|--json]`
+
+A **derived index** of the files a run already wrote to its `run_dir` — there is
+no persisted manifest and no artifacts table; the index is recomputed by scanning
+`run_dir` on every call, so it can never drift from disk.
+
+With no selector, lists one row per file:
+
+| column     | meaning                                                              |
+| ---------- | ------------------------------------------------------------------- |
+| `role`     | the stage role the file belongs to (`-` for unclassified files)     |
+| `kind`     | `handoff` · `stdout` · `stderr` · `command` · `prompt` · `exit` · `other` |
+| `bytes`    | file size                                                           |
+| `modified` | mtime (ISO-8601)                                                    |
+| `sha256`   | streamed SHA-256 digest (short form in the table; full with `--json`) |
+| `name`     | filename                                                            |
+
+`--json` emits the full entries (`{role, kind, name, path, bytes, modified,
+sha256, status}`); `status` is joined from the latest matching `steps` entry.
+
+With a **selector** (`<role>.<kind>`, e.g. `implementation.stdout`, or a raw
+filename) it reads one file: `--cat` prints the whole file, `--tail` the bounded
+tail, `--json` the entry's metadata. The selector is resolved through
+`assertInsideDir(run_dir, …)` — a `../escape` or raw-path selector resolves to
+nothing and yields a clean `unknown_artifact` error, never a traversal.
+
+The per-artifact `sha256` is an integrity fingerprint that SP6c (reproducible
+re-runs) will verify against; SP6b only records it.
+
+### `maestro events --all [--stage S] [--status S] [--workflow W] [--json]`
+
+`maestro events <id>` is the **live projection** over a task's steps (correct
+even before materialisation or mid-run). At run completion the engine also
+**materialises** that projection into a queryable `events` table (delete-then-
+insert per task — a regenerable cache, never a second write path;
+`getStageEvents` stays canonical). `events --all` runs a cross-task/historical
+query over that table, optionally filtered by `--stage`, `--status`, and
+`--workflow`. On an older DB without the table, `events --all` returns an empty
+result rather than crashing.
+
+The `events` table mirrors across both backends (SQLite + PostgreSQL).

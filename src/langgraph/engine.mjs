@@ -525,7 +525,11 @@ export async function runLangGraphTask(taskId, {
   } finally {
     try {
       const endTaskForEvents = await db.getTask(taskId);
-      for (const event of getStageEvents(endTaskForEvents)) emitOtelStageEvent(event);
+      const events = getStageEvents(endTaskForEvents);
+      for (const event of events) emitOtelStageEvent(event);
+      // SP6b: materialise the projection into the queryable events table
+      // (delete-then-insert, regenerable). Internally guarded; never throws.
+      await db.replaceStageEvents(taskId, events);
     } catch { /* observability never breaks a run */ }
   }
 }
