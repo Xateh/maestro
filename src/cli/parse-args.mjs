@@ -322,6 +322,56 @@ export function parseInspectArgs(args, cwd, stdout = process.stdout) {
   return { stateDir, json, color, positional, unknownFlags };
 }
 
+export function parseArtifactsArgs(args, cwd) {
+  let stateDir = path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);
+  let cat = false;
+  let tail = false;
+  let json = false;
+  const positional = [];
+  const unknownFlags = [];
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--state-dir") {
+      index += 1;
+      stateDir = path.resolve(cwd, args[index] ?? "");
+      continue;
+    }
+    if (arg === "--cat") { cat = true; continue; }
+    if (arg === "--tail") { tail = true; continue; }
+    if (arg === "--json") { json = true; continue; }
+    if (arg.startsWith("--")) { unknownFlags.push(arg); continue; }
+    positional.push(arg);
+  }
+  return { stateDir, cat, tail, json, positional, unknownFlags };
+}
+
+export function parseEventsArgs(args, cwd) {
+  let stateDir = path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);
+  let all = false;
+  let json = false;
+  let stage = null;
+  let status = null;
+  let workflow = null;
+  const positional = [];
+  const unknownFlags = [];
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--state-dir") {
+      index += 1;
+      stateDir = path.resolve(cwd, args[index] ?? "");
+      continue;
+    }
+    if (arg === "--all") { all = true; continue; }
+    if (arg === "--json") { json = true; continue; }
+    if (arg === "--stage") { index += 1; stage = args[index] ?? null; continue; }
+    if (arg === "--status") { index += 1; status = args[index] ?? null; continue; }
+    if (arg === "--workflow") { index += 1; workflow = args[index] ?? null; continue; }
+    if (arg.startsWith("--")) { unknownFlags.push(arg); continue; }
+    positional.push(arg);
+  }
+  return { stateDir, all, json, stage, status, workflow, positional, unknownFlags };
+}
+
 export function parseProjectArgs(args, cwd) {
   const action = args[1];
   let stateDir = path.resolve(cwd, DEFAULT_LOCAL_STATE_DIR);

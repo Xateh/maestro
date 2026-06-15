@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Auto-refresh the graphify-data branch (graphify-out/ snapshot) whenever we push
+# to origin (maestro-dev). Never runs for the public remote. Installed into
+# .git/hooks/pre-push by scripts/install-hooks.sh.
+set -euo pipefail
+
+remote="${1:-}"
+
+# Only sync on pushes to origin; leave public (and any other remote) untouched.
+[ "$remote" = "origin" ] || exit 0
+# Avoid recursion: graphify-sync.sh sets this when it pushes graphify-data.
+[ -n "${GRAPHIFY_SYNC:-}" ] && exit 0
+
+"$(git rev-parse --show-toplevel)/scripts/graphify-sync.sh" || {
+  echo "pre-push: graphify-sync failed (continuing push)" >&2
+}
+exit 0

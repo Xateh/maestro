@@ -47,6 +47,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Artifact store + inspection (SP6b)** — every run's artifacts are now
+  discoverable and the stage-event stream is persisted for cross-task history.
+  - **Derived artifact index** — `buildArtifactIndex(task)` scans `run_dir` and
+    returns one entry per file (`role`, `kind`, `name`, `path`, `bytes`,
+    `modified`, `sha256`, `status`). No persisted manifest and no artifacts
+    table — the index is recomputed from disk, so it can never drift (same
+    projection principle as SP6a events). Per-artifact `sha256` is an integrity
+    fingerprint that SP6c (reproducible re-runs) will consume.
+  - **`maestro artifacts <id> [<selector>] [--cat|--tail|--json]`** — list a
+    run's artifacts (`role kind bytes modified sha256 name`, or full entries
+    with `--json`), or read one by `<role>.<kind>` selector or raw filename.
+    Reads are path-safe: a traversing/raw-path selector resolves to `null` (a
+    clean `unknown_artifact` error), never escaping `run_dir`.
+  - **Materialised events table** — the SP6a `getStageEvents` projection is
+    persisted into a queryable `events` table once per run at the existing
+    engine completion seam, via delete-then-insert (`replaceStageEvents`) — a
+    regenerable cache, not a second write path; `getStageEvents` stays canonical.
+  - **`maestro events --all [--stage S] [--status S] [--workflow W] [--json]`**
+    — cross-task/historical query over the materialised table
+    (`queryStageEvents`); `maestro events <id>` stays the live projection
+    (correct even before materialisation / mid-run).
+  - **`src/fs-safe.mjs`** — `assertInsideDir` / `listDir` / `tailFile` extracted
+    from the MCP server into a shared module (behaviour identical), imported by
+    both the MCP server and the artifact index/CLI.
+  - No schema, kind, template, or workflow change; the default 3-role workflow
+    is byte-identical.
+
 - **Per-stage event emission (SP6a)** — every stage execution is exposed as a
   structured `stage_event` (`{workflow_id, stage, model, tokens, duration_ms,
   status, artifacts}` + additive `role`/`provider`), derived as a **projection

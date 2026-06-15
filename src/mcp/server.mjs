@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { openStore } from "../db/store.mjs";
+import { assertInsideDir, listDir, tailFile } from "../fs-safe.mjs";
 import { WORKFLOW_NAME_RE } from "../task-store.mjs";
 
 // ── Root discovery ────────────────────────────────────────────────────────────
@@ -95,37 +96,12 @@ function isValidId(id) {
 
 const MAX_PROMPT_BYTES = 100_000;
 
-/**
- * Assert that `child` is strictly inside `parent` after path resolution.
- * Rejects symlink-escape, `..`, and absolute overrides.
- */
-function assertInsideDir(parent, child) {
-  const rel = path.relative(parent, child);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(`path_traversal: ${child} escapes ${parent}`);
-  }
-}
+// assertInsideDir / tailFile / listDir are imported from ../fs-safe.mjs
+// (shared with the artifact index + CLI). assertInsideDir is re-exported below
+// for the existing MCP tests.
 
 async function readJSON(filePath) {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
-}
-
-async function tailFile(filePath, maxBytes = 8192) {
-  const stat = await fs.stat(filePath).catch(() => null);
-  if (!stat) return null;
-  const fh = await fs.open(filePath, "r");
-  try {
-    const start = Math.max(0, stat.size - maxBytes);
-    const buf = Buffer.alloc(Math.min(maxBytes, stat.size));
-    const { bytesRead } = await fh.read(buf, 0, buf.length, start);
-    return buf.slice(0, bytesRead).toString("utf8");
-  } finally {
-    await fh.close();
-  }
-}
-
-async function listDir(dir) {
-  return fs.readdir(dir).catch(() => []);
 }
 
 // ── Tool implementations ──────────────────────────────────────────────────────

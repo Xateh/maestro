@@ -8,6 +8,7 @@ import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
 import { canonicalizeActionRequestsForTask, parseReviewerOutput, runLocalMaestroCommand } from "../bin/maestro.mjs";
+import { SqliteTaskStore } from "../src/db/store.mjs";
 import { buildCodexCommand } from "../src/adapters/codex.mjs";
 import { buildCopilotCommand } from "../src/adapters/copilot.mjs";
 import { buildClaudeCommand } from "../src/adapters/claude.mjs";
@@ -7099,5 +7100,114 @@ test("events --json emits a valid stage_event array", async () => {
     }
     assert.equal(events[0].model, "gpt");
     assert.equal(events[0].tokens, 50);
+  });
+});
+
+// ── SP6b: `maestro artifacts` + `maestro events --all` ───────────────────────
+
+test("artifacts lists a run's files and reads one with --tail / --json", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    const runDir = store.runDir(task.id);
+    await mkdir(runDir, { recursive: true });
+    const stdoutContent = `${"y".repeat(50)}STDOUT-TAIL`;
+    await writeFile(path.join(runDir, "implementation.stdout.log"), stdoutContent);
+    await writeFile(path.join(runDir, "handoff.implementation.json"), JSON.stringify({ ok: true }));
+
+    // list
+    const listOut = [];
+    const listResult = await runLocalMaestroCommand({
+      args: ["artifacts", "--state-dir", store.root, task.id],
+      cwd: dir,
+      stdout: { write: (t) => listOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.equal(listResult.entries.length, 2);
+    assert.match(listOut.join(""), /implementation\.stdout\.log/);
+
+    // read with --tail (bounded)
+    const tailOut = [];
+    await runLocalMaestroCommand({
+      args: ["artifacts", "--state-dir", store.root, task.id, "implementation.stdout", "--tail"],
+      cwd: dir,
+      stdout: { write: (t) => tailOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.match(tailOut.join(""), /STDOUT-TAIL/);
+
+    // --json metadata is valid
+    const jsonOut = [];
+    await runLocalMaestroCommand({
+      args: ["artifacts", "--state-dir", store.root, task.id, "implementation.handoff", "--json"],
+      cwd: dir,
+      stdout: { write: (t) => jsonOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    const entry = JSON.parse(jsonOut.join(""));
+    assert.equal(entry.kind, "handoff");
+    assert.equal(entry.role, "implementation");
+
+    // bad selector → clean error, never a traversal
+    await assert.rejects(
+      () => runLocalMaestroCommand({
+        args: ["artifacts", "--state-dir", store.root, task.id, "../escape"],
+        cwd: dir,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+        store,
+      }),
+      /unknown_artifact/,
+    );
+  });
+});
+
+test("events --all queries the materialised table with filters; events <id> stays the live projection", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, plannerPolicy: "off", reviewEnabled: false });
+    await store.appendStep(task.id, {
+      role: "executor", provider: "codex", model: "gpt", status: "succeeded",
+      started_at: "2026-06-15T00:00:00.000Z",
+    });
+
+    // Seed the events table directly (the engine seam does this in production).
+    const db = new SqliteTaskStore(path.join(store.root, "maestro.db"));
+    try {
+      await db.replaceStageEvents(task.id, [
+        { workflow_id: "default", stage: "scoring", model: "m", tokens: 1, duration_ms: 1, status: "succeeded", artifacts: [] },
+        { workflow_id: "default", stage: "review", model: "m", tokens: 1, duration_ms: 1, status: "failed", artifacts: [] },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const allOut = [];
+    const allResult = await runLocalMaestroCommand({
+      args: ["events", "--state-dir", store.root, "--all", "--stage", "scoring", "--json"],
+      cwd: dir,
+      stdout: { write: (t) => allOut.push(t) },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.equal(allResult.events.length, 1);
+    assert.equal(allResult.events[0].stage, "scoring");
+    const parsed = JSON.parse(allOut.join(""));
+    assert.ok(Array.isArray(parsed));
+    assert.equal(parsed[0].task_id, task.id);
+
+    // events <id> is still the live projection over the task's steps.
+    const liveResult = await runLocalMaestroCommand({
+      args: ["events", "--state-dir", store.root, task.id],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+    });
+    assert.equal(liveResult.events.length, 1);
+    assert.equal(liveResult.events[0].stage, "executor");
   });
 });
