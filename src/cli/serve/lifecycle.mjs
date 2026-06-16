@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import fsConstants from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { servicePaths, readDefinition, writeDefinition, readPidRecord, removeFile } from "./store.mjs";
+import { servicePaths, readDefinition, writeDefinition, readPidRecord, removeFile, listDefinitions } from "./store.mjs";
 import { verifyIdentity, isAlive } from "./proc.mjs";
 
 const BIN_ENTRY = fileURLToPath(new URL("../../../bin/maestro.mjs", import.meta.url));
@@ -112,4 +112,21 @@ export async function resumeService({ stateRoot, name, spawnProcess, waitForPid 
   const def = (await readDefinition(stateRoot, name)) ?? {};
   await writeDefinition(stateRoot, name, { ...def, paused: false });
   return startService({ stateRoot, name, spawnProcess, waitForPid });
+}
+
+export async function serviceStatus(stateRoot, name) {
+  const def = await readDefinition(stateRoot, name);
+  if (!def) return null;
+  const rec = await readPidRecord(stateRoot, name).catch(() => null);
+  let state;
+  if (rec && verifyIdentity(rec, name)) state = "running";
+  else if (rec) state = "crashed";        // pid record present but dead/mismatch
+  else if (def.paused) state = "paused";
+  else state = "stopped";
+  return { name, slug: def.slug, port: def.port ?? rec?.port ?? null, paused: !!def.paused, state, pid: state === "running" ? rec.pid : null };
+}
+
+export async function listStatuses(stateRoot) {
+  const names = await listDefinitions(stateRoot);
+  return Promise.all(names.map((n) => serviceStatus(stateRoot, n)));
 }
