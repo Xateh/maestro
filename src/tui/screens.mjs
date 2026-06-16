@@ -12,6 +12,7 @@ import {
   BUILTIN_ADAPTERS, PERMISSIONS, PROMPT_TEMPLATES, SKIP_VALUES,
 } from "./edit-core.mjs";
 import { renderWorkflowGraph, buildWorkflowChain, branchTransitions } from "./graph.mjs";
+import { aliasNames } from "../providers.mjs";
 
 export const TASK_VIEWS = ["active", "needs-human", "blocked", "incomplete", "failed", "done", "all"];
 
@@ -300,7 +301,7 @@ export const PROVIDER_FIELDS = [
   { path: ["adapter"], label: "Adapter", type: "cycle", options: () => [...BUILTIN_ADAPTERS, "custom"] },
   { path: ["custom", "command_template"], label: "Custom template", type: "text" },
   { path: ["custom", "prompt_via"], label: "Prompt via", type: "cycle", options: () => ["stdin", "arg"] },
-  { path: ["default_alias"], label: "Default alias", type: "cycle", options: (def) => def?.aliases ?? [], recent: "aliases_by_provider" },
+  { path: ["default_alias"], label: "Default alias", type: "cycle", options: (def) => aliasNames(def), recent: "aliases_by_provider" },
   { path: ["aliases"], label: "Aliases", type: "list" },
   { path: ["models"], label: "Models", type: "list" },
   { path: ["efforts"], label: "Efforts", type: "list" },
@@ -309,7 +310,7 @@ export const PROVIDER_FIELDS = [
 export const ROLE_FIELDS = [
   { path: ["label"], label: "Label", type: "text" },
   { path: ["provider"], label: "Provider", type: "cycle", options: (_role, model) => Object.keys(model?.config?.providers ?? {}), recent: "providers_by_role" },
-  { path: ["alias"], label: "Alias", type: "cycle", options: (role, model) => model?.config?.providers?.[role?.provider]?.aliases ?? [], recent: "aliases_by_provider" },
+  { path: ["alias"], label: "Alias", type: "cycle", options: (role, model) => aliasNames(model?.config?.providers?.[role?.provider]), recent: "aliases_by_provider" },
   { path: ["model"], label: "Model", type: "cycle", options: (role, model) => ["", ...(model?.config?.providers?.[role?.provider]?.models ?? [])], recent: "models_by_provider" },
   { path: ["effort"], label: "Effort", type: "cycle", options: (role, model) => ["", ...(model?.config?.providers?.[role?.provider]?.efforts ?? [])], recent: "efforts_by_provider" },
   { path: ["permission"], label: "Permission", type: "cycle", options: () => PERMISSIONS },

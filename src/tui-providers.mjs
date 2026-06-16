@@ -1,6 +1,10 @@
 import { DEFAULT_PROVIDERS } from "./task-store.mjs";
 import { BUILTIN_ADAPTERS, shareableDef } from "./tui/edit-core.mjs";
 import { pickFromList, applyRecentUpdate } from "./tui-pickers.mjs";
+import { ENV_KEY_DENYLIST } from "./agent-runner.mjs";
+import { aliasNames, normalizeAlias, aliasToConfig } from "./providers.mjs";
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 // Provider edits persist into the shareable config.json, so the write base
 // must be the RAW config — writing the effective (overlay-merged) view would
@@ -25,6 +29,139 @@ async function editStringList(ask, output, label, current = []) {
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+function accountSummary(acc) {
+  const envKeys = Object.keys(acc.env ?? {});
+  const envNote = envKeys.length ? ` (env: ${envKeys.join(", ")})` : "";
+  return `${acc.name} → ${acc.command}${envNote}`;
+}
+
+// Persist the normalized account list back to config, collapsing fully-default
+// accounts to bare strings (aliasToConfig) so configs stay tidy.
+async function persistAccounts(store, providerKey, accounts) {
+  const providers = await shareableProviders(store);
+  const def = providers[providerKey];
+  if (!def) return;
+  const aliases = accounts.map((acc) => aliasToConfig(acc, providerKey));
+  providers[providerKey] = { ...shareableDef(providers, providerKey, def), aliases };
+  await store.writeConfig({ providers });
+}
+
+// KEY=value / -KEY loop. Returns the edited env map. Keys are validated against
+// the env-name shape and the same denylist the spawn path enforces, so a
+// denylisted key can never be stored.
+async function editAccountEnv(ask, output, env) {
+  const next = { ...env };
+  while (true) {
+    const entries = Object.entries(next);
+    output.write(`${[
+      "\n-- Env --",
+      ...(entries.length ? entries.map(([k, v]) => `  ${k}=${v}`) : ["  (none)"]),
+      "Enter KEY=value to set, -KEY to remove, blank to finish.",
+    ].join("\n")}\n`);
+    const raw = String(await ask("> ") ?? "").trim();
+    if (!raw) return next;
+    if (raw.startsWith("-")) {
+      delete next[raw.slice(1).trim()];
+      continue;
+    }
+    const eq = raw.indexOf("=");
+    if (eq < 1) { output.write("Format: KEY=value\n"); continue; }
+    const key = raw.slice(0, eq).trim();
+    const value = raw.slice(eq + 1).trim();
+    if (!ENV_NAME_RE.test(key)) { output.write(`Invalid env key: ${key}\n`); continue; }
+    if (ENV_KEY_DENYLIST.test(key)) { output.write(`Refused (denylisted): ${key}\n`); continue; }
+    next[key] = value;
+  }
+}
+
+async function runAccountMenu({ ask, output, store, providerKey, index }) {
+  while (true) {
+    const config = await store.readConfig();
+    const def = config.providers?.[providerKey];
+    if (!def) return;
+    const accounts = (def.aliases ?? []).map((entry) => normalizeAlias(entry, providerKey));
+    const acc = accounts[index];
+    if (!acc) return;
+    const envText = Object.keys(acc.env).length
+      ? Object.entries(acc.env).map(([k, v]) => `${k}=${v}`).join(", ")
+      : "(none)";
+    output.write(`${[
+      `\n-- Account: ${acc.name} --`,
+      `1. Name:    ${acc.name}`,
+      `2. Command: ${acc.command}`,
+      `3. Env:     ${envText}`,
+      "d. Delete account",
+      "b. Back",
+    ].join("\n")}\n`);
+    const choice = String(await ask("> ") ?? "").trim().toLowerCase();
+    if (!choice || choice === "b" || choice === "q") return;
+
+    if (choice === "d") {
+      accounts.splice(index, 1);
+      await persistAccounts(store, providerKey, accounts);
+      output.write("Deleted.\n");
+      return;
+    } else if (choice === "1") {
+      const v = String(await ask(`Name [${acc.name}]: `) ?? "").trim();
+      if (v && v !== acc.name) {
+        if (accounts.some((a, i) => i !== index && a.name === v)) { output.write(`Name "${v}" already used.\n`); continue; }
+        accounts[index] = { ...acc, name: v };
+        await persistAccounts(store, providerKey, accounts);
+        output.write("Saved.\n");
+      }
+    } else if (choice === "2") {
+      const v = String(await ask(`Command [${acc.command}]: `) ?? "").trim();
+      if (v) {
+        accounts[index] = { ...acc, command: v };
+        await persistAccounts(store, providerKey, accounts);
+        output.write("Saved.\n");
+      }
+    } else if (choice === "3") {
+      accounts[index] = { ...acc, env: await editAccountEnv(ask, output, acc.env) };
+      await persistAccounts(store, providerKey, accounts);
+      output.write("Saved.\n");
+    } else {
+      output.write("Unknown option.\n");
+    }
+  }
+}
+
+async function runAccountsEditor({ ask, output, store, providerKey }) {
+  while (true) {
+    const config = await store.readConfig();
+    const def = config.providers?.[providerKey];
+    if (!def) return;
+    const accounts = (def.aliases ?? []).map((entry) => normalizeAlias(entry, providerKey));
+    output.write(`${[
+      `\n== Accounts: ${providerKey} ==`,
+      ...accounts.map((acc, i) => `${i + 1}. ${accountSummary(acc)}`),
+      "a. Add account",
+      "b. Back",
+    ].join("\n")}\n`);
+    const choice = String(await ask("> ") ?? "").trim().toLowerCase();
+    if (!choice || choice === "b" || choice === "q") return;
+
+    if (choice === "a") {
+      const name = String(await ask("Account name: ") ?? "").trim();
+      if (!name) { output.write("Cancelled.\n"); continue; }
+      if (accounts.some((a) => a.name === name)) { output.write(`Name "${name}" already used.\n`); continue; }
+      const command = String(await ask(`Command [${providerKey}]: `) ?? "").trim() || providerKey;
+      const env = await editAccountEnv(ask, output, {});
+      accounts.push({ name, command, env });
+      await persistAccounts(store, providerKey, accounts);
+      output.write(`Account "${name}" added.\n`);
+      continue;
+    }
+
+    const index = Number(choice);
+    if (Number.isInteger(index) && index >= 1 && index <= accounts.length) {
+      await runAccountMenu({ ask, output, store, providerKey, index: index - 1 });
+      continue;
+    }
+    output.write("Unknown option.\n");
+  }
+}
+
 async function runProviderEditor({ ask, output, store, providerKey }) {
   while (true) {
     const config = await store.readConfig();
@@ -38,7 +175,7 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
       `1. Label:         ${def.label}`,
       `2. Adapter:       ${def.adapter}`,
       `3. Default alias: ${def.default_alias}`,
-      `4. Aliases:       ${(def.aliases ?? []).join(", ")}`,
+      `4. Accounts:      ${aliasNames(def).join(", ")}`,
       `5. Models:        ${(def.models ?? []).join(", ") || "(none)"}`,
       `6. Efforts:       ${(def.efforts ?? []).join(", ") || "(none)"}`,
       "d. Delete provider",
@@ -94,7 +231,7 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
       const v = await pickFromList({
         ask, output,
         label: "Default alias",
-        options: def.aliases ?? [],
+        options: aliasNames(def),
         current: def.default_alias,
         recent: config.recent?.aliases_by_provider?.[providerKey] ?? [],
         allowDefault: false,
@@ -110,11 +247,7 @@ async function runProviderEditor({ ask, output, store, providerKey }) {
         output.write("Saved.\n");
       }
     } else if (choice === "4") {
-      const newList = await editStringList(ask, output, "Aliases", def.aliases ?? []);
-      const providers = await shareableProviders(store);
-      providers[providerKey] = { ...shareableDef(providers, providerKey, def), aliases: newList };
-      await store.writeConfig({ providers });
-      output.write("Saved.\n");
+      await runAccountsEditor({ ask, output, store, providerKey });
     } else if (choice === "5") {
       const newList = await editStringList(ask, output, "Models", def.models ?? []);
       const providers = await shareableProviders(store);

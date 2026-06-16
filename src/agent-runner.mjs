@@ -9,6 +9,7 @@ import { buildClaudeCommand } from "./adapters/claude.mjs";
 import { buildAntigravityCommand } from "./adapters/antigravity.mjs";
 import { buildOllamaCommand } from "./adapters/ollama.mjs";
 import { resolveAdapter } from "./adapters/registry.mjs";
+import { resolveAlias } from "./providers.mjs";
 import { nullLogger } from "./logger.mjs";
 import { appendBoundedTail } from "./bounded-tail.mjs";
 
@@ -157,7 +158,11 @@ export function buildAgentCommand({ provider, prompt, cwd, role, options = {}, p
   // Registry path: providerDef supplied (v2 task snapshot)
   if (providerDef) {
     const adapterFn = resolveAdapter(providerDef);
-    const alias = options.alias || providerDef.default_alias || provider;
+    const aliasName = options.alias || providerDef.default_alias || provider;
+    // The adapter spawns the account's `command` (e.g. real "claude" binary),
+    // not the account NAME — a structured alias's identity may differ from the
+    // binary it runs. Its env is injected separately as providerEnv.
+    const alias = resolveAlias(providerDef, aliasName, provider).command;
     return adapterFn({
       prompt,
       cwd,

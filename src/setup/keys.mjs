@@ -5,10 +5,12 @@
 // references resolved against the environment at spawn time.
 
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
 import { ENV_KEY_DENYLIST } from "../agent-runner.mjs";
+import { resolveAlias } from "../providers.mjs";
 import { resolveDollarValue } from "./server-config.mjs";
 import { decryptSecrets, encryptSecrets, isEncryptedEnvelope } from "./secret-crypto.mjs";
 import { getPassphrase } from "./secret-passphrase.mjs";
@@ -127,16 +129,54 @@ export async function loadLocalSecrets(stateDir, env = process.env, opts = {}) {
 // are execution-subverting keys (PATH, LD_*, NODE_OPTIONS, …) — provider
 // definitions can arrive via imported bundles and must honor the same env
 // contract as agent-supplied action requests.
-export function resolveProviderEnv(providerDef, env = process.env) {
-  const declared = providerDef?.env;
+// Resolve a single env value. A whole-string "$VAR" is a secret reference
+// (resolved against the environment, dropped when unset). Otherwise the value
+// is a literal/path: expand a leading ~, then inline $VAR refs. This is the
+// tilde-aware resolution config-dir style values (CLAUDE_CONFIG_DIR) need —
+// resolveDollarValue alone only handled the whole-string secret-ref case.
+function resolveEnvValue(value, env = process.env) {
+  if (typeof value !== "string") return null;
+  if (/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    return resolveDollarValue(value, env);
+  }
+  let expanded = value;
+  if (expanded === "~" || expanded.startsWith("~/")) {
+    expanded = path.join(os.homedir(), expanded.slice(1));
+  }
+  expanded = expanded.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, key) => env[key] ?? "");
+  return expanded === "" ? null : expanded;
+}
+
+// Resolve a declared env map ({KEY: value}) to concrete values for a spawned
+// process. Execution-subverting keys (PATH, LD_*, NODE_OPTIONS, …) and malformed
+// names are dropped — provider/alias definitions can arrive via imported bundles
+// and must honor the same env contract as agent-supplied action requests.
+function resolveEnvMap(declared, env = process.env) {
   if (!declared || typeof declared !== "object" || Array.isArray(declared)) return {};
   const resolved = {};
   for (const [key, value] of Object.entries(declared)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || ENV_KEY_DENYLIST.test(key)) continue;
-    const concrete = resolveDollarValue(value, env);
+    const concrete = resolveEnvValue(value, env);
     if (typeof concrete === "string" && concrete !== "") resolved[key] = concrete;
   }
   return resolved;
+}
+
+// Resolve a provider's `env` map ({"OPENAI_API_KEY": "$OPENAI_API_KEY"}).
+export function resolveProviderEnv(providerDef, env = process.env) {
+  return resolveEnvMap(providerDef?.env, env);
+}
+
+// Resolve the effective env for a spawned account: provider-level env first,
+// then the chosen alias's own env layered on top (alias wins on key conflict).
+// This is what lets two accounts of the same CLI differ only by, e.g.,
+// CLAUDE_CONFIG_DIR without any shell alias.
+export function resolveAliasEnv(providerDef, aliasName, providerKey = "", env = process.env) {
+  const aliasDef = resolveAlias(providerDef, aliasName, providerKey);
+  return {
+    ...resolveEnvMap(providerDef?.env, env),
+    ...resolveEnvMap(aliasDef.env, env),
+  };
 }
 
 // Read a masked secret value while a readline interface owns stdin: pause the

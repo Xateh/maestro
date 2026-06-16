@@ -25,7 +25,7 @@ import {
   skippedReview,
 } from "../markers.mjs";
 import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../state-machine.mjs";
-import { resolveProviderEnv } from "../setup/keys.mjs";
+import { resolveAliasEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
 import { resolveRoleSchema, validatePayload, validateInline, emptyPayloadForSchema } from "../schemas/index.mjs";
@@ -851,7 +851,7 @@ export function makeRoleNode(roleDef, {
           options: stepOptions,
           providerDef: runProviderDef,
           env: _maestroEnv(currentTask, roleKey),
-          providerEnv: resolveProviderEnv(runProviderDef),
+          providerEnv: resolveAliasEnv(runProviderDef, runAlias, runProvider),
         });
       } catch (err) {
         // ── context-window retry ──────────────────────────────────────────────

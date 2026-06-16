@@ -7,6 +7,7 @@ import {
   addRolePatch,
 } from "./tui/edit-core.mjs";
 import { pickFromList, applyRecentUpdate } from "./tui-pickers.mjs";
+import { aliasNames } from "./providers.mjs";
 
 // MVP picker: list available workflows and let the user choose which one to
 // edit. Enter (empty input) keeps "default" so behavior is unchanged for the
@@ -173,7 +174,7 @@ async function runRoleEditor({ ask, output, store, roleKey, workflowName = "defa
         output.write("Saved.\n");
       }
     } else if (choice === "3") {
-      const aliases = providerDef?.aliases ?? [];
+      const aliases = aliasNames(providerDef);
       const current = role.alias || providerDef?.default_alias || "";
       const recent = config.recent?.aliases_by_provider?.[role.provider ?? ""] ?? [];
       const v = await pickFromList({ ask, output, label: "Alias", options: aliases, current, recent, allowDefault: false });

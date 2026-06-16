@@ -10,6 +10,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { directCommandExists } from "./agent-runner.mjs";
+import { resolveAlias } from "./providers.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -92,7 +93,11 @@ export async function resolveRoleProvider({
 
     const roleAlias = isPrimary && roleDef?.alias ? String(roleDef.alias) : null;
     const alias = roleAlias || def.default_alias || key;
-    if (!(await probe(alias))) {
+    // The account NAME is the routing identity, but availability is a property
+    // of the binary it runs — probe the resolved command (a structured alias may
+    // name a real binary like "claude" even when its identity is "work").
+    const command = resolveAlias(def, alias, key).command;
+    if (!(await probe(command))) {
       const aliasOverridden = roleAlias && roleAlias !== (def.default_alias || key);
       reasons.push({ provider: key, code: aliasOverridden ? "alias_unresolved" : "provider_missing", alias });
       continue;
