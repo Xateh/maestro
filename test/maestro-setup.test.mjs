@@ -44,6 +44,8 @@ import {
   writeEncryptedSecrets,
   writeLocalSecrets,
 } from "../src/setup/keys.mjs";
+import { runTrackerWizard } from "../src/setup/tracker.mjs";
+import { resolveServerConfig, validateServerConfig } from "../src/setup/server-config.mjs";
 import { DEFAULT_PROVIDERS, DEFAULT_WORKFLOW, LocalTaskStore } from "../src/task-store.mjs";
 import { resolveMaxVisits } from "../src/state-machine.mjs";
 import {
@@ -1072,5 +1074,81 @@ test("setup keys --encrypt migrates plaintext store and shreds it", async () => 
     await loadLocalSecrets(dir, env, { passphraseEnv: { MAESTRO_SECRET_PASSPHRASE: "pw" } });
     assert.equal(env.LINEAR_API_KEY, "lin_secret");
     assert.ok(out.join("").includes("encrypted"));
+  });
+});
+
+// ── setup tracker ────────────────────────────────────────────────────────────
+
+function silentSink() {
+  return { write: () => true, isTTY: false };
+}
+
+test("setup tracker writes server.tracker block into a fresh config.json", async () => {
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    await runTrackerWizard({
+      stateDir,
+      args: ["--project-slug", "ENG", "--yes"],
+      env: { LINEAR_API_KEY: "preset" },
+      stdin: silentSink(),
+      stdout: silentSink(),
+    });
+    const store = new LocalTaskStore({ root: stateDir });
+    const raw = await store.readConfigRaw();
+    assert.equal(raw.server.tracker.kind, "linear");
+    assert.equal(raw.server.tracker.project_slug, "ENG");
+    assert.equal(raw.server.tracker.api_key, "$LINEAR_API_KEY");
+  });
+});
+
+test("setup tracker --api-key stores LINEAR_API_KEY into secrets.local.json", async () => {
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    await runTrackerWizard({
+      stateDir,
+      args: ["--project-slug", "ENG", "--api-key", "dummy", "--yes"],
+      env: {},
+      stdin: silentSink(),
+      stdout: silentSink(),
+    });
+    const secrets = await readLocalSecrets(stateDir);
+    assert.equal(secrets.LINEAR_API_KEY, "dummy");
+  });
+});
+
+test("setup tracker preserves an existing server.polling.interval_ms field", async () => {
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    const store = new LocalTaskStore({ root: stateDir });
+    await store.writeConfig({ server: { polling: { interval_ms: 99000 } } });
+    await runTrackerWizard({
+      stateDir,
+      args: ["--project-slug", "ENG", "--yes"],
+      env: { LINEAR_API_KEY: "preset" },
+      stdin: silentSink(),
+      stdout: silentSink(),
+    });
+    const raw = await store.readConfigRaw();
+    assert.equal(raw.server.polling.interval_ms, 99000);
+    assert.equal(raw.server.tracker.project_slug, "ENG");
+  });
+});
+
+test("setup tracker output validates with resolveServerConfig + validateServerConfig", async () => {
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    await runTrackerWizard({
+      stateDir,
+      args: ["--project-slug", "ENG", "--api-key", "dummy", "--yes"],
+      env: {},
+      stdin: silentSink(),
+      stdout: silentSink(),
+    });
+    const store = new LocalTaskStore({ root: stateDir });
+    const raw = await store.readConfigRaw();
+    const resolved = resolveServerConfig(raw, { env: { LINEAR_API_KEY: "real" } });
+    assert.doesNotThrow(() => validateServerConfig(resolved));
+    assert.equal(resolved.tracker.apiKey, "real");
+    assert.equal(resolved.tracker.projectSlug, "ENG");
   });
 });

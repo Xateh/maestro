@@ -71,11 +71,24 @@ test("usageError carries cli_usage code and scoped help", () => {
   assert.match(typo.cliHelp, /Usage: maestro project <subcommand>/);
 
   const missing = usageError(["setup", undefined]);
-  assert.match(missing.cliHelp, /missing subcommand \(expected: keys \| harden \| local \| import\)/);
+  assert.match(missing.cliHelp, /missing subcommand \(expected: keys \| harden \| local \| import \| tracker\)/);
+});
+
+test("setup tracker subcommand is registered", () => {
+  const resolved = resolveCommandPath(["setup", "tracker"]);
+  assert.equal(resolved.unknown, null);
+  assert.equal(resolved.matched[resolved.matched.length - 1].name, "tracker");
+  const setupNode = COMMAND_TREE.subcommands.find((c) => c.name === "setup");
+  assert.ok(setupNode, "setup node present");
+  const tracker = setupNode.subcommands.find((s) => s.name === "tracker");
+  assert.ok(tracker, "setup node contains a tracker subcommand");
 });
 
 test("routeCli matrix", () => {
-  assert.equal(routeCli([]).kind, "server");
+  const bare = routeCli([]);
+  assert.equal(bare.kind, "help");
+  assert.equal(bare.exitCode, 0);
+  assert.match(bare.text, /maestro — /);
   assert.equal(routeCli(["--port", "4100"]).kind, "server");
   assert.equal(routeCli(["status"]).kind, "local");
   assert.equal(routeCli(["init"]).kind, "local");

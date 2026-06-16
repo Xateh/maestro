@@ -868,6 +868,37 @@ export class LocalTaskStore {
     });
   }
 
+  // Delete a named workflow (its .json and any .yaml sibling). The "default"
+  // workflow is protected. Throws `unknown_workflow` when nothing was removed.
+  async deleteWorkflow(name) {
+    await this.init();
+    if (!isValidWorkflowName(name)) {
+      throw new Error(`invalid_workflow_name: ${name}`);
+    }
+    if (name === DEFAULT_WORKFLOW_NAME) {
+      const error = new Error(`cannot_delete_default_workflow: ${name}`);
+      error.code = "cannot_delete_default_workflow";
+      throw error;
+    }
+    let removed = false;
+    for (const target of [this.workflowFilePath(name), this.workflowYamlFilePath(name)]) {
+      try {
+        await fs.rm(target);
+        removed = true;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    if (!removed) {
+      const error = new Error(`unknown_workflow: ${name}`);
+      error.code = "unknown_workflow";
+      throw error;
+    }
+    // _cachedWorkflow is default-scoped, but stay safe if it ever held this.
+    this._cachedWorkflow = null;
+    return { name, deleted: true };
+  }
+
   // Write a built-in template into a named slot. Dynamic-imports
   // resolveWorkflowTemplate to avoid a circular import (workflow-templates
   // imports DEFAULT_WORKFLOW from this module).

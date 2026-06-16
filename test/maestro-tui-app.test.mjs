@@ -427,18 +427,65 @@ test("edit-core: patch builders are pure and overlay-safe", async () => {
   assert.ok(transitionTargets(wf).includes("reviewer"));
 });
 
-function makeEditStore({ rawProviders, effectiveProviders, workflow = structuredClone(DEFAULT_WORKFLOW) } = {}) {
+test("edit-core: removeRolePatch drops role, scrubs transitions, reassigns initial", async () => {
+  const { removeRolePatch } = await import("../src/tui/edit-core.mjs");
+  const wf = {
+    initial: "planner",
+    roles: {
+      planner: { label: "Planner" },
+      executor: { label: "Executor" },
+      reviewer: { label: "Reviewer" },
+    },
+    transitions: {
+      planner: { done: "executor", error: "$halt" },
+      executor: { done: "reviewer", question: "planner" },
+      reviewer: { done: "$complete", error: "planner" },
+    },
+  };
+  const patch = removeRolePatch(wf, "planner");
+  // role removed
+  assert.equal(patch.roles.planner, undefined);
+  assert.ok(patch.roles.executor);
+  // its transition entry removed
+  assert.equal(patch.transitions.planner, undefined);
+  // other roles' transitions targeting planner are scrubbed
+  assert.equal(patch.transitions.executor.question, undefined);
+  assert.equal(patch.transitions.executor.done, "reviewer");
+  assert.equal(patch.transitions.reviewer.error, undefined);
+  assert.equal(patch.transitions.reviewer.done, "$complete");
+  // initial reassigned to first surviving role
+  assert.equal(patch.initial, "executor");
+  // input not mutated
+  assert.equal(wf.initial, "planner");
+  assert.ok(wf.roles.planner);
+
+  // removing a non-initial role leaves initial untouched
+  const patch2 = removeRolePatch(wf, "reviewer");
+  assert.equal(patch2.initial, undefined);
+  assert.equal(patch2.roles.reviewer, undefined);
+});
+
+function makeEditStore({
+  rawProviders, effectiveProviders, workflow = structuredClone(DEFAULT_WORKFLOW),
+  workflowNames = ["default"],
+} = {}) {
   const configWrites = [];
   const workflowWrites = [];
   const workflowWriteNames = [];
+  const templateCalls = [];
+  const deleteCalls = [];
   let wf = workflow;
   return {
     root: "/tmp/.maestro",
     configWrites,
     workflowWrites,
     workflowWriteNames,
+    templateCalls,
+    deleteCalls,
     listTasks: async () => [],
-    listWorkflows: async () => [{ name: "default", path: "/tmp/.maestro/workflow.json", source: "legacy" }],
+    listWorkflows: async () => workflowNames.map((name) => ({
+      name, path: `/tmp/.maestro/workflows/${name}.json`, source: "named",
+    })),
     readConfig: async () => ({ providers: structuredClone(effectiveProviders), timeout_ms: 1000 }),
     readConfigRaw: async () => ({ providers: structuredClone(rawProviders) }),
     // App now reads by name; honor the two-arg signature but the mock keeps one wf.
@@ -453,6 +500,8 @@ function makeEditStore({ rawProviders, effectiveProviders, workflow = structured
       workflowWrites.push(structuredClone(patch));
       wf = { ...wf, ...patch };
     },
+    applyWorkflowTemplate: async (args) => { templateCalls.push(structuredClone(args)); return { ...args }; },
+    deleteWorkflow: async (name) => { deleteCalls.push(name); return { name, deleted: true }; },
   };
 }
 
@@ -572,6 +621,119 @@ test("app: role editor edits fields, transitions, and add role from graph", asyn
   for (const ch of "executor") await app.handleKey(key("char", ch));
   await app.handleKey(key("enter"));
   assert.equal(store.workflowWrites.at(-1).initial, "executor");
+});
+
+test("app: graph D deletes the chain-selected role", async () => {
+  const store = makeEditStore({ rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+  await app.handleKey(key("char", "2"));        // graph screen, planner selected
+  await app.handleKey(key("char", "D"));
+  assert.ok(app.model.input, "delete role opens confirmation");
+  for (const ch of "yes") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  const write = store.workflowWrites.at(-1);
+  assert.equal(write.roles.planner, undefined, "selected role removed from patch");
+  assert.equal(store.workflowWriteNames.at(-1), "default");
+});
+
+test("app: graph w cycles the active workflow name", async () => {
+  const store = makeEditStore({
+    rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective,
+    workflowNames: ["default", "extended"],
+  });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+  await app.handleKey(key("char", "2"));
+  assert.equal(app.model.workflowName, "default");
+  await app.handleKey(key("char", "w"));
+  assert.equal(app.model.workflowName, "extended");
+  await app.handleKey(key("char", "w"));
+  assert.equal(app.model.workflowName, "default", "wraps around");
+});
+
+test("app: graph N creates a workflow via applyWorkflowTemplate", async () => {
+  const store = makeEditStore({ rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+  await app.handleKey(key("char", "2"));
+  await app.handleKey(key("char", "N"));
+  for (const ch of "myflow") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));            // name → template prompt
+  for (const ch of "extended") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  assert.deepEqual(store.templateCalls.at(-1), { name: "extended", as: "myflow" });
+  assert.equal(app.model.workflowName, "myflow");
+});
+
+test("app: graph X deletes the current workflow via deleteWorkflow", async () => {
+  const store = makeEditStore({
+    rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective,
+    workflowNames: ["default", "doomed"],
+  });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+  await app.handleKey(key("char", "2"));
+  await app.handleKey(key("char", "w"));        // → doomed
+  assert.equal(app.model.workflowName, "doomed");
+  await app.handleKey(key("char", "X"));
+  for (const ch of "yes") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  assert.equal(store.deleteCalls.at(-1), "doomed");
+  assert.equal(app.model.workflowName, "default");
+});
+
+test("app: graph V flashes a validation summary", async () => {
+  const store = makeEditStore({ rawProviders: EDIT_PROVIDERS.raw, effectiveProviders: EDIT_PROVIDERS.effective });
+  const app = createTuiApp({ store, cwd: "/tmp" });
+  await app.refresh();
+  await app.handleKey(key("char", "2"));
+  await app.handleKey(key("char", "V"));
+  assert.match(app.model.message ?? "", /workflow OK|error \[|warning \[/);
+});
+
+test("app: detail g/s/S/p/E route to the new callbacks", async () => {
+  const task = {
+    id: "20260610-000001-act",
+    status: "waiting_approval",
+    prompt: "act",
+    created_at: "2026-06-10T11:00:00Z",
+    action_requests: [{ id: "act-1", status: "pending", command: "make", args: [] }],
+  };
+  const calls = [];
+  const app = createTuiApp({
+    store: makeFakeStore({ tasks: [task] }),
+    cwd: "/tmp",
+    formatDetails: (t) => `Task: ${t.id}`,
+    callbacks: {
+      runAction: async (t, id) => calls.push(["run", t.id, id]),
+      editAction: async (t, id, patch) => calls.push(["edit", t.id, id, patch]),
+      approveSubstitution: async (t) => calls.push(["subst", t.id]),
+      skipRole: async (t) => calls.push(["skip", t.id]),
+      switchProvider: async (t, provider) => calls.push(["provider", t.id, provider]),
+    },
+  });
+  await app.refresh();
+  await app.openDetail(task);
+
+  await app.handleKey(key("char", "g"));
+  assert.deepEqual(calls.at(-1), ["run", task.id, "act-1"]);
+
+  await app.handleKey(key("char", "s"));
+  assert.deepEqual(calls.at(-1), ["subst", task.id]);
+
+  await app.handleKey(key("char", "S"));
+  assert.deepEqual(calls.at(-1), ["skip", task.id]);
+
+  await app.handleKey(key("char", "p"));
+  for (const ch of "codex") await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  assert.deepEqual(calls.at(-1), ["provider", task.id, "codex"]);
+
+  await app.handleKey(key("char", "E"));
+  for (const ch of '{"x":1}') await app.handleKey(key("char", ch));
+  await app.handleKey(key("enter"));
+  assert.deepEqual(calls.at(-1), ["edit", task.id, "act-1", { x: 1 }]);
 });
 
 test("screens: new editor screens render exact row counts", async () => {

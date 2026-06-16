@@ -104,6 +104,32 @@ export function addRolePatch(workflow, key, provider, providerDef = null) {
   };
 }
 
+// Remove a role: drop it from `roles`, drop its transition entry, and scrub
+// any remaining role's transitions that target it. Reassigns `initial` to the
+// first surviving role (or null) when it pointed at the removed role. Returns
+// FULL replacement maps because writeWorkflow shallow-merges.
+export function removeRolePatch(workflow, key) {
+  const roles = { ...workflow.roles };
+  delete roles[key];
+
+  const transitions = {};
+  for (const [roleKey, events] of Object.entries(workflow.transitions ?? {})) {
+    if (roleKey === key) continue;
+    const next = {};
+    for (const [event, target] of Object.entries(events ?? {})) {
+      if (target === key) continue;
+      next[event] = target;
+    }
+    transitions[roleKey] = next;
+  }
+
+  const patch = { roles, transitions };
+  if (workflow.initial === key) {
+    patch.initial = Object.keys(roles)[0] ?? null;
+  }
+  return patch;
+}
+
 export function setTransitionPatch(workflow, roleKey, event, target) {
   return {
     transitions: {

@@ -324,6 +324,17 @@ export const COMMAND_TREE = {
             STATE_DIR_FLAG,
           ],
         },
+        {
+          name: "tracker",
+          synopsis: "maestro setup tracker [--project-slug <slug>] [--api-key <key>]",
+          summary: "configure the Linear tracker for `maestro serve` (writes server.tracker + chains the LINEAR_API_KEY prompt)",
+          flags: [
+            { flag: "--project-slug <slug>", desc: "Linear project slug/key" },
+            { flag: "--api-key <key>", desc: "store LINEAR_API_KEY non-interactively" },
+            { flag: "--var NAME", desc: "env var name for the key (default LINEAR_API_KEY)" },
+            STATE_DIR_FLAG,
+          ],
+        },
       ],
     },
     {
@@ -556,7 +567,14 @@ export function routeCli(rawArgs = []) {
   if (LOCAL_COMMAND_SET.has(first)) {
     return { kind: "local" };
   }
-  if (first === undefined || first.startsWith("-")) {
+  // Bare `maestro` (no args at all) prints help, like git/docker/npm — server
+  // mode needs a tracker config, so defaulting to it here only yields a cryptic
+  // `unsupported_tracker_kind` error on first run. Flag-only invocations
+  // (e.g. `maestro --port 4100`) still mean "start the server".
+  if (first === undefined) {
+    return { kind: "help", text: formatHelp([COMMAND_TREE]), exitCode: 0 };
+  }
+  if (first.startsWith("-")) {
     return { kind: "server" };
   }
   return { kind: "error", text: usageError([first]).cliHelp, exitCode: 1 };

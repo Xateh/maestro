@@ -259,6 +259,44 @@ export async function runLocalMaestroCommand({
         note,
         stdout,
       }),
+      approveSubstitution: (task, note) => handleApproveSubstitution({
+        taskStore,
+        taskId: task.id,
+        note,
+        cwd,
+        stdout,
+        stderr,
+        runner,
+        gitRunner,
+        resumeMode: "detached",
+        spawnProcess,
+      }),
+      skipRole: (task, role, note) => handleSkipRole({
+        taskStore,
+        taskId: task.id,
+        role,
+        note,
+        cwd,
+        stdout,
+        stderr,
+        runner,
+        gitRunner,
+        resumeMode: "detached",
+        spawnProcess,
+      }),
+      switchProvider: (task, provider, note) => handleSwitchProvider({
+        taskStore,
+        taskId: task.id,
+        provider,
+        note,
+        cwd,
+        stdout,
+        stderr,
+        runner,
+        gitRunner,
+        resumeMode: "detached",
+        spawnProcess,
+      }),
     });
   }
 
@@ -829,6 +867,19 @@ export async function runLocalMaestroCommand({
       const taskStore = makeStore(parsed, store);
       const { runImportWizard } = await import("../setup/import.mjs");
       return runImportWizard({ store: taskStore, stateDir: parsed.stateDir, args: rest, stdin, stdout, stderr });
+    }
+    if (action === "tracker") {
+      warnFlags(
+        findUnknownFlags(
+          rest,
+          new Set(["--project-slug", "--api-key", "--var", "--endpoint", "--kind", "--yes"]),
+        ),
+        "setup tracker",
+        stderr,
+      );
+      const { runTrackerWizard } = await import("../setup/tracker.mjs");
+      await runTrackerWizard({ stateDir: parsed.stateDir, args: rest, env: process.env, stdin, stdout });
+      return {};
     }
     throw usageError(["setup", action]);
   }

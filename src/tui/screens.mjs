@@ -105,8 +105,8 @@ export function renderFooter(model, size) {
 
 const FOOTER_HINTS = {
   tasks: "↑↓ move · ⏎ open · n new · v view · r refresh · 1-4 screens · q quit",
-  detail: "↑↓ scroll · [ ] pick action · a approve · d deny · m message · R retry · c cancel · x done · o resume · e extend · esc back",
-  graph: "←→ role · ⏎ edit role · a add role · i initial · ↑↓ scroll · r refresh · 1-4 screens · q quit",
+  detail: "↑↓ scroll · [ ] pick action · a approve · d deny · m message · R retry · c cancel · x done · o resume · e extend · g run · E edit-act · s subst · S skip · p provider · esc back",
+  graph: "←→ role · ⏎ edit role · a add role · i initial · w switch wf · D del role · N new wf · X del wf · u template · V validate · ↑↓ scroll · r refresh · 1-4 screens · q quit",
   settings: "↑↓ select · ⏎ edit/cycle · r reload · 1-4 screens · q quit",
   providers: "↑↓ select · ⏎ edit · n add · D delete · r refresh · 1-4 screens · q quit",
   "provider-edit": "↑↓ select · ⏎ edit/cycle · e type value · D delete provider · esc back",
@@ -217,7 +217,7 @@ export function renderGraphScreen(model, size) {
   const { chain } = buildWorkflowChain(workflow);
   const selectedKey = chain[Math.min(model.graphSel ?? 0, Math.max(0, chain.length - 1))] ?? null;
 
-  body.push(paint(" Workflow — transitions & handoff paths", ANSI.bold, color));
+  body.push(paint(` Workflow [${model.workflowName ?? "default"}] — transitions & handoff paths`, ANSI.bold, color));
   body.push("");
   const graph = renderWorkflowGraph(workflow, { width: size.cols - 2, color, selected: selectedKey });
   for (const line of graph.lines) body.push(` ${line}`);

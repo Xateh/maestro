@@ -7119,6 +7119,39 @@ test("store.applyWorkflowTemplate rejects unknown template + bad target name", a
   });
 });
 
+test("store.deleteWorkflow removes a named slot and its yaml sibling", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.writeWorkflow("solo", { initial: "executor" });
+    await writeFile(store.workflowYamlFilePath("solo"), "initial: executor\n");
+    const result = await store.deleteWorkflow("solo");
+    assert.deepEqual(result, { name: "solo", deleted: true });
+    assert.deepEqual((await store.listWorkflows()).map((w) => w.name), []);
+    await assert.rejects(() => readFile(store.workflowFilePath("solo"), "utf8"), /ENOENT/);
+    await assert.rejects(() => readFile(store.workflowYamlFilePath("solo"), "utf8"), /ENOENT/);
+  });
+});
+
+test("store.deleteWorkflow refuses to delete the default workflow", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await assert.rejects(
+      () => store.deleteWorkflow("default"),
+      (err) => err.code === "cannot_delete_default_workflow",
+    );
+  });
+});
+
+test("store.deleteWorkflow throws unknown_workflow when absent", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await assert.rejects(
+      () => store.deleteWorkflow("ghost"),
+      (err) => err.code === "unknown_workflow" && /ghost/.test(err.message),
+    );
+  });
+});
+
 test("createTask records workflow field with default + validation", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });

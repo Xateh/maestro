@@ -895,6 +895,9 @@ export async function runMaestroTui({
   messageTask = null,
   retryTask = null,
   cancelTask = null,
+  approveSubstitution = null,
+  skipRole = null,
+  switchProvider = null,
   ask: injectedAsk = null,
 } = {}) {
   // Full-screen TUI on real terminals; the classic prompt-driven TUI remains
@@ -909,6 +912,7 @@ export async function runMaestroTui({
       callbacks: {
         runTask, resumeTask, approveAction, runAction, denyAction, editAction,
         markDone, extendTimeout, messageTask, retryTask, cancelTask,
+        approveSubstitution, skipRole, switchProvider,
       },
       formatDetails: (task, opts = {}) => formatTaskDetails(task, { ...opts, sections: true }),
       filterTasks: filterTasksForView,

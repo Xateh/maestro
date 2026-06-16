@@ -15,11 +15,12 @@ import {
 } from "./screens.mjs";
 import {
   TRANSITION_EVENTS, addRolePatch, deleteTransitionPatch, newProviderDef,
-  parseStringList, providerFieldPatch, removeProviderPatch, rolePatch,
+  parseStringList, providerFieldPatch, removeProviderPatch, removeRolePatch, rolePatch,
   setInitialPatch, setTransitionPatch, transitionTargets,
 } from "./edit-core.mjs";
 import { applyRecentUpdate } from "../tui-pickers.mjs";
 import { buildWorkflowChain } from "./graph.mjs";
+import { validateWorkflow } from "../workflow-validate.mjs";
 
 const POLL_MS = 2000;
 
@@ -245,6 +246,24 @@ export function createTuiApp({
           });
           break;
         case "r": await refresh(); break;
+        case "g":
+          if (selected) await act("run-action", () => callbacks.runAction?.(task, selected.id, null));
+          else flash("no action selected");
+          break;
+        case "E":
+          if (selected) {
+            openInput("Edit-action JSON patch:", (raw) => {
+              let patch;
+              try { patch = JSON.parse(raw); } catch { flash("bad JSON"); return Promise.resolve(); }
+              return act("edit-action", () => callbacks.editAction?.(task, selected.id, patch, null));
+            });
+          } else flash("no action selected");
+          break;
+        case "s": await act("approve-substitution", () => callbacks.approveSubstitution?.(task, null)); break;
+        case "S": await act("skip-role", () => callbacks.skipRole?.(task, null, null)); break;
+        case "p":
+          openInput("Switch provider to:", (provider) => act("switch-provider", () => callbacks.switchProvider?.(task, provider, null)));
+          break;
         default: break;
       }
     }
@@ -337,6 +356,58 @@ export function createTuiApp({
           const patch = setInitialPatch(model.workflow ?? {}, value);
           if (!patch) { flash(`unknown role "${value}"`); return; }
           await act(`initial → ${value}`, () => store.writeWorkflow(model.workflowName ?? "default", patch));
+        });
+      } else if (key.ch === "w") {
+        // Cycle the active workflow slot.
+        const names = (await store.listWorkflows()).map((w) => w.name);
+        if (names.length <= 1) { flash("no other workflow"); return; }
+        const idx = names.indexOf(model.workflowName ?? "default");
+        const next = names[(idx + 1) % names.length];
+        model.workflowName = next;
+        model.graphSel = 0;
+        model.graphScroll = 0;
+        await refresh();
+        flash(`workflow → ${next}`);
+      } else if (key.ch === "D") {
+        if (!selectedKey) { flash("no role selected"); return; }
+        openInput(`Delete role "${selectedKey}" — type yes:`, async (answer) => {
+          if (answer !== "yes") { flash("delete cancelled"); return; }
+          await act("delete role", () => store.writeWorkflow(model.workflowName ?? "default", removeRolePatch(model.workflow ?? {}, selectedKey)));
+          model.graphSel = 0;
+        });
+      } else if (key.ch === "N") {
+        openInput("New workflow name (slug):", async (newName) => {
+          if (!/^[a-z0-9_-]+$/.test(newName)) { flash("workflow name must be a slug"); return; }
+          openInput("Template (default/extended/local/solo):", async (template) => {
+            if (!template) { flash("template required"); return; }
+            await act("create workflow", () => store.applyWorkflowTemplate({ name: template, as: newName }));
+            model.workflowName = newName;
+            model.graphSel = 0;
+            model.graphScroll = 0;
+            await refresh();
+          });
+        });
+      } else if (key.ch === "X") {
+        const target = model.workflowName ?? "default";
+        openInput(`Delete workflow "${target}" — type yes:`, async (answer) => {
+          if (answer !== "yes") { flash("delete cancelled"); return; }
+          await act("delete workflow", () => store.deleteWorkflow(target));
+          model.workflowName = "default";
+          model.graphSel = 0;
+          model.graphScroll = 0;
+          await refresh();
+        });
+      } else if (key.ch === "V") {
+        const r = validateWorkflow(model.workflow ?? {}, { config: model.config });
+        if (r.ok && r.warnings.length === 0) flash("workflow OK — no errors, no warnings");
+        else if (!r.ok) flash(`error [${r.errors[0].code}]: ${r.errors[0].message}`);
+        else flash(`warning [${r.warnings[0].code}]: ${r.warnings[0].message}`);
+      } else if (key.ch === "u") {
+        openInput("Template (default/extended/local/solo):", async (template) => {
+          if (!template) { flash("template required"); return; }
+          await act("use template", () => store.applyWorkflowTemplate({ name: template, as: model.workflowName ?? "default" }));
+          model.graphSel = 0;
+          await refresh();
         });
       }
     }
