@@ -15,6 +15,21 @@ import { TaskGraphRunner } from "../task-graph-runner.mjs";
 import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore } from "../task-store.mjs";
 import { WorkspaceManager } from "../workspace.mjs";
 
+// Shallow-by-section deep merge: overlay wins on the leaf keys it sets, while
+// untouched sections (polling, agent, hooks, ...) survive. Only the two-level
+// shape of the server block is merged (server.tracker.*, server.workspace.*).
+function deepMergeServer(base, overlay) {
+  const out = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    if (value && typeof value === "object" && !Array.isArray(value) && base[key] && typeof base[key] === "object") {
+      out[key] = { ...base[key], ...value };
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function buildTracker(serverConfig, deps = {}) {
   if (deps.tracker) return deps.tracker;
   return new LinearTrackerClient({
@@ -38,6 +53,7 @@ export async function startMaestro({
   port = null,
   env = process.env,
   logger = new StructuredLogger(),
+  overlay = null,
   // Test seams — production leaves these defaulted.
   deps = {},
 } = {}) {
@@ -49,7 +65,10 @@ export async function startMaestro({
   // `server` block; baseDir is the state dir's parent so relative workspace.root
   // values resolve the same way the old dispatch config path did.
   const config = await taskStore.readConfig();
-  const serverConfig = resolveServerConfig(config, {
+  const merged = overlay
+    ? { ...config, server: deepMergeServer(config.server ?? {}, overlay) }
+    : config;
+  const serverConfig = resolveServerConfig(merged, {
     env,
     baseDir: deps.baseDir ?? taskStore.root,
   });

@@ -124,6 +124,33 @@ test("immediate tick polls the tracker and dispatches candidates through runTask
   }
 });
 
+test("overlay deep-merges onto server block before resolve/validate", async () => {
+  const { stateDir } = await makeStateDir({
+    ...validServer,
+    tracker: { kind: "linear", api_key: "$LINEAR_API_KEY", project_slug: "base" },
+  });
+  let stop;
+  try {
+    const service = await startMaestro({
+      stateDir,
+      env: { LINEAR_API_KEY: "k" },
+      logger: silentLogger,
+      overlay: { tracker: { project_slug: "OVERRIDDEN" } },
+      deps: {
+        tracker: makeTracker(),
+        workspaceManager: makeWorkspaceManager(),
+        runTask: async (taskId) => ({ task: { id: taskId, status: "succeeded" } }),
+      },
+    });
+    stop = service.stop;
+    assert.equal(service.serverConfig.tracker.projectSlug, "OVERRIDDEN");
+    // Untouched leaf survives the merge.
+    assert.equal(service.serverConfig.tracker.apiKey, "k");
+  } finally {
+    if (stop) await stop();
+  }
+});
+
 test("invalid server config (missing tracker api key) rejects", async () => {
   const { stateDir } = await makeStateDir({
     ...validServer,
