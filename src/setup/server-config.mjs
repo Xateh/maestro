@@ -155,13 +155,25 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
 // graph engine's adapters).
 export function validateServerConfig(config) {
   if (config.tracker.kind !== "linear") {
-    throw typedError("unsupported_tracker_kind", config.tracker.kind ?? "missing");
+    // The two failure shapes read very differently to a first-time user: a
+    // totally unconfigured tracker (kind absent) vs. an explicit but bad kind.
+    // Either way point at the wizard that fixes it.
+    const detail = config.tracker.kind
+      ? `${config.tracker.kind} (only "linear" is supported) — run \`maestro setup tracker\` to configure it`
+      : "no tracker configured — run `maestro setup tracker` to set up Linear (or pass --config <path>)";
+    throw typedError("unsupported_tracker_kind", detail);
   }
   if (!config.tracker.apiKey) {
-    throw typedError("missing_tracker_api_key");
+    throw typedError(
+      "missing_tracker_api_key",
+      "set LINEAR_API_KEY (or run `maestro setup keys --var LINEAR_API_KEY`, or rerun `maestro setup tracker`)",
+    );
   }
   if (!config.tracker.projectSlug) {
-    throw typedError("missing_tracker_project_slug");
+    throw typedError(
+      "missing_tracker_project_slug",
+      "run `maestro setup tracker --project-slug <slug>`",
+    );
   }
   if (config.tracker.doneState !== null && typeof config.tracker.doneState !== "string") {
     throw typedError("invalid_tracker_done_state", "expected string or null");
