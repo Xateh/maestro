@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { decodeKeys } from "../src/tui/keys.mjs";
-import { stripAnsi, visibleWidth, truncateAnsi, padLine, computeColumns, ANSI } from "../src/tui/layout.mjs";
+import { stripAnsi, visibleWidth, truncateAnsi, padLine, computeColumns, wrapSegments, ANSI } from "../src/tui/layout.mjs";
 import { renderWorkflowGraph, buildWorkflowChain } from "../src/tui/graph.mjs";
 import { renderScreen, clampScroll, formatAge, SETTINGS_FIELDS, settingsPatch } from "../src/tui/screens.mjs";
 import { createTuiApp } from "../src/tui/app.mjs";
@@ -65,6 +65,20 @@ test("layout: computeColumns honors minimums and distributes flex", () => {
   const tight = computeColumns([{ min: 4 }, { min: 8, flex: 1 }], 6);
   assert.equal(tight[0], 4);
   assert.ok(tight[1] >= 1);
+});
+
+test("layout: wrapSegments keeps pairs whole and wraps at boundaries", () => {
+  const segs = ["a 1", "bb 22", "ccc 333"];
+  // width 9 can't fit two segments joined by " · " → one per line, never split
+  assert.deepEqual(wrapSegments(segs, 9, { sep: " · " }), ["a 1", "bb 22", "ccc 333"]);
+  // wide enough → single line
+  assert.deepEqual(wrapSegments(segs, 80, { sep: " · " }), ["a 1 · bb 22 · ccc 333"]);
+  // indent prefixes every line
+  assert.deepEqual(wrapSegments(["a 1", "bb 22"], 5, { indent: "  " }), ["  a 1", "  bb 22"]);
+  // ANSI escapes don't count toward width
+  const styled = `${ANSI.red}abc${ANSI.reset}`;
+  assert.deepEqual(wrapSegments([styled, styled], 7, { sep: " " }), [`${styled} ${styled}`]);
+  assert.deepEqual(wrapSegments([], 10), []);
 });
 
 // ── graph ─────────────────────────────────────────────────────────────────────
@@ -184,6 +198,30 @@ test("screens: selected task row is highlighted and footer shows hints", () => {
   assert.match(text, /▸/);
   assert.match(stripAnsi(text), /⏎ open/);
   assert.match(stripAnsi(text), /alpha/);
+});
+
+test("screens: footer keybinds wrap instead of clipping on a narrow terminal", () => {
+  const model = makeModel({ screen: "graph", color: false });
+  const narrow = renderScreen(model, { cols: 40, rows: 24 });
+  assert.equal(narrow.length, 24);
+  for (const line of narrow) assert.equal(visibleWidth(line), 40, "every line still padded to cols");
+  // The full hint set survives the narrow width (previously the single footer
+  // line clipped everything past col 40).
+  const text = stripAnsi(narrow.join("\n"));
+  for (const frag of ["switch wf", "del role", "new wf", "validate", "q quit"]) {
+    assert.match(text, new RegExp(frag.replace(" ", "\\s")), `footer hint "${frag}" missing`);
+  }
+});
+
+test("screens: role details wrap pair-by-pair on a narrow terminal", () => {
+  const model = makeModel({ screen: "graph", color: false, graphSel: 0 });
+  const narrow = renderScreen(model, { cols: 40, rows: 40 });
+  for (const line of narrow) assert.ok(visibleWidth(line) <= 40, "no line overflows cols");
+  // Every "key value" pair is present (none clipped off the right edge).
+  const text = stripAnsi(narrow.join("\n"));
+  for (const key of ["provider", "alias", "model", "effort", "permission", "prompt_template", "skip"]) {
+    assert.match(text, new RegExp(`${key}\\s`), `role attribute "${key}" missing`);
+  }
 });
 
 test("screens: clampScroll keeps selection visible", () => {

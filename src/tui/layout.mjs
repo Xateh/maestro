@@ -102,6 +102,32 @@ export function wrapText(s, width) {
 }
 
 /**
+ * Pack pre-formatted segments onto lines, wrapping at segment boundaries.
+ * Each segment (e.g. a "key value" pair) is kept whole — a segment is moved to
+ * the next line rather than split when it would overflow `width`. ANSI-aware:
+ * width is measured with escapes stripped. `indent` prefixes every line and
+ * `sep` joins segments on the same line. A lone segment wider than `width` gets
+ * its own line (the terminal layer truncates it as a last resort).
+ */
+export function wrapSegments(segments, width, { sep = "  ", indent = "" } = {}) {
+  const segs = (segments ?? []).map((s) => String(s ?? "")).filter((s) => visibleWidth(s) > 0);
+  if (segs.length === 0) return [];
+  const lines = [];
+  let line = indent + segs[0];
+  for (let i = 1; i < segs.length; i += 1) {
+    const candidate = `${line}${sep}${segs[i]}`;
+    if (visibleWidth(candidate) <= width) {
+      line = candidate;
+    } else {
+      lines.push(line);
+      line = indent + segs[i];
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+
+/**
  * Distribute `total` cells across column specs.
  * Spec: { min, flex } — fixed columns use flex 0 and get `min`;
  * flexible columns share the remainder proportionally to `flex`,

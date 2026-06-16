@@ -7,7 +7,7 @@
  * testable at any terminal size.
  */
 
-import { ANSI, paint, padLine, truncateAnsi, computeColumns, formatRow, wrapText } from "./layout.mjs";
+import { ANSI, paint, padLine, truncateAnsi, computeColumns, formatRow, wrapText, wrapSegments } from "./layout.mjs";
 import {
   BUILTIN_ADAPTERS, PERMISSIONS, PROMPT_TEMPLATES, SKIP_VALUES,
 } from "./edit-core.mjs";
@@ -91,16 +91,23 @@ function visible(s) {
   return s.replace(/\u001b\[[0-9;]*m/g, "").length;
 }
 
+// Returns one OR MORE footer lines. Keybind hints wrap at " · " boundaries so a
+// "key action" pair is never split across the line break; `frame` reserves rows
+// for however many lines come back.
 export function renderFooter(model, size) {
   const { color } = model;
   if (model.input) {
     const value = model.input.value ?? "";
     const caret = paint("▏", ANSI.cyan, color);
-    return padLine(` ${paint(model.input.label, ANSI.bold, color)} ${value}${caret}`, size.cols);
+    return [` ${paint(model.input.label, ANSI.bold, color)} ${value}${caret}`];
   }
   const hints = FOOTER_HINTS[model.screen] ?? FOOTER_HINTS.tasks;
-  const msg = model.message ? `${paint(model.message, ANSI.yellow, color)}  ` : "";
-  return padLine(` ${msg}${paint(hints, ANSI.dim, color)}`, size.cols);
+  const lines = [];
+  if (model.message) lines.push(` ${paint(model.message, ANSI.yellow, color)}`);
+  for (const line of wrapSegments(hints.split(" · "), size.cols, { sep: " · ", indent: " " })) {
+    lines.push(paint(line, ANSI.dim, color));
+  }
+  return lines;
 }
 
 const FOOTER_HINTS = {
@@ -115,9 +122,16 @@ const FOOTER_HINTS = {
 
 function frame(model, size, bodyLines) {
   const rows = Math.max(3, size.rows);
-  const body = bodyLines.slice(0, rows - 2).map((l) => padLine(l, size.cols));
-  while (body.length < rows - 2) body.push(padLine("", size.cols));
-  return [renderHeader(model, size), ...body, renderFooter(model, size)];
+  const header = renderHeader(model, size);
+  // Footer may wrap to several lines; keep at least one body row and never let
+  // the footer push the total past `rows`.
+  let footer = renderFooter(model, size);
+  const maxFooter = Math.max(1, rows - 2);
+  if (footer.length > maxFooter) footer = footer.slice(0, maxFooter);
+  const bodyRows = rows - 1 - footer.length;
+  const body = bodyLines.slice(0, bodyRows).map((l) => padLine(l, size.cols));
+  while (body.length < bodyRows) body.push(padLine("", size.cols));
+  return [header, ...body, ...footer.map((l) => padLine(l, size.cols))];
 }
 
 // ── tasks screen ──────────────────────────────────────────────────────────────
@@ -226,12 +240,24 @@ export function renderGraphScreen(model, size) {
     const role = workflow.roles?.[selectedKey] ?? {};
     body.push("");
     body.push(paint(` ── ${role.label ?? selectedKey} ──`, ANSI.bold + ANSI.cyan, color));
-    body.push(`   provider ${paint(role.provider ?? "-", ANSI.cyan, color)}   alias ${role.alias || "-"}   model ${role.model || "(default)"}   effort ${role.effort || "(default)"}`);
-    body.push(`   permission ${role.permission ?? "-"}   prompt_template ${role.prompt_template ?? "-"}   skip ${role.skip ?? "auto"}`);
-    const branches = branchTransitions(workflow, selectedKey)
-      .map(([e, t]) => `${e} → ${t}`).join(" · ");
+    // Each "key value" pair is a segment; wrapSegments keeps a pair whole and
+    // moves it to the next line rather than clipping it off the right edge.
+    const attrs = [
+      `provider ${paint(role.provider ?? "-", ANSI.cyan, color)}`,
+      `alias ${role.alias || "-"}`,
+      `model ${role.model || "(default)"}`,
+      `effort ${role.effort || "(default)"}`,
+      `permission ${role.permission ?? "-"}`,
+      `prompt_template ${role.prompt_template ?? "-"}`,
+      `skip ${role.skip ?? "auto"}`,
+    ];
+    for (const line of wrapSegments(attrs, size.cols, { sep: "   ", indent: "   " })) body.push(line);
     const done = workflow.transitions?.[selectedKey]?.done;
-    body.push(`   on done → ${paint(done ?? "-", ANSI.green, color)}${branches ? `   ${paint(branches, ANSI.dim, color)}` : ""}`);
+    const transitions = [
+      `on done → ${paint(done ?? "-", ANSI.green, color)}`,
+      ...branchTransitions(workflow, selectedKey).map(([e, t]) => paint(`${e} → ${t}`, ANSI.dim, color)),
+    ];
+    for (const line of wrapSegments(transitions, size.cols, { sep: "   ", indent: "   " })) body.push(line);
   }
 
   // Scrollable when the graph outgrows the viewport.
