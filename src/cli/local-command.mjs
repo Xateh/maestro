@@ -8,6 +8,9 @@ import { tailFile } from "../fs-safe.mjs";
 import { usageError } from "./registry.mjs";
 import { loadLocalSecrets, runKeysWizard } from "../setup/keys.mjs";
 import { runLocalSetup } from "../setup/local.mjs";
+import { loadRole } from "../setup/role-loader.mjs";
+import { subagentToNativeUnit } from "../setup/role-convert.mjs";
+import { parseSubagent, scanSubagents, slugifyRoleName } from "../setup/scanners/claude.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
 import { manifestToTaskInputs, sanitizeRerunWorkflowName } from "../run-manifest.mjs";
 import { formatDurationMs } from "../run-summary.mjs";
@@ -1049,6 +1052,100 @@ export async function runLocalMaestroCommand({
       return result;
     }
     throw usageError(["workflow", action]);
+  }
+
+  if (command === "role") {
+    const parsed = parseSharedStateArgs(args, cwd);
+    const [action, ...rest] = parsed.positional;
+    const unit = rest.find((token) => !token.startsWith("-"));
+
+    if (action === "list") {
+      const roles = [];
+      const rolesDir = path.join(parsed.stateDir, "roles");
+      try {
+        const entries = await fs.readdir(rolesDir);
+        for (const entry of entries.filter((name) => name.endsWith(".md")).sort()) {
+          roles.push({ name: path.basename(entry, ".md"), kind: "native", path: path.join(rolesDir, entry) });
+        }
+      } catch {
+        // no native roles dir — skip
+      }
+      const subagents = await scanSubagents(path.join(cwd, ".claude", "agents"));
+      for (const sub of subagents) {
+        roles.push({ name: slugifyRoleName(sub.name), kind: "claude-subagent", path: sub.path });
+      }
+      if (rest.includes("--json")) {
+        writeLine(stdout, JSON.stringify(roles, null, 2));
+      } else if (roles.length === 0) {
+        writeLine(stdout, "no role units (looked in .maestro/roles and .claude/agents)");
+      } else {
+        for (const role of roles) writeLine(stdout, `${role.name} (${role.kind})`);
+      }
+      return { roles };
+    }
+
+    if (action === "show") {
+      if (!unit) throw usageError(["role", "show"]);
+      const result = await loadRole(unit, { cwd });
+      if (!result.ok) {
+        writeLine(stderr, `role show failed: ${result.error.message}`);
+        process.exitCode = 1;
+        return result;
+      }
+      writeLine(stdout, JSON.stringify(result.roleDef, null, 2));
+      return result;
+    }
+
+    if (action === "lint") {
+      if (!unit) throw usageError(["role", "lint"]);
+      const result = await loadRole(unit, { cwd });
+      if (!result.ok) {
+        writeLine(stderr, `${result.error.code}: ${result.error.message}`);
+        process.exitCode = 1;
+      } else {
+        writeLine(stdout, `ok: ${unit}`);
+      }
+      return result;
+    }
+
+    throw usageError(["role", action]);
+  }
+
+  if (command === "import-agent") {
+    const parsed = parseSharedStateArgs(args, cwd);
+    const source = parsed.positional[0];
+    if (!source) throw usageError(["import-agent"]);
+    const sourcePath = path.resolve(cwd, source);
+    const text = await fs.readFile(sourcePath, "utf8");
+    const subagent = parseSubagent(text, sourcePath);
+    if (!subagent) throw new Error(`not a valid subagent (missing name): ${source}`);
+    const md = subagentToNativeUnit(subagent);
+    const roleName = slugifyRoleName(subagent.name);
+    const rolesDir = path.join(parsed.stateDir, "roles");
+    await fs.mkdir(rolesDir, { recursive: true });
+    const destPath = path.join(rolesDir, `${roleName}.md`);
+    await fs.writeFile(destPath, md, "utf8");
+
+    const manifestPath = path.join(parsed.stateDir, "import-manifest.json");
+    let manifest = { imports: [] };
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+      if (!Array.isArray(manifest.imports)) manifest.imports = [];
+    } catch {
+      // no manifest yet — start fresh
+    }
+    manifest.imports = manifest.imports.filter((entry) => entry.name !== roleName);
+    manifest.imports.push({
+      name: roleName,
+      source: sourcePath,
+      dest: destPath,
+      hash: subagent.hash,
+      imported_at: new Date().toISOString(),
+    });
+    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+    writeLine(stdout, `imported ${source} → ${destPath}`);
+    return { roleName, destPath, manifestPath };
   }
 
   throw usageError([command]);

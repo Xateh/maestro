@@ -20,6 +20,18 @@ const SYSTEM_EVALUATOR_INSTRUCTIONS = readFileSync(
   "utf8",
 ).trim();
 
+// MRC demo role units ship under templates/roles/*.md (a superset of the
+// Claude subagent format). The demo workflow builders INLINE their bodies +
+// tools so the emitted template JSON is self-contained (no run-time source
+// resolution needed); the same units are also shipped at .maestro/roles/*.md
+// as authoring examples and to exercise the loader. (Plan D4.)
+function roleUnitBody(name) {
+  const text = readFileSync(new URL(`./templates/roles/${name}.md`, import.meta.url), "utf8");
+  // strip YAML frontmatter; keep the markdown body as instructions
+  const match = text.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)$/);
+  return (match ? match[1] : text).trim();
+}
+
 const REVIEWER_ESCALATION_NOTE = [
   "Escalation: if the review surfaces deep architectural risk, repeated failed",
   "execute → review cycles, or you cannot confidently judge correctness from a",
@@ -238,10 +250,86 @@ function buildFullAuditSweepWorkflow() {
   };
 }
 
+// MRC demo: a single classifier role that branches by classification (§6.1).
+function buildTriageWorkflow() {
+  return {
+    version: 2,
+    initial: "triage",
+    roles: {
+      triage: {
+        label: "Triage",
+        provider: "claude",
+        alias: "claude",
+        model: "",
+        effort: "",
+        permission: "read",
+        prompt_template: "triage",
+        skip: "never",
+        kind: "agent",
+        tools: ["Read", "Grep"],
+        output_schema: "classification",
+        instructions: roleUnitBody("triage"),
+      },
+    },
+    transitions: {
+      // The classifier sets the handoff `event` to its classification. `clarify`
+      // routes to the user; `bug`/`feature` complete. `done` is a safety net for
+      // a classifier that omits the event (engine default) so the run still
+      // terminates cleanly instead of dead-ending. (`question` is engine-reserved
+      // and cannot be a classifier-chosen event — see RESERVED_EVENTS.)
+      triage: { bug: "$complete", feature: "$complete", clarify: "$ask_user", done: "$complete", error: "$halt" },
+    },
+    modes: { task: { initial: "triage" } },
+  };
+}
+
+// MRC demo: gather (read-only, tool-restricted, big-context) → synthesize (§6.2).
+function buildResearchWorkflow() {
+  return {
+    version: 2,
+    initial: "gather",
+    roles: {
+      gather: {
+        label: "Gather",
+        provider: "gemini",
+        alias: "gemini",
+        model: "",
+        effort: "",
+        permission: "read",
+        prompt_template: "gather",
+        skip: "never",
+        kind: "agent",
+        tools: ["Read", "Grep"],
+        output_schema: "research",
+        instructions: roleUnitBody("gather"),
+      },
+      synthesize: {
+        label: "Synthesize",
+        provider: "claude",
+        alias: "claude",
+        model: "",
+        effort: "",
+        permission: "read",
+        prompt_template: "synthesize",
+        skip: "never",
+        kind: "agent",
+        instructions: roleUnitBody("synthesize"),
+      },
+    },
+    transitions: {
+      gather: { done: "synthesize", question: "$ask_user", error: "$halt" },
+      synthesize: { done: "$complete", question: "$ask_user", error: "$halt" },
+    },
+    modes: { task: { initial: "gather" } },
+  };
+}
+
 export const EXTENDED_WORKFLOW = buildExtendedWorkflow();
 export const LOCAL_WORKFLOW = buildLocalWorkflow();
 export const SOLO_WORKFLOW = buildSoloWorkflow();
 export const FULL_AUDIT_SWEEP_WORKFLOW = buildFullAuditSweepWorkflow();
+export const TRIAGE_WORKFLOW = buildTriageWorkflow();
+export const RESEARCH_WORKFLOW = buildResearchWorkflow();
 
 export const WORKFLOW_TEMPLATES = {
   default: DEFAULT_WORKFLOW,
@@ -249,6 +337,8 @@ export const WORKFLOW_TEMPLATES = {
   local: LOCAL_WORKFLOW,
   solo: SOLO_WORKFLOW,
   "full-audit-sweep": FULL_AUDIT_SWEEP_WORKFLOW,
+  triage: TRIAGE_WORKFLOW,
+  research: RESEARCH_WORKFLOW,
 };
 
 export function resolveWorkflowTemplate(name) {

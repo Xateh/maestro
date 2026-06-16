@@ -21,10 +21,12 @@ const EXPECTED_NAMES = [
   "evaluation",
   "regression",
   "scoring",
+  "classification",
+  "research",
   "stage_event",
 ];
 
-test("listSchemas returns the 10 canonical names in stable order", () => {
+test("listSchemas returns the canonical names in stable order", () => {
   assert.deepEqual(listSchemas(), EXPECTED_NAMES);
 });
 
@@ -84,6 +86,14 @@ const SAMPLES = {
       regression_score: 0.5,
       overall_confidence: 0.9,
     },
+  },
+  classification: {
+    ok: { event: "bug", rationale: "stack trace points to a null deref" },
+    bad: { event: "defect", rationale: "x" }, // bad enum
+  },
+  research: {
+    ok: { findings: ["a"], sources: ["url"] },
+    bad: { findings: ["a"] }, // missing sources
   },
   stage_event: {
     ok: {

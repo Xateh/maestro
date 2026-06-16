@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { validateWorkflow, formatValidation, findCycles, cycleHasTermination } from "../src/workflow-validate.mjs";
+import { validateWorkflow, formatValidation, findCycles, cycleHasTermination, isSafeRelativeRef } from "../src/workflow-validate.mjs";
 import { DEFAULT_WORKFLOW } from "../src/task-store.mjs";
 import { resolveWorkflowTemplate } from "../src/setup/workflow-templates.mjs";
 
@@ -95,6 +95,66 @@ test("bad gates → bad_gates error (unknown key, ranges, non-bool flags)", () =
     { gates: { no_high_severity_findings: "yes" } },
   ));
   assert.ok(codes(badFlag).includes("bad_gates"));
+});
+
+// ── MRC: source / tools / deny_tools (P3) ────────────────────────────────────
+
+test("isSafeRelativeRef is exported (D3)", () => {
+  assert.equal(typeof isSafeRelativeRef, "function");
+  assert.equal(isSafeRelativeRef(".maestro/roles/triage.md"), true);
+  assert.equal(isSafeRelativeRef("/abs"), false);
+  assert.equal(isSafeRelativeRef("../escape.md"), false);
+});
+
+test("unsafe string source → bad_role_source", () => {
+  for (const bad of ["/abs/x.md", "../escape.md", "C:\\x.md"]) {
+    const result = validateWorkflow(baseWorkflow({ executor: { provider: "codex", source: bad } }));
+    assert.ok(codes(result).includes("bad_role_source"), bad);
+  }
+});
+
+test("safe relative string source → no error", () => {
+  const result = validateWorkflow(baseWorkflow({ executor: { provider: "codex", source: ".maestro/roles/x.md" } }));
+  assert.ok(!codes(result).includes("bad_role_source"));
+});
+
+test("object source (legacy import provenance) is ignored (D5)", () => {
+  const result = validateWorkflow(baseWorkflow({
+    executor: { provider: "codex", source: { kind: "claude-subagent", path: "/abs/x.md", hash: "sha256:..." } },
+  }));
+  assert.ok(!codes(result).includes("bad_role_source"));
+});
+
+test("tools non-array → bad_tool_token; bad token → bad_tool_token naming token", () => {
+  const nonArray = validateWorkflow(baseWorkflow({ executor: { provider: "codex", tools: "Read" } }));
+  assert.ok(codes(nonArray).includes("bad_tool_token"));
+
+  const badToken = validateWorkflow(baseWorkflow({ executor: { provider: "codex", tools: ["Read", "rm -rf"] } }));
+  const issue = [...badToken.errors].find((e) => e.code === "bad_tool_token");
+  assert.ok(issue);
+  assert.ok(issue.message.includes("rm -rf"));
+  assert.ok(issue.message.includes("tools"));
+});
+
+test("deny_tools validated the same way", () => {
+  const bad = validateWorkflow(baseWorkflow({ executor: { provider: "codex", deny_tools: ["Bash("] } }));
+  const issue = [...bad.errors].find((e) => e.code === "bad_tool_token");
+  assert.ok(issue);
+  assert.ok(issue.message.includes("deny_tools"));
+});
+
+test("valid tools/deny_tools → clean", () => {
+  const result = validateWorkflow(baseWorkflow({
+    executor: { provider: "codex", tools: ["Read", "Grep", "Bash(npm:*)"], deny_tools: ["Bash(rm:*)"] },
+  }));
+  assert.ok(!codes(result).includes("bad_tool_token"));
+});
+
+test("new named schemas classification/research resolve (source:name not unknown)", () => {
+  const cls = validateWorkflow(baseWorkflow({ executor: { provider: "codex", output_schema: "classification" } }));
+  assert.ok(!codes(cls).includes("unknown_output_schema"));
+  const res = validateWorkflow(baseWorkflow({ executor: { provider: "codex", output_schema: "research" } }));
+  assert.ok(!codes(res).includes("unknown_output_schema"));
 });
 
 test("valid gates → no bad_gates", () => {

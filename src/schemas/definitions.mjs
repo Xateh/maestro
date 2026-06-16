@@ -126,6 +126,28 @@ export const SCHEMA_DEFINITIONS = {
       overall_confidence: unit,
     },
   },
+  classification: {
+    $schema: DRAFT,
+    $id: "maestro:classification",
+    type: "object",
+    additionalProperties: true,
+    required: ["event", "rationale"],
+    properties: {
+      event: { type: "string", enum: ["bug", "feature", "clarify"] },
+      rationale: { type: "string" },
+    },
+  },
+  research: {
+    $schema: DRAFT,
+    $id: "maestro:research",
+    type: "object",
+    additionalProperties: true,
+    required: ["findings", "sources"],
+    properties: {
+      findings: anyArray,
+      sources: anyArray,
+    },
+  },
   stage_event: {
     $schema: DRAFT,
     $id: "maestro:stage_event",

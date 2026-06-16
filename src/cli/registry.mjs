@@ -124,7 +124,7 @@ export const COMMAND_TREE = {
       flags: [
         { flag: "--yes", desc: "non-interactive: scaffold + detect local runtimes, skip wizards" },
         { flag: "--dry-run", desc: "show what would be created without writing" },
-        { flag: "--workflow <name>", desc: "workflow template: default | extended | local | solo" },
+        { flag: "--workflow <name>", desc: "workflow template: default | extended | local | solo | full-audit-sweep | triage | research" },
         STATE_DIR_FLAG,
       ],
     },
@@ -372,6 +372,39 @@ export const COMMAND_TREE = {
           ],
         },
       ],
+    },
+    {
+      name: "role",
+      kind: "local",
+      synopsis: "maestro role <subcommand>",
+      summary: "inspect portable role units (.maestro/roles, .claude/agents, skills)",
+      subcommands: [
+        {
+          name: "list",
+          synopsis: "maestro role list [--json]",
+          summary: "list discoverable role units across .maestro/roles and .claude/agents",
+          flags: [{ flag: "--json", desc: "JSON output" }, STATE_DIR_FLAG],
+        },
+        {
+          name: "show",
+          synopsis: "maestro role show <unit>",
+          summary: "print the normalized RoleDef for a unit",
+          flags: [STATE_DIR_FLAG],
+        },
+        {
+          name: "lint",
+          synopsis: "maestro role lint <unit>",
+          summary: "validate a unit (frontmatter, tool grammar); non-zero exit on error",
+          flags: [STATE_DIR_FLAG],
+        },
+      ],
+    },
+    {
+      name: "import-agent",
+      kind: "local",
+      synopsis: "maestro import-agent <path>",
+      summary: "convert a .claude/agents subagent into a native .maestro/roles unit",
+      flags: [STATE_DIR_FLAG],
     },
     {
       name: "export",

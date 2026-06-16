@@ -5,7 +5,12 @@ export function buildOllamaCommand({
   cwd,
   alias = null,
   model = null,
+  // Advisory only: tool policy is injected upstream as a prompt block (D2).
+  tools = null,
+  deny_tools = null,
 } = {}) {
+  void tools;
+  void deny_tools;
   return {
     command: alias ?? "ollama",
     args: ["run", model || "llama3.2"],

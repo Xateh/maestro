@@ -16,7 +16,10 @@ const BUILTIN_ADAPTERS = {
 
 // Tokenize a custom command template: "{alias} --model {model}" etc.
 // Unrecognized or empty-valued tokens drop the preceding flag + value pair.
-function buildCustomCommand(providerDef, { prompt, cwd, alias, model, effort, permission, role } = {}) {
+function buildCustomCommand(providerDef, { prompt, cwd, alias, model, effort, permission, role, tools, deny_tools } = {}) {
+  // tools/deny_tools accepted for a uniform seam; advisory only here.
+  void tools;
+  void deny_tools;
   const custom = providerDef.custom ?? {};
   const template = String(custom.command_template ?? "{alias}");
   const values = { alias, model, effort, permission, role, cwd };

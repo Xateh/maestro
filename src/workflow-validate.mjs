@@ -3,6 +3,7 @@
 
 import { SINK_STATES, isSink } from "./state-machine.mjs";
 import { resolveRoleSchema, validateInline } from "./schemas/index.mjs";
+import { validateToolToken } from "./adapters/tool-flags.mjs";
 
 // Role names that denote a verification stage. When a role with one of these
 // names declares no resolvable output schema we emit a `missing_output_schema`
@@ -29,9 +30,10 @@ const GATE_VALIDATORS = {
   min_overall_confidence: isUnit,
 };
 
-// Syntactic check for output_schema_ref: a relative path that does not escape
-// the state dir. No file I/O — existence is checked at load, not here.
-function isSafeRelativeRef(ref) {
+// Syntactic check for output_schema_ref / MRC source: a relative path that does
+// not escape the state dir. No file I/O — existence is checked at load, not here.
+// Exported (D3) so the loader/CLI lint reuse the same predicate.
+export function isSafeRelativeRef(ref) {
   if (typeof ref !== "string" || ref.length === 0) return false;
   if (ref.startsWith("/")) return false;
   if (/^[a-zA-Z]:[\\/]/.test(ref)) return false; // windows absolute
@@ -146,6 +148,33 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
     if (config?.providers && role?.provider && !config.providers[role.provider]) {
       warnings.push(issue("unknown_provider", `role "${roleName}" uses provider "${role.provider}" which is not configured`));
+    }
+
+    // ── MRC source / tools / deny_tools (structural only; existence at load) ──
+    // `source` is an MRC unit ref ONLY when it is a STRING (D5). A legacy import
+    // provenance OBJECT source is ignored here so existing imported roles do not
+    // break.
+    if (typeof role?.source === "string") {
+      if (!isSafeRelativeRef(role.source)) {
+        errors.push(issue(
+          "bad_role_source",
+          `role "${roleName}" source must be a relative path inside the state dir, got ${JSON.stringify(role.source)}`,
+        ));
+      }
+    }
+    for (const field of ["tools", "deny_tools"]) {
+      const value = role?.[field];
+      if (value === undefined) continue;
+      if (!Array.isArray(value)) {
+        errors.push(issue("bad_tool_token", `role "${roleName}" ${field} must be an array of tool tokens, got ${JSON.stringify(value)}`));
+        continue;
+      }
+      for (const token of value) {
+        const verdict = validateToolToken(token);
+        if (!verdict.ok) {
+          errors.push(issue("bad_tool_token", `role "${roleName}" ${field} has an invalid tool token ${JSON.stringify(token)}`));
+        }
+      }
     }
     if (role?.fallback !== undefined && !Array.isArray(role.fallback)) {
       errors.push(issue("bad_fallback", `role "${roleName}" fallback must be an array of provider keys, got ${JSON.stringify(role.fallback)}`));

@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { isValidWorkflowName } from "./task-store.mjs";
+import { buildToolPolicyRecord } from "./adapters/tool-flags.mjs";
 
 export const MANIFEST_VERSION = 1;
 
@@ -119,6 +120,18 @@ export function buildRunManifest({ task, workflow, maestroVersion, startHead } =
       taskBlock[key] = t[key] ?? null;
     }
   }
+  // Resolved per-role tool policy (MRC §5.6). Pure/total: any role with
+  // declared tools/deny_tools contributes a record; degrades to [] otherwise.
+  const toolPolicies = [];
+  for (const [stateName, role] of Object.entries(workflow?.roles ?? {})) {
+    if (!role || (role.tools === undefined && role.deny_tools === undefined)) continue;
+    toolPolicies.push(buildToolPolicyRecord({
+      role: stateName,
+      provider: role.provider,
+      tools: role.tools,
+      deny_tools: role.deny_tools,
+    }));
+  }
   return {
     manifest_version: MANIFEST_VERSION,
     maestro_version: maestroVersion ?? null,
@@ -126,6 +139,7 @@ export function buildRunManifest({ task, workflow, maestroVersion, startHead } =
     source_task_id: t.id ?? null,
     task: taskBlock,
     workflow_snapshot: workflow ?? null,
+    tool_policies: toolPolicies,
     git: { start_head: startHead ?? null },
     run_dir: t.run_dir ?? null,
   };

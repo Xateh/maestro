@@ -506,6 +506,47 @@ test("runLangGraphTask: waiting_user leaves the tab open as a trail", async () =
   assert.deepEqual(closedTabs, [], "tab kept so the user can read the conversation");
 });
 
+// A terminal role can route to $complete via a custom (agent-chosen) event, not
+// just the engine-default "done" (e.g. the `triage` template: feature→$complete).
+// The final-state interpreter must finalize such a run as succeeded — otherwise
+// the task is stranded "running" after reaching the complete sink.
+test("runLangGraphTask: custom event routing to $complete finalizes succeeded", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-complete-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "classify it", cwd: dir, reviewEnabled: false });
+    await writeFile(
+      path.join(store.root, "workflow.json"),
+      JSON.stringify({
+        version: 2,
+        initial: "triage",
+        roles: { triage: { label: "Triage", provider: "codex", prompt_template: "triage", permission: "read" } },
+        transitions: { triage: { feature: "$complete", clarify: "$ask_user", error: "$halt" } },
+        modes: { task: { initial: "triage" } },
+      }),
+    );
+    const runner = {
+      runStep: async () => ({
+        stdout: 'MAESTRO_HANDOFF: {"event":"feature","rationale":"net-new flag"}',
+        stderr: "",
+        stdoutPath: null,
+        stderrPath: null,
+      }),
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "succeeded");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ── makeRoleNode: provider availability / fallback ───────────────────────────────
 
 const HANDOFF_OUT = { stdout: 'MAESTRO_HANDOFF: {"summary":"ok"}', stderr: "", stdoutPath: null, stderrPath: null };

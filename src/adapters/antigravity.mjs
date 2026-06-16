@@ -7,7 +7,12 @@ export function buildAntigravityCommand({
   permission = null,
   alias = null,
   commandName = "antigravity",
+  // Advisory only: tool policy is injected upstream as a prompt block (D2).
+  tools = null,
+  deny_tools = null,
 } = {}) {
+  void tools;
+  void deny_tools;
   const command = alias ?? commandName;
   const args = ["-p", prompt, "--output-format", "json"];
   if (role) {

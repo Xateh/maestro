@@ -33,6 +33,7 @@ import { buildEvaluationPayload } from "../evaluation.mjs";
 import { deriveScores, enforceGates } from "../scoring.mjs";
 import { parseUsage } from "../usage-parse.mjs";
 import { boundedTail } from "../bounded-tail.mjs";
+import { buildAdvisoryBlock, advisoryRemainder } from "../adapters/tool-flags.mjs";
 
 // SP3 kind:"command" output-tail / timeout fallbacks (no new default config key).
 const COMMAND_DEFAULT_TAIL_BYTES = 65_536;
@@ -105,9 +106,15 @@ function _stepOptions(roleDef, task) {
     ...(roleDef.model ? { model: roleDef.model } : {}),
     ...(roleDef.effort ? { effort: roleDef.effort } : {}),
     ...(roleDef.permission ? { permission: roleDef.permission } : {}),
+    ...(roleDef.tools ? { tools: roleDef.tools } : {}),
+    ...(roleDef.deny_tools ? { deny_tools: roleDef.deny_tools } : {}),
     ...(Number.isInteger(task.stream_tail_bytes) ? { streamTailBytes: task.stream_tail_bytes } : {}),
   };
 }
+
+// Provider classes whose tool policy is advisory-only — the deterministic Tool
+// Policy block is prepended to the prompt (adapters never see instructions, D2).
+const ADVISORY_PROVIDERS = new Set(["gemini", "copilot", "antigravity", "ollama"]);
 
 function _maestroEnv(task, role) {
   return {
@@ -163,6 +170,7 @@ export function makeRoleNode(roleDef, {
   workflow = null,
   stateName = null,
   resumeCompletedRoles = null,
+  advisoryEmitted = new Set(),
   ops = {},
 }) {
   const roleKey = roleDef.prompt_template ?? roleDef.label?.toLowerCase() ?? "executor";
@@ -822,12 +830,32 @@ export function makeRoleNode(roleDef, {
         }
       }
 
+      // Advisory Tool Policy block (D2): adapters never see role instructions,
+      // only the assembled prompt — so for advisory providers (and the codex
+      // advisory remainder) the block MUST be prepended here. Deduped per run.
+      let roleInstructions = await _roleInstructions(roleDef);
+      if (roleDef.tools || roleDef.deny_tools) {
+        let block = "";
+        if (ADVISORY_PROVIDERS.has(runProvider)) {
+          block = buildAdvisoryBlock(roleDef.tools, roleDef.deny_tools);
+        } else if (runProvider === "codex") {
+          block = advisoryRemainder(roleDef.tools, roleDef.deny_tools);
+        }
+        // Each role's own prompt is assembled fresh, so the block is prepended
+        // once per role (no in-prompt duplication). The per-run set records
+        // emitted policy texts for audit/perf bookkeeping (§8).
+        if (block) {
+          advisoryEmitted.add(block);
+          roleInstructions = roleInstructions ? `${block}\n\n${roleInstructions}` : block;
+        }
+      }
+
       const prompt = buildPromptFromHandoffs({
         role: roleKey,
         task: currentTask,
         priorHandoffs,
         handoffMode,
-        roleInstructions: await _roleInstructions(roleDef),
+        roleInstructions,
         outputSchema: resolveRoleSchema(roleDef).schema ?? null,
       });
 

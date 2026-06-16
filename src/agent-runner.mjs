@@ -175,6 +175,8 @@ export function buildAgentCommand({ provider, prompt, cwd, role, options = {}, p
       model: options.model,
       effort: options.effort ?? options.claudeEffort ?? options.codexEffort,
       permission: options.permission,
+      tools: options.tools ?? null,
+      deny_tools: options.deny_tools ?? null,
     });
   }
 

@@ -31,7 +31,7 @@ import { isSink } from "../state-machine.mjs";
  * @param {object}          opts.ops     - injected project-mode helpers (bound per call)
  * @returns {CompiledStateGraph}
  */
-export function buildGraph(workflow, config, { db, runner, ops = {}, entry = null, resumeCompletedRoles = null, availabilityProbe = null }) {
+export function buildGraph(workflow, config, { db, runner, ops = {}, entry = null, resumeCompletedRoles = null, availabilityProbe = null, advisoryEmitted = new Set() }) {
   const graph = new StateGraph(MaestroState);
 
   // ── add one node per workflow role ────────────────────────────────────────
@@ -48,6 +48,7 @@ export function buildGraph(workflow, config, { db, runner, ops = {}, entry = nul
       workflow,
       stateName,
       resumeCompletedRoles,
+      advisoryEmitted,
       ops,
     });
     graph.addNode(stateName, node);

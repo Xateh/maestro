@@ -19,6 +19,7 @@ import { resolveInitialState, isTerminalAfterState } from "../state-machine.mjs"
 import { findCycles, validateWorkflow } from "../workflow-validate.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
 import { buildRunManifest, readMaestroVersion } from "../run-manifest.mjs";
+import { loadRole, composeRole } from "../setup/role-loader.mjs";
 import { REVIEW_MAX_CONTINUATIONS, skippedReview } from "../markers.mjs";
 import { emitOtelStageEvent, getStageEvents } from "../stage-events.mjs";
 
@@ -350,6 +351,33 @@ export async function runLangGraphTask(taskId, {
     return { task: blockedTask };
   }
 
+  // ── MRC: resolve source-bearing roles + compose BEFORE manifest/graph ─────
+  // buildGraph iterates workflow.roles synchronously; the loader is async + does
+  // file I/O, so resolution runs here once. No-source roles are untouched (the
+  // byte-for-byte invariant). A source error surfaces as a typed waiting_user
+  // blocker (like provider-availability failures) rather than a throw.
+  {
+    const taskCwd = task.cwd ? path.resolve(task.cwd) : process.cwd();
+    const blockers = [];
+    for (const [stateName, role] of Object.entries(workflow.roles ?? {})) {
+      // `source` is an MRC unit ref ONLY when it is a STRING (D5). A legacy
+      // import provenance OBJECT source is left untouched.
+      if (typeof role?.source !== "string") continue;
+      const loaded = await loadRole(role.source, { cwd: taskCwd });
+      if (!loaded.ok) {
+        blockers.push({ code: loaded.error.code, role: stateName, source: loaded.error.source, message: loaded.error.message });
+        continue;
+      }
+      workflow.roles[stateName] = composeRole(stateName, role, loaded.roleDef);
+    }
+    if (blockers.length > 0) {
+      await db.updateTask(taskId, { status: "waiting_user", active_step: null, blockers });
+      const blockedTask = await db.getTask(taskId);
+      await taskStore.updateTask(taskId, _mirrorPatch(blockedTask));
+      return { task: blockedTask };
+    }
+  }
+
   // ── reproducibility: snapshot run inputs (SP6c) ───────────────────────────
   // Write a self-contained run-manifest.json (resolved workflow snapshot +
   // allow-listed task inputs + git start_head + maestro version) so the run can
@@ -436,6 +464,7 @@ export async function runLangGraphTask(taskId, {
     entry: resolveInitialState(workflow, { mode: task.mode }),
     resumeCompletedRoles: new Set(priorHandoffs.map((h) => h.role)),
     availabilityProbe,
+    advisoryEmitted: new Set(),
   });
 
   // ── run the graph ─────────────────────────────────────────────────────────
@@ -477,6 +506,11 @@ export async function runLangGraphTask(taskId, {
   const endTask = await db.getTask(taskId);
   const endEvent = finalState?.event;
   const endRole = finalState?.currentState;
+  // A terminal role can reach the $complete sink via a custom (agent-chosen)
+  // event, not only the engine-default "done" (e.g. triage: feature→$complete).
+  // Treat landing on $complete as completion so such runs finalize as succeeded
+  // instead of stranding "running" after the sink.
+  const reachedComplete = workflow?.transitions?.[endRole]?.[endEvent] === "$complete";
 
   // reviewer "done": apply full review outcome logic
   if (endEvent === "done" && endRole === "reviewer") {
@@ -522,8 +556,8 @@ export async function runLangGraphTask(taskId, {
     return { task: current };
   }
 
-  // generic "done" without reviewer (shouldn't normally occur in task mode)
-  if (endEvent === "done") {
+  // generic "done" without reviewer, or a custom event that routed to $complete
+  if (endEvent === "done" || reachedComplete) {
     const reviewSkipped = endTask.review_enabled === false ? skippedReview() : endTask.review;
     let updated = await db.updateTask(taskId, {
       status: "succeeded",

@@ -1,3 +1,5 @@
+import { claudeToolArgs } from "./tool-flags.mjs";
+
 export function buildClaudeCommand({
   prompt,
   cwd,
@@ -7,6 +9,8 @@ export function buildClaudeCommand({
   permission = null,
   alias = null,
   commandName = "claude",
+  tools = null,
+  deny_tools = null,
 } = {}) {
   const command = alias ?? commandName;
   // Write-permission roles can opt into an autonomous permission mode via
@@ -34,6 +38,8 @@ export function buildClaudeCommand({
   if (effort) {
     args.push("--effort", effort);
   }
+  // §5.1 hard enforcement: declared allow/deny tool policy.
+  args.push(...claudeToolArgs(tools, deny_tools));
   return {
     command,
     args,

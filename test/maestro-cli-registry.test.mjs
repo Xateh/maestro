@@ -84,6 +84,22 @@ test("setup tracker subcommand is registered", () => {
   assert.ok(tracker, "setup node contains a tracker subcommand");
 });
 
+test("role subcommand is registered with list/show/lint", () => {
+  const roleNode = COMMAND_TREE.subcommands.find((c) => c.name === "role");
+  assert.ok(roleNode);
+  const subs = (roleNode.subcommands ?? []).map((s) => s.name);
+  for (const s of ["list", "show", "lint"]) assert.ok(subs.includes(s), `missing role ${s}`);
+  const resolved = resolveCommandPath(["role", "show"]);
+  assert.equal(resolved.unknown, null);
+  assert.equal(resolved.matched.at(-1).name, "show");
+});
+
+test("import-agent is a top-level local command", () => {
+  assert.ok(LOCAL_COMMAND_NAMES.includes("import-agent"));
+  const resolved = resolveCommandPath(["import-agent"]);
+  assert.equal(resolved.unknown, null);
+});
+
 test("routeCli matrix", () => {
   const bare = routeCli([]);
   assert.equal(bare.kind, "help");
@@ -123,7 +139,7 @@ test("registry local names stay in sync with known dispatch set", () => {
   // Drift guard: every name the registry says is local must be unique.
   assert.equal(new Set(LOCAL_COMMAND_NAMES).size, LOCAL_COMMAND_NAMES.length);
   for (const expected of ["project", "task", "run-task", "status", "inspect", "events", "artifacts", "rerun", "compare", "tui",
-    "setup", "workflow", "export", "import", "init"]) {
+    "setup", "workflow", "export", "import", "init", "role", "import-agent"]) {
     assert.ok(LOCAL_COMMAND_NAMES.includes(expected), `missing local command ${expected}`);
   }
   assert.ok(!LOCAL_COMMAND_NAMES.includes("serve"), "serve must not be a local command");
