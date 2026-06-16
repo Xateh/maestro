@@ -74,6 +74,16 @@ test("pid record round-trips and is 0600", async () => {
   assert.equal(st.mode & 0o777, 0o600);
 });
 
+test("removeFile deletes a file and is a no-op when absent", async () => {
+  const root = await tmpRoot();
+  await ensureServicesDir(root);
+  await writeDefinition(root, "web", { slug: "WEB" });
+  const p = path.join(root, "services", "web.json");
+  await removeFile(p);
+  assert.equal(await readDefinition(root, "web"), null);
+  await removeFile(p); // no throw on missing
+});
+
 test("readDefinition refuses a symlinked definition", async () => {
   const root = await tmpRoot();
   await ensureServicesDir(root);

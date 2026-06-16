@@ -46,14 +46,7 @@ export async function ensureServicesDir(stateRoot) {
 // Open a service-owned file without following symlinks and verify the opened
 // fd is a regular file owned by us (spec C2/H2). Returns a FileHandle.
 async function openOwned(filePath, flags) {
-  let fh;
-  try {
-    fh = await fs.open(filePath, flags | fsConstants.constants.O_NOFOLLOW, 0o600);
-  } catch (error) {
-    if (error.code === "ELOOP" || error.code === "ENOENT") throw error;
-    // On some platforms O_NOFOLLOW on a symlink raises ELOOP; re-throw as-is.
-    throw error;
-  }
+  const fh = await fs.open(filePath, flags | fsConstants.constants.O_NOFOLLOW, 0o600);
   try {
     const st = await fh.stat();
     if (!st.isFile()) {
@@ -69,11 +62,6 @@ async function openOwned(filePath, flags) {
     return fh;
   } catch (error) {
     await fh.close().catch(() => {});
-    if (error.code === "ELOOP") {
-      const e = new Error(`service_file_symlink: ${filePath}`);
-      e.code = "service_file_symlink";
-      throw e;
-    }
     throw error;
   }
 }
@@ -89,7 +77,8 @@ async function writeOwnedJson(filePath, value) {
   } finally {
     await fh.close();
   }
-  await fs.rename(tmp, filePath);
+  try { await fs.rename(tmp, filePath); }
+  catch (error) { await fs.rm(tmp, { force: true }); throw error; }
 }
 
 async function readOwnedJson(filePath) {
@@ -98,12 +87,7 @@ async function readOwnedJson(filePath) {
     fh = await openOwned(filePath, fsConstants.constants.O_RDONLY);
   } catch (error) {
     if (error.code === "ENOENT") return null;
-    // Re-map ELOOP (symlink with O_NOFOLLOW) to our sentinel code.
-    if (error.code === "ELOOP") {
-      const e = new Error(`service_file_symlink: ${filePath}`);
-      e.code = "service_file_symlink";
-      throw e;
-    }
+    if (error.code === "ELOOP") { const e = new Error(`service_file_symlink: ${filePath}`); e.code = "service_file_symlink"; throw e; }
     throw error;
   }
   try {
@@ -138,15 +122,16 @@ export async function listDefinitions(stateRoot) {
   const dir = servicesDir(stateRoot);
   let entries;
   try {
-    entries = await fs.readdir(dir);
+    entries = await fs.readdir(dir, { withFileTypes: true });
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
   }
   const names = [];
   for (const entry of entries) {
-    if (!entry.endsWith(".json")) continue;
-    const stem = entry.slice(0, -5);
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith(".json")) continue;
+    const stem = entry.name.slice(0, -5);
     if (WORKFLOW_NAME_RE.test(stem)) names.push(stem);
   }
   return names.sort();
