@@ -48,6 +48,13 @@ async function runShellHook({ script, cwd, timeoutMs, logger, hookName, fatal })
     const timer = setTimeout(() => {
       settled = true;
       child.kill("SIGTERM");
+      // Escalate to SIGKILL if the hook ignores SIGTERM; unref so the grace
+      // timer never keeps the event loop alive on its own. (F7)
+      const killTimer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+      }, 2_000);
+      killTimer?.unref?.();
+      child.on("exit", () => { try { clearTimeout(killTimer); } catch {} });
       const error = workspaceError("hook_timeout", `${hookName} timed out after ${timeoutMs}ms`);
       logger.error("hook_timeout", { hook: hookName, cwd, timeout_ms: timeoutMs });
       if (fatal) reject(error);

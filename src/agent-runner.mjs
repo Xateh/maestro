@@ -11,7 +11,11 @@ import { buildOllamaCommand } from "./adapters/ollama.mjs";
 import { resolveAdapter } from "./adapters/registry.mjs";
 import { resolveAlias } from "./providers.mjs";
 import { nullLogger } from "./logger.mjs";
-import { appendBoundedTail } from "./bounded-tail.mjs";
+import { createBoundedTail } from "./bounded-tail.mjs";
+import { outputReportsSuccess } from "./markers.mjs";
+
+// Grace after SIGTERM before escalating to SIGKILL for a child that ignores it.
+const KILL_GRACE_MS = 2_000;
 
 const SAFE_SHELL_COMMAND = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
@@ -280,28 +284,35 @@ export class TerminalAgentRunner {
           },
           stdio: [stdinBytes > 0 ? "pipe" : "ignore", "pipe", "pipe"],
         });
-        let stdout = "";
-        let stderr = "";
+        const out = createBoundedTail(streamTailBytes);
+        const err = createBoundedTail(streamTailBytes);
         let settled = false;
         const timer = this.isTimeoutEnabled()
           ? this.timers.setTimeout(() => {
             settled = true;
             child.kill("SIGTERM");
+            // Escalate to SIGKILL if the child ignores SIGTERM; unref so the
+            // grace timer never keeps the event loop alive on its own. (F7)
+            const killTimer = this.timers.setTimeout(() => {
+              try { child.kill("SIGKILL"); } catch {}
+            }, KILL_GRACE_MS);
+            killTimer?.unref?.();
+            child.on("exit", () => { try { this.timers.clearTimeout(killTimer); } catch {} });
             const error = new Error(`agent_timeout: ${provider}:${role} exceeded ${this.timeoutMs}ms`);
             error.code = "agent_timeout";
-            error.stdout = stdout;
-            error.stderr = stderr;
+            error.stdout = out.value();
+            error.stderr = err.value();
             reject(error);
           }, this.timeoutMs)
           : null;
 
         child.stdout.on("data", (chunk) => {
           stdoutStream.write(chunk);
-          stdout = appendBoundedTail(stdout, chunk, streamTailBytes);
+          out.push(chunk);
         });
         child.stderr.on("data", (chunk) => {
           stderrStream.write(chunk);
-          stderr = appendBoundedTail(stderr, chunk, streamTailBytes);
+          err.push(chunk);
         });
         if (stdinBytes > 0 && child.stdin) {
           child.stdin.on("error", () => {});
@@ -311,8 +322,8 @@ export class TerminalAgentRunner {
           if (settled) return;
           settled = true;
           if (timer) this.timers.clearTimeout(timer);
-          error.stdout = stdout;
-          error.stderr = stderr;
+          error.stdout = out.value();
+          error.stderr = err.value();
           reject(error);
         });
         child.on("exit", (code, signal) => {
@@ -320,15 +331,22 @@ export class TerminalAgentRunner {
           settled = true;
           if (timer) this.timers.clearTimeout(timer);
           if (code === 0) {
-            resolve({ stdout, stderr, code, signal });
+            resolve({ stdout: out.value(), stderr: err.value(), code, signal });
+            return;
+          }
+          // Salvage a non-zero exit whose transcript nonetheless ends in a
+          // terminal success result (e.g. claude exits 1 after gated tool
+          // denials but completed the task and emitted its handoff).
+          if (outputReportsSuccess(out.value())) {
+            resolve({ stdout: out.value(), stderr: err.value(), code, signal });
             return;
           }
           const error = new Error(`agent_failed: ${provider}:${role} exited with ${code ?? signal}`);
           error.code = "agent_failed";
           error.exitCode = code;
           error.signal = signal;
-          error.stdout = stdout;
-          error.stderr = stderr;
+          error.stdout = out.value();
+          error.stderr = err.value();
           reject(error);
         });
       });

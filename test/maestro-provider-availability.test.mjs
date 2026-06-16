@@ -5,7 +5,7 @@ import {
   resolveRoleProvider,
   describeAvailabilityFailure,
 } from "../src/provider-availability.mjs";
-import { isUsageLimitFailure } from "../src/markers.mjs";
+import { isUsageLimitFailure, isContextWindowFailure, outputReportsSuccess } from "../src/markers.mjs";
 import { buildUnblockOptions } from "../src/cli/action-requests.mjs";
 import { planRoleFallbacks } from "../src/setup/local.mjs";
 import { validateWorkflow } from "../src/workflow-validate.mjs";
@@ -173,6 +173,36 @@ test("isUsageLimitFailure flags rate/usage/quota/credit errors, not generic ones
   }
   assert.equal(isUsageLimitFailure({ message: "429 rate limit" }), true);
   assert.equal(isUsageLimitFailure({}), false);
+});
+
+test("failure classifiers ignore agent CONTENT in stdout, read only the error channel", () => {
+  // An agent that *discusses* rate limits / context windows (e.g. auditing those
+  // subsystems) emits the phrases as assistant content / a success result —
+  // these must NOT trip usage or context-window retries.
+  const auditStdout = [
+    `{"type":"assistant","message":{"content":[{"type":"text","text":"F9 rate limiter returns 429 too many requests"}]}}`,
+    `{"type":"result","subtype":"success","is_error":false,"result":"audited the context window and rate limit handling"}`,
+  ].join("\n");
+  assert.equal(isUsageLimitFailure({ stdout: auditStdout }), false);
+  assert.equal(isContextWindowFailure({ stdout: auditStdout }), false);
+
+  // But a genuine provider error surfaced as an is_error:true result line (or on
+  // stderr / the thrown message) is still flagged.
+  const errStdout = `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"rate limit exceeded"}`;
+  assert.equal(isUsageLimitFailure({ stdout: errStdout }), true);
+  assert.equal(isContextWindowFailure({ stdout: `{"is_error":true,"error":"input is too long"}` }), true);
+});
+
+test("outputReportsSuccess detects a terminal stream-json success result", () => {
+  const ok = [
+    `{"type":"assistant","message":{"content":[]}}`,
+    `{"type":"result","subtype":"success","is_error":false,"result":"done"}`,
+  ].join("\n");
+  assert.equal(outputReportsSuccess(ok), true);
+  assert.equal(outputReportsSuccess(`{"type":"result","subtype":"error_during_execution","is_error":true}`), false);
+  assert.equal(outputReportsSuccess("plain text, not json"), false);
+  assert.equal(outputReportsSuccess(""), false);
+  assert.equal(outputReportsSuccess(null), false);
 });
 
 test("buildUnblockOptions surfaces switch/skip for availability blockers", () => {

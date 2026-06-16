@@ -6,9 +6,11 @@
 
 import { spawn } from "node:child_process";
 
-import { appendBoundedTail } from "./bounded-tail.mjs";
+import { createBoundedTail } from "./bounded-tail.mjs";
 
 const DEFAULT_TAIL_BYTES = 65_536;
+// Grace after SIGTERM before escalating to SIGKILL for a child that ignores it.
+const KILL_GRACE_MS = 2_000;
 
 /**
  * Run a single shell command, capturing a bounded stdout/stderr tail.
@@ -53,29 +55,32 @@ export function commandRunner({
       return;
     }
 
-    let stdout = "";
-    let stderr = "";
+    const out = createBoundedTail(maxTailBytes);
+    const err = createBoundedTail(maxTailBytes);
     let settled = false;
 
     const timer = timers.setTimeout(() => {
       if (settled) return;
       settled = true;
       child.kill("SIGTERM");
+      // Escalate to SIGKILL if the child ignores SIGTERM; unref so the grace
+      // timer never keeps the event loop alive on its own. (F7)
+      const killTimer = timers.setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+      }, KILL_GRACE_MS);
+      killTimer?.unref?.();
+      child.on("exit", () => { try { timers.clearTimeout(killTimer); } catch {} });
       resolve({
         exit_code: null,
         signal: "SIGTERM",
-        stdout,
-        stderr,
+        stdout: out.value(),
+        stderr: err.value(),
         timed_out: true,
       });
     }, timeoutMs);
 
-    child.stdout?.on("data", (chunk) => {
-      stdout = appendBoundedTail(stdout, chunk, maxTailBytes);
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr = appendBoundedTail(stderr, chunk, maxTailBytes);
-    });
+    child.stdout?.on("data", (chunk) => { out.push(chunk); });
+    child.stderr?.on("data", (chunk) => { err.push(chunk); });
 
     child.on("error", (error) => {
       if (settled) return;
@@ -84,8 +89,8 @@ export function commandRunner({
       resolve({
         exit_code: 127,
         signal: null,
-        stdout,
-        stderr: stderr ? `${stderr}\n${error.message}` : error.message,
+        stdout: out.value(),
+        stderr: err.value() ? `${err.value()}\n${error.message}` : error.message,
         timed_out: false,
         spawn_error: true,
       });
@@ -98,8 +103,8 @@ export function commandRunner({
       resolve({
         exit_code: code,
         signal: signal ?? null,
-        stdout,
-        stderr,
+        stdout: out.value(),
+        stderr: err.value(),
         timed_out: false,
       });
     });

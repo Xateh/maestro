@@ -10,6 +10,42 @@ export const QUESTION_PREFIX = "MAESTRO_QUESTION:";
 export const REVIEW_PREFIX = "MAESTRO_REVIEW:";
 export const ACTION_REQUEST_PREFIX = "MAESTRO_ACTION_REQUEST:";
 
+// ─── error-channel extraction ─────────────────────────────────────────────────
+// Failure classifiers must read machine-emitted error text, NOT the agent's own
+// content. An agent that *discusses* "rate limits" or "context windows" (e.g. a
+// security audit of those very subsystems) would otherwise false-trigger usage /
+// context retries. So: take error.message + error.stderr in full, but from
+// error.stdout include ONLY stream-json error lines — an error event
+// (`"type":"error"`, e.g. codex) or a result flagged `"is_error":true` (claude)
+// — never assistant/user content or a `is_error:false` success result.
+function errorChannelText(error) {
+  const parts = [error?.message, error?.stderr].filter(Boolean);
+  const stdout = error?.stdout;
+  if (typeof stdout === "string" && stdout) {
+    for (const line of stdout.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t.startsWith("{")) continue;
+      if (/"type"\s*:\s*"error"/.test(t) || /"is_error"\s*:\s*true/.test(t)) parts.push(t);
+    }
+  }
+  return parts.join("\n");
+}
+
+// True when a (newline-delimited) stream-json transcript ends in a terminal
+// success result. Lets a runner salvage a non-zero process exit whose agent
+// nonetheless completed cleanly (e.g. claude exits 1 after gated tool denials).
+export function outputReportsSuccess(text) {
+  if (typeof text !== "string" || !text) return false;
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    if (/"type"\s*:\s*"result"/.test(t) && /"subtype"\s*:\s*"success"/.test(t) && /"is_error"\s*:\s*false/.test(t)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // ─── context-window failure ───────────────────────────────────────────────────
 
 const CONTEXT_WINDOW_PATTERNS = [
@@ -23,7 +59,7 @@ const CONTEXT_WINDOW_PATTERNS = [
 ];
 
 export function isContextWindowFailure(error) {
-  const text = [error?.message, error?.stdout, error?.stderr].filter(Boolean).join("\n");
+  const text = errorChannelText(error);
   return CONTEXT_WINDOW_PATTERNS.some((p) => p.test(text));
 }
 
@@ -42,7 +78,7 @@ const USAGE_LIMIT_PATTERNS = [
 ];
 
 export function isUsageLimitFailure(error) {
-  const text = [error?.message, error?.stdout, error?.stderr].filter(Boolean).join("\n");
+  const text = errorChannelText(error);
   return USAGE_LIMIT_PATTERNS.some((p) => p.test(text));
 }
 
@@ -81,6 +117,15 @@ export function parseAgentQuestion(output = "") {
 }
 
 // ─── MAESTRO_HANDOFF ────────────────────────────────────────────────────────
+//
+// Handoff and question parsing are FIRST-wins (the agent's first declared
+// transition intent), whereas reviewer parsing is LAST-wins (parseReviewerOutput
+// uses payloads.at(-1)) because reviewers legitimately emit revised drafts and
+// the final verdict is the settled one. This asymmetry is deliberate, not a bug:
+// an executor that emits multiple handoffs is malformed, and committing to its
+// first stated transition is the safer routing choice. (F12: documented, not
+// changed — flipping the routing-critical first-match recursion isn't worth the
+// risk for a case that shouldn't occur.)
 
 function _handoffFromText(value = "") {
   for (const line of String(value).split(/\r?\n/)) {
