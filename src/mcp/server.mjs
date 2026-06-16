@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { openStore } from "../db/store.mjs";
-import { assertInsideDir, listDir, tailFile } from "../fs-safe.mjs";
+import { assertInsideDir, assertInsideDirReal, isInsideDirReal, listDir, tailFile } from "../fs-safe.mjs";
 import { WORKFLOW_NAME_RE } from "../task-store.mjs";
 
 // ── Root discovery ────────────────────────────────────────────────────────────
@@ -160,7 +160,11 @@ async function showTask({ id } = {}) {
       const files = await listDir(runDir);
       for (const f of files) {
         if (f.endsWith(".stdout.log")) {
-          logs[f.replace(".stdout.log", "")] = await tailFile(path.join(runDir, f));
+          const full = path.join(runDir, f);
+          // Skip entries that resolve outside RUNS_DIR — a planted symlink
+          // must not exfiltrate arbitrary files through the read tools. (F3)
+          if (!(await isInsideDirReal(RUNS_DIR, full))) continue;
+          logs[f.replace(".stdout.log", "")] = await tailFile(full);
         }
       }
       return { task, handoffs, logs, engine: "langgraph" };
@@ -168,7 +172,7 @@ async function showTask({ id } = {}) {
   }
   // Legacy path: read from JSON files
   const taskPath = path.join(TASKS_DIR, `${id}.json`);
-  assertInsideDir(TASKS_DIR, taskPath);
+  await assertInsideDirReal(TASKS_DIR, taskPath);
   const task = await readJSON(taskPath);
   const runDir = path.join(RUNS_DIR, id);
   assertInsideDir(RUNS_DIR, runDir);
@@ -176,13 +180,17 @@ async function showTask({ id } = {}) {
   const handoffs = {};
   const logs = {};
   for (const f of files) {
+    const full = path.join(runDir, f);
+    // Skip entries that resolve outside RUNS_DIR — a planted symlink must not
+    // exfiltrate arbitrary files through the read tools. (F3)
+    if (!(await isInsideDirReal(RUNS_DIR, full))) continue;
     if (f.startsWith("handoff.") && f.endsWith(".json")) {
       const role = f.replace(/^handoff\.|\.json$/g, "");
-      handoffs[role] = await readJSON(path.join(runDir, f)).catch(() => null);
+      handoffs[role] = await readJSON(full).catch(() => null);
     }
     if (f.endsWith(".stdout.log")) {
       const key = f.replace(".stdout.log", "");
-      logs[key] = await tailFile(path.join(runDir, f));
+      logs[key] = await tailFile(full);
     }
   }
   return { task, handoffs, logs };
@@ -213,6 +221,9 @@ async function showRun({ id } = {}) {
   const result = { id, files: {} };
   for (const f of files) {
     const full = path.join(runDir, f);
+    // Skip entries that resolve outside RUNS_DIR — a planted symlink must not
+    // exfiltrate arbitrary files through the read tools. (F3)
+    if (!(await isInsideDirReal(RUNS_DIR, full))) continue;
     if (f.endsWith(".json")) {
       result.files[f] = await readJSON(full).catch(() => null);
     } else if (f.endsWith(".log")) {

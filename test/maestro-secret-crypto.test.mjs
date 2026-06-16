@@ -53,3 +53,16 @@ test("getPassphrase throws when unattended and no env passphrase", async () => {
     /secret_passphrase_required/,
   );
 });
+
+test("decryptSecrets rejects out-of-range KDF params from a tampered envelope (F11)", () => {
+  const env = encryptSecrets({ TOKEN: "abc" }, "pw");
+  const tampered = { ...env, kdfParams: { ...env.kdfParams, N: 1 << 30 } };
+  assert.throws(() => decryptSecrets(tampered, "pw"), /secret_envelope_unsupported/);
+  // A non-integer / non-positive param is rejected too.
+  assert.throws(
+    () => decryptSecrets({ ...env, kdfParams: { ...env.kdfParams, r: 0 } }, "pw"),
+    /secret_envelope_unsupported/,
+  );
+  // The untampered envelope still round-trips.
+  assert.deepEqual(decryptSecrets(env, "pw"), { TOKEN: "abc" });
+});

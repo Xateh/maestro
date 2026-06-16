@@ -57,6 +57,14 @@ export function decryptSecrets(envelope, passphrase) {
   if (typeof passphrase !== "string" || passphrase.length === 0) {
     throw new Error("secret_passphrase_required");
   }
+  // Bound KDF params read from the (possibly tampered) envelope before they
+  // reach scrypt, so a hostile N/r/p can't drive a CPU/memory DoS on decrypt.
+  // The legitimate writer uses N=32768/r=8/p=1; these caps leave headroom. (F11)
+  const kp = envelope.kdfParams ?? {};
+  const inRange = (value, max) => Number.isInteger(value) && value > 0 && value <= max;
+  if (!inRange(kp.N, 1 << 20) || !inRange(kp.r, 32) || !inRange(kp.p, 16)) {
+    throw new Error("secret_envelope_unsupported");
+  }
   try {
     const params = {
       N: envelope.kdfParams.N,

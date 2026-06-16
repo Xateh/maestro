@@ -114,6 +114,10 @@ export async function loadLocalSecrets(stateDir, env = process.env, opts = {}) {
   const applied = [];
   for (const [key, value] of Object.entries(secrets)) {
     if (typeof value !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    // Never promote execution-subverting vars (PATH, LD_*, NODE_OPTIONS, …) from
+    // the secret store into process.env — same env contract honored for imported
+    // provider env and agent action-request env. (F10)
+    if (ENV_KEY_DENYLIST.test(key)) continue;
     // Only fill truly-unset keys: an explicit empty string is a deliberate
     // user override (e.g. KEY="" to disable a stored secret for one run).
     if (env[key] === undefined) {

@@ -53,7 +53,11 @@ function sendJson(response, status, body, extraHeaders = {}) {
 }
 
 function buildDashboardHtml(snapshot) {
-  const initialJson = JSON.stringify(snapshot).replace(/<\/script>/g, "<\\/script>");
+  // Escape every "<" as a JS unicode escape so attacker-influenced snapshot
+  // content (e.g. issue titles/descriptions) can never break out of this
+  // <script> block — neutralizes "</script>" in ANY case as well as "<!--".
+  // (A case-sensitive "</script>" replace missed variants like "</Script>".) (F1)
+  const initialJson = JSON.stringify(snapshot).replace(/</g, "\\u003c");
 
   return `<!doctype html>
 <html lang="en">
