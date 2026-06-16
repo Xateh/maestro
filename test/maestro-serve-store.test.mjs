@@ -13,6 +13,10 @@ test("assertValidServiceName accepts simple names, rejects traversal/control/emp
   }
 });
 
+test("servicePaths rejects an invalid name before building paths", () => {
+  assert.throws(() => servicePaths("/tmp/state", "../evil"), /invalid_service_name/);
+});
+
 test("servicePaths derives def/pid/log/state under <state>/services and stays inside it", () => {
   const root = "/tmp/state";
   const p = servicePaths(root, "web");
