@@ -4,6 +4,7 @@ import path from "node:path";
 import YAML from "yaml";
 
 import { deepMergeConfig } from "./config-local.mjs";
+import { assertInsideDir } from "./fs-safe.mjs";
 
 export const DEFAULT_LOCAL_STATE_DIR = ".maestro";
 
@@ -732,6 +733,50 @@ export class LocalTaskStore {
   }
 
   async readWorkflow(name = DEFAULT_WORKFLOW_NAME) {
+    const workflow = await this._resolveWorkflowByName(name);
+    return workflow ? await this._expandSchemaRefs(workflow) : workflow;
+  }
+
+  // Expand each role's `output_schema_ref` (a relative path inside the state
+  // dir) into an inline `output_schema` object, so the runtime + validator —
+  // which only act on inline/named schemas — actually inject and enforce it.
+  // Without this the ref was a silent no-op (F4). Inline schemas win, so a role
+  // that already has an inline object is left untouched. Unreadable/escaping
+  // refs warn and are skipped (total, like the rest of workflow loading).
+  async _expandSchemaRefs(workflow) {
+    if (!workflow?.roles || typeof workflow.roles !== "object") return workflow;
+    for (const [roleName, role] of Object.entries(workflow.roles)) {
+      if (!role || typeof role !== "object") continue;
+      const ref = role.output_schema_ref;
+      if (typeof ref !== "string" || ref.length === 0) continue;
+      const inline = role.output_schema;
+      if (inline && typeof inline === "object" && !Array.isArray(inline)) continue;
+      if (path.isAbsolute(ref)) {
+        this.onWarn(`output_schema_ref_invalid: role "${roleName}" ref must be relative, got ${ref}`);
+        continue;
+      }
+      const refPath = path.resolve(this.root, ref);
+      try {
+        assertInsideDir(this.root, refPath);
+      } catch {
+        this.onWarn(`output_schema_ref_escape: role "${roleName}" ref ${ref} escapes the state dir`);
+        continue;
+      }
+      try {
+        const schema = JSON.parse(await fs.readFile(refPath, "utf8"));
+        if (schema && typeof schema === "object" && !Array.isArray(schema)) {
+          role.output_schema = schema;
+        } else {
+          this.onWarn(`output_schema_ref_invalid: role "${roleName}" ref ${ref} is not a schema object`);
+        }
+      } catch (error) {
+        this.onWarn(`output_schema_ref_unreadable: role "${roleName}" ref ${ref}: ${error.message}`);
+      }
+    }
+    return workflow;
+  }
+
+  async _resolveWorkflowByName(name = DEFAULT_WORKFLOW_NAME) {
     if (!isValidWorkflowName(name)) {
       throw new Error(`invalid_workflow_name: ${name}`);
     }

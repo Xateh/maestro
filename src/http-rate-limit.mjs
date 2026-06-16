@@ -22,6 +22,21 @@ export function createRateLimiter({ now = Date.now, maxBuckets = DEFAULT_MAX_BUC
     }
   }
 
+  // Last-resort bound: under a flood of distinct, all-active clients no bucket
+  // is ever full, so sweep() frees nothing. Evict the least-recently-used one
+  // so the map can never grow past maxBuckets. (F9)
+  function evictOldest() {
+    let oldestKey = null;
+    let oldestTs = Number.POSITIVE_INFINITY;
+    for (const [key, bucket] of buckets) {
+      if (bucket.updatedAt < oldestTs) {
+        oldestTs = bucket.updatedAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey !== null) buckets.delete(oldestKey);
+  }
+
   /**
    * Consume one token for `key` under the given limits.
    * @returns {{ allowed: boolean, retryAfterMs: number }}
@@ -30,7 +45,10 @@ export function createRateLimiter({ now = Date.now, maxBuckets = DEFAULT_MAX_BUC
     const ts = now();
     let bucket = buckets.get(key);
     if (!bucket) {
-      if (buckets.size >= maxBuckets) sweep();
+      if (buckets.size >= maxBuckets) {
+        sweep();
+        if (buckets.size >= maxBuckets) evictOldest();
+      }
       bucket = { tokens: capacity, updatedAt: ts, capacity };
       buckets.set(key, bucket);
     }

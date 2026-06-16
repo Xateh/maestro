@@ -77,6 +77,10 @@ export class SqliteTaskStore {
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this._db = new DatabaseSync(dbPath);
+    // Bound cross-process write contention on a shared db file: WAL lets a
+    // reader and writer coexist; busy_timeout retries for a window instead of
+    // throwing SQLITE_BUSY immediately. (F6)
+    this._db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
     this._db.exec(SCHEMA);
     this._migrate();
   }
@@ -111,8 +115,12 @@ export class SqliteTaskStore {
    * (current) => patchObject. Returns the updated task.
    */
   async updateTask(id, patchOrFn) {
-    const current = await this.getTask(id);
-    if (!current) throw new Error(`task_not_found: ${id}`);
+    // Read synchronously (no await between read and write) so a concurrent
+    // updateTask on the same id cannot interleave at an await and drop one
+    // side's patch — read→merge→write is a single microtask turn. (F5)
+    const row = this._db.prepare("SELECT data FROM tasks WHERE id = ?").get(id);
+    if (!row) throw new Error(`task_not_found: ${id}`);
+    const current = JSON.parse(row.data);
     const now = new Date().toISOString();
     const patch = typeof patchOrFn === "function" ? patchOrFn(current) : patchOrFn;
     const updated = { ...current, ...patch, updated_at: now };

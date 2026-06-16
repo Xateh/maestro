@@ -141,3 +141,14 @@ test("MAESTRO_HTTP_RATELIMIT=off disables limiting", async () => {
     else process.env.MAESTRO_HTTP_RATELIMIT = prev;
   }
 });
+
+test("rate limiter never exceeds maxBuckets under a flood of distinct active clients (F9)", () => {
+  let clock = 1000;
+  const limiter = createRateLimiter({ now: () => clock++, maxBuckets: 8 });
+  // 100 distinct keys, each consuming a token so no bucket ever refills to full
+  // (sweep frees nothing) — LRU eviction must still bound the map.
+  for (let i = 0; i < 100; i++) {
+    limiter.check(`ip-${i}:read`, { capacity: 1, refillPerSec: 0 });
+  }
+  assert.ok(limiter.size <= 8, `size ${limiter.size} must stay <= maxBuckets`);
+});

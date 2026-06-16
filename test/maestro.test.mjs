@@ -686,6 +686,42 @@ test("root gitignore ignores Maestro runtime and worktree state", async () => {
   assert.match(ignore, /^\.maestro\/$/m);
 });
 
+test("readWorkflow expands output_schema_ref into an inline schema (F4)", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: () => {} });
+    await mkdir(store.root, { recursive: true });
+    const schema = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } } };
+    await writeFile(path.join(store.root, "custom-schema.json"), JSON.stringify(schema), "utf8");
+    await writeFile(store.workflowPath, JSON.stringify({
+      version: 2,
+      initial: "x",
+      roles: { x: { provider: "claude", output_schema_ref: "custom-schema.json" } },
+      transitions: { x: { done: "$complete" } },
+    }), "utf8");
+
+    const wf = await store.readWorkflow();
+    assert.deepEqual(wf.roles.x.output_schema, schema);
+  });
+});
+
+test("readWorkflow skips an output_schema_ref that escapes the state dir (F4)", async () => {
+  await withTempDir(async (dir) => {
+    const warnings = [];
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: (m) => warnings.push(m) });
+    await mkdir(store.root, { recursive: true });
+    await writeFile(store.workflowPath, JSON.stringify({
+      version: 2,
+      initial: "x",
+      roles: { x: { provider: "claude", output_schema_ref: "../../../etc/passwd" } },
+      transitions: { x: { done: "$complete" } },
+    }), "utf8");
+
+    const wf = await store.readWorkflow();
+    assert.equal(wf.roles.x.output_schema, undefined);
+    assert.ok(warnings.some((w) => /output_schema_ref_escape/.test(w)), warnings.join("|"));
+  });
+});
+
 test("project create blocks until .maestro state is ignored", async () => {
   await withTempDir(async (dir) => {
     const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
