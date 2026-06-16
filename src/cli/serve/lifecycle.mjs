@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import fsConstants from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { servicePaths, readDefinition, readPidRecord } from "./store.mjs";
+import { servicePaths, readDefinition, writeDefinition, readPidRecord, removeFile } from "./store.mjs";
 import { verifyIdentity, isAlive } from "./proc.mjs";
 
 const BIN_ENTRY = fileURLToPath(new URL("../../../bin/maestro.mjs", import.meta.url));
@@ -74,4 +74,42 @@ async function waitForPidRecord(stateRoot, name, timeoutMs = 2000) {
     await new Promise((r) => setTimeout(r, 100));
   }
   throw typedError("service_start_failed", `${name} (worker did not report a pid; check \`maestro serve logs ${name}\`)`);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Stop a service: verify identity BEFORE signaling so we never SIGKILL an
+// OS-recycled pid (spec C1). Always clears the pid record afterward.
+export async function stopService({ stateRoot, name, graceMs = 3000 }) {
+  const rec = await readPidRecord(stateRoot, name).catch(() => null);
+  const paths = servicePaths(stateRoot, name);
+  if (!rec) return { stopped: false, signaled: false, reason: "not_running" };
+
+  if (!verifyIdentity(rec, name)) {
+    // Stale / recycled / foreign - do NOT signal; just clean the record.
+    await removeFile(paths.pid);
+    return { stopped: true, signaled: false, reason: "stale" };
+  }
+
+  try { process.kill(rec.pid, "SIGTERM"); } catch { /* already gone */ }
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline && verifyIdentity(rec, name)) await sleep(100);
+  if (verifyIdentity(rec, name)) {
+    try { process.kill(rec.pid, "SIGKILL"); } catch { /* gone */ }
+  }
+  await removeFile(paths.pid);
+  return { stopped: true, signaled: true, reason: "signaled" };
+}
+
+export async function pauseService({ stateRoot, name }) {
+  await stopService({ stateRoot, name });
+  const def = (await readDefinition(stateRoot, name)) ?? {};
+  await writeDefinition(stateRoot, name, { ...def, paused: true });
+  return { paused: true };
+}
+
+export async function resumeService({ stateRoot, name, spawnProcess, waitForPid }) {
+  const def = (await readDefinition(stateRoot, name)) ?? {};
+  await writeDefinition(stateRoot, name, { ...def, paused: false });
+  return startService({ stateRoot, name, spawnProcess, waitForPid });
 }
