@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { servicePaths, readDefinition, writeDefinition, readPidRecord, removeFile, listDefinitions } from "./store.mjs";
 import { verifyIdentity, isAlive } from "./proc.mjs";
+import { tailFile } from "../../fs-safe.mjs";
 
 const BIN_ENTRY = fileURLToPath(new URL("../../../bin/maestro.mjs", import.meta.url));
 
@@ -129,4 +130,16 @@ export async function serviceStatus(stateRoot, name) {
 export async function listStatuses(stateRoot) {
   const names = await listDefinitions(stateRoot);
   return Promise.all(names.map((n) => serviceStatus(stateRoot, n)));
+}
+
+// Bounded tail of the worker log. tailFile reads at most maxBytes from the end,
+// so an unbounded log never floods. Follow-mode (-f) is handled by the command
+// layer; this returns the current tail.
+export async function tailServiceLog({ stateRoot, name, lines = 40, maxBytes = 65536 }) {
+  const { log } = servicePaths(stateRoot, name);
+  const text = await tailFile(log, maxBytes);
+  if (text == null) return "";
+  const split = text.split("\n");
+  const tail = split.slice(Math.max(0, split.length - lines - 1));
+  return tail.join("\n");
 }

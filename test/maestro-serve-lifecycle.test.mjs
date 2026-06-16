@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { ensureServicesDir, writeDefinition, writePidRecord, readPidRecord } from "../src/cli/serve/store.mjs";
-import { startService, acquireStartLock } from "../src/cli/serve/lifecycle.mjs";
+import { startService, acquireStartLock, tailServiceLog } from "../src/cli/serve/lifecycle.mjs";
 import { readStartTime } from "../src/cli/serve/proc.mjs";
 import { stopService, pauseService, resumeService } from "../src/cli/serve/lifecycle.mjs";
-import { readDefinition } from "../src/cli/serve/store.mjs";
+import { readDefinition, servicePaths } from "../src/cli/serve/store.mjs";
 import { spawn } from "node:child_process";
 
 async function tmpRoot() {
@@ -91,4 +91,20 @@ test("pause stops + marks paused; resume clears paused", async () => {
     spawnProcess: (cmd) => { writePidRecord(root, "web", { pid: 91, startTimeMs: 1, argv0: cmd }); return { unref() {} }; },
   });
   assert.equal((await readDefinition(root, "web")).paused, false);
+});
+
+test("tailServiceLog returns the last N lines of a service log", async () => {
+  const root = await tmpRoot();
+  await writeDefinition(root, "web", { slug: "WEB" });
+  const { log } = servicePaths(root, "web");
+  await fs.writeFile(log, Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n") + "\n");
+  const out = await tailServiceLog({ stateRoot: root, name: "web", lines: 3 });
+  assert.equal(out.trim().split("\n").length, 3);
+  assert.match(out, /line 49/);
+});
+
+test("tailServiceLog on a missing log returns empty string", async () => {
+  const root = await tmpRoot();
+  await writeDefinition(root, "web", { slug: "WEB" });
+  assert.equal(await tailServiceLog({ stateRoot: root, name: "web", lines: 5 }), "");
 });
