@@ -357,6 +357,24 @@ async function cleanupProject({ taskStore, id, cwd, stdout, gitRunner }) {
       });
       continue;
     }
+    // A worktree removed out-of-band (manual `git worktree remove`, disk
+    // pruning, an interrupted run) leaves a stale path in the project record.
+    // Don't cd into it for `git status` — execFile fails with an opaque
+    // "spawn git ENOENT" when the cwd is gone. Treat it as already removed:
+    // best-effort clear git's metadata + the merged branch, count it cleaned,
+    // and keep cleanup idempotent.
+    if (!(await pathExists(task.worktree_path))) {
+      await gitSucceeds(gitRunner, cwd, ["worktree", "remove", task.worktree_path]);
+      await gitSucceeds(gitRunner, cwd, ["worktree", "prune"]);
+      if (project.delete_closed_project_branches !== false && task.branch) {
+        const mergedIntoIntegration = await gitSucceeds(gitRunner, cwd, ["merge-base", "--is-ancestor", task.branch, project.integration_branch]);
+        if (mergedIntoIntegration) {
+          await gitSucceeds(gitRunner, cwd, ["branch", "-d", task.branch]);
+        }
+      }
+      cleaned.push(task.id);
+      continue;
+    }
     const status = await gitStdout(gitRunner, task.worktree_path, ["status", "--porcelain"]);
     if (status) {
       const patch = await gitStdout(gitRunner, task.worktree_path, ["diff"]);
@@ -386,7 +404,12 @@ async function cleanupProject({ taskStore, id, cwd, stdout, gitRunner }) {
         worktree_path: project.integration_worktree,
       });
     } else {
-      const integrationStatus = await gitStdout(gitRunner, project.integration_worktree, ["status", "--porcelain"]);
+      // Same out-of-band-removal guard as the task worktrees above: don't cd
+      // into a vanished integration worktree.
+      const integrationGone = !(await pathExists(project.integration_worktree));
+      const integrationStatus = integrationGone
+        ? ""
+        : await gitStdout(gitRunner, project.integration_worktree, ["status", "--porcelain"]);
       if (integrationStatus) {
         const patch = await gitStdout(gitRunner, project.integration_worktree, ["diff"]);
         const patchPath = path.join(taskStore.patchesDir, `${project.id}-integration.patch`);
@@ -396,6 +419,10 @@ async function cleanupProject({ taskStore, id, cwd, stdout, gitRunner }) {
           worktree_path: project.integration_worktree,
           patch_path: patchPath,
         });
+      } else if (integrationGone) {
+        await gitSucceeds(gitRunner, cwd, ["worktree", "remove", project.integration_worktree]);
+        await gitSucceeds(gitRunner, cwd, ["worktree", "prune"]);
+        await gitSucceeds(gitRunner, cwd, ["branch", "-D", project.integration_branch]);
       } else {
         await runGit(gitRunner, cwd, ["worktree", "remove", project.integration_worktree]);
         await runGit(gitRunner, cwd, ["branch", "-D", project.integration_branch]);

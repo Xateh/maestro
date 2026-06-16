@@ -3478,6 +3478,8 @@ test("project cleanup removes clean project worktrees and local closed branches 
     const project = await store.readProject("alpha");
     const taskWorktree = path.join(dir, ".maestro", "worktrees", "alpha", "clean-task");
     await mkdir(taskWorktree, { recursive: true });
+    // Both worktrees exist on disk → exercises the normal (present) cleanup path.
+    await mkdir(project.integration_worktree, { recursive: true });
     await store.updateProject("alpha", {
       status: "closed",
       target_merge_commit: "target-merge",
@@ -3506,6 +3508,53 @@ test("project cleanup removes clean project worktrees and local closed branches 
     assert.ok(callTexts.includes(`worktree remove ${project.integration_worktree}`));
     assert.ok(callTexts.includes("branch -D maestro/alpha/integration"));
     assert.equal(callTexts.some((text) => text.includes("origin/")), false);
+  });
+});
+
+test("project cleanup tolerates a worktree removed out-of-band (no cd into a missing dir)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(path.join(dir, ".gitignore"), ".maestro/\n");
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const git = createFakeGitRunner();
+    await runLocalMaestroCommand({
+      args: ["project", "create", "alpha", "--state-dir", store.root, "--target", "main"],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+      gitRunner: git.run,
+    });
+    // Worktree path recorded in the project but NOT present on disk — the exact
+    // state left when a worktree is removed out-of-band. Old code cd'd into it
+    // for `git status` and crashed with "spawn git ENOENT".
+    const goneWorktree = path.join(dir, ".maestro", "worktrees", "alpha", "gone-task");
+    await store.updateProject("alpha", {
+      status: "closed",
+      tasks: [{
+        id: "gone-task",
+        branch: "maestro/alpha/task/gone-task",
+        worktree_path: goneWorktree,
+        status: "succeeded",
+      }],
+    });
+
+    const result = await runLocalMaestroCommand({
+      args: ["project", "cleanup", "alpha", "--state-dir", store.root],
+      cwd: dir,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      store,
+      gitRunner: git.run,
+    });
+
+    // No blocker, the gone worktree is counted cleaned, and we never ran
+    // `git status` with the missing worktree as cwd.
+    assert.deepEqual(result.project.cleanup_blockers, []);
+    assert.deepEqual(result.project.cleaned_worktrees, ["gone-task"]);
+    const statusInMissingDir = git.calls.some(
+      (call) => call.cwd === goneWorktree && call.args[0] === "status",
+    );
+    assert.equal(statusInMissingDir, false, "must not cd into the missing worktree");
   });
 });
 
