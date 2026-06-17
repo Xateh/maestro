@@ -50,6 +50,24 @@ async function pickStartable(stateRoot) {
   return rows.filter((r) => !r.paused && r.state !== "running").map((r) => r.name);
 }
 
+async function assertStartable({ stateRoot, name, env }) {
+  const def = await readDefinition(stateRoot, name);
+  if (!def) throw typedError("unknown_service", name);
+  const varName = def.var ?? "LINEAR_API_KEY";
+  if (!env[varName]) {
+    throw typedError("missing_service_key", `${name}: ${varName} is unset — set it (or \`maestro setup keys --var ${varName}\`) before starting`);
+  }
+  if (def.port != null) {
+    for (const other of await listDefinitions(stateRoot)) {
+      if (other === name) continue;
+      const od = await readDefinition(stateRoot, other);
+      if (od && od.port === def.port) {
+        throw typedError("port_collision", `${name} and ${other} both use port ${def.port}`);
+      }
+    }
+  }
+}
+
 export async function runServeCommand({ args, stdout = process.stdout, stderr = process.stderr, env = process.env, spawnProcess, waitForPid, logger } = {}) {
   const { stateRoot, sub, rest, flags } = parse(args);
   await ensureServicesDir(stateRoot);
@@ -126,6 +144,7 @@ export async function runServeCommand({ args, stdout = process.stdout, stderr = 
   if (sub === "start") {
     const targets = flags.all ? await pickStartable(stateRoot) : [requireName(rest)];
     for (const name of targets) {
+      await assertStartable({ stateRoot, name, env });
       const res = await startService({ stateRoot, name, spawnProcess, waitForPid });
       const status = await serviceStatus(stateRoot, name);
       write(formatStartFeedback({ name, pid: res.pid, port: res.port, slug: status?.slug, intervalMs: 30000, stateDir: servicePaths(stateRoot, name).stateDir }));

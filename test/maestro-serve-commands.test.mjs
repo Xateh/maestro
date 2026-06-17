@@ -131,3 +131,22 @@ test("bare serve with a legacy tracker and no services auto-adopts as 'default'"
   const { readDefinition } = await import("../src/cli/serve/store.mjs");
   assert.equal((await readDefinition(root, "default")).slug, "WEB");
 });
+
+test("serve start fails fatally when the api-key var is unset", async () => {
+  const root = await tmpRoot();
+  await runServeCommand({ args: ["serve", "add", "web", "--slug", "WEB", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
+  await assert.rejects(
+    () => runServeCommand({ args: ["serve", "start", "web", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {}, spawnProcess: () => { throw new Error("should not spawn"); }, waitForPid: false }),
+    /missing_service_key/,
+  );
+});
+
+test("serve start fails fatally on a port collision with another service", async () => {
+  const root = await tmpRoot();
+  await runServeCommand({ args: ["serve", "add", "a", "--slug", "A", "--port", "4100", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
+  await runServeCommand({ args: ["serve", "add", "b", "--slug", "B", "--port", "4100", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
+  await assert.rejects(
+    () => runServeCommand({ args: ["serve", "start", "a", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: { LINEAR_API_KEY: "k" }, spawnProcess: () => { throw new Error("should not spawn"); }, waitForPid: false }),
+    /port_collision/,
+  );
+});
