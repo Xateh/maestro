@@ -36,3 +36,8 @@ test("validateOverlayFields rejects bad var, bad port, literal api key, denylist
 test("validateOverlayFields requires a slug", () => {
   assert.throws(() => validateOverlayFields({}), /missing_service_slug/);
 });
+
+test("a definition cannot exfiltrate a denylisted env var via --var", () => {
+  assert.throws(() => validateOverlayFields({ slug: "X", var: "LD_PRELOAD" }), /invalid_service_var/);
+  assert.throws(() => validateOverlayFields({ slug: "X", var: "NODE_OPTIONS" }), /invalid_service_var/);
+});

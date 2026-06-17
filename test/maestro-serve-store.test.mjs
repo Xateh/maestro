@@ -84,6 +84,10 @@ test("removeFile deletes a file and is a no-op when absent", async () => {
   await removeFile(p); // no throw on missing
 });
 
+test("servicePaths/assertValidServiceName rejects traversal before any fs touch", () => {
+  assert.throws(() => servicePaths("/s", "../../etc/passwd"), /invalid_service_name/);
+});
+
 test("readDefinition refuses a symlinked definition", async () => {
   const root = await tmpRoot();
   await ensureServicesDir(root);
