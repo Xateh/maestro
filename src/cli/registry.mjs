@@ -8,7 +8,7 @@ const STATE_DIR_FLAG = { flag: "--state-dir <path>", desc: "override the .maestr
 
 export const COMMAND_TREE = {
   name: "maestro",
-  summary: "multi-agent plan → execute → review orchestrator",
+  summary: "a harness for precise, auditable agent workflows over your local CLI agents",
   synopsis: "maestro <command> [args]",
   flags: [
     STATE_DIR_FLAG,
@@ -20,7 +20,7 @@ export const COMMAND_TREE = {
       name: "task",
       kind: "local",
       synopsis: 'maestro task [flags] "<prompt>"',
-      summary: "create + run a task (planner → executor → reviewer)",
+      summary: "create + run a task through the active workflow (default: plan → execute → review)",
       flags: [
         { flag: "--plan-only", desc: "planner only; stops at the plan handoff" },
         { flag: "--mode <name>", desc: "run any mode defined in workflow.json" },

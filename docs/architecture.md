@@ -2,10 +2,12 @@
 
 ## Overview
 
-Maestro is a multi-agent orchestrator that maps a prompt to a
-**planner → executor → reviewer** pipeline. It uses **LangGraph** as the sole flow engine —
-LangGraph handles graph traversal and state but never makes model calls. All model calls happen
-inside the agent CLI binaries (claude, codex, etc.) that Maestro launches as subprocesses.
+Maestro is a **harness for precise, auditable agent workflows**: you declare a graph of roles
+and Maestro drives the agent CLIs across it with typed, recorded, replayable handoffs. The stock
+`default` graph is a **planner → executor → reviewer** pipeline, but that is one shape among many.
+It uses **LangGraph** as the sole flow engine — LangGraph handles graph traversal and state but
+never makes model calls. All model calls happen inside the agent CLI binaries (claude, codex, etc.)
+that Maestro launches as subprocesses.
 
 ```
 maestro task "..."

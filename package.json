@@ -1,7 +1,7 @@
 {
   "name": "maestro-orchestrator",
   "version": "0.1.2",
-  "description": "Multi-agent plan→execute→review orchestrator built on LangGraph",
+  "description": "A harness for precise, auditable agent workflows — compose a graph of roles, drive the CLI agents already on your machine, with typed, gated, replayable handoffs. Built on LangGraph.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Xateh/maestro.git"
