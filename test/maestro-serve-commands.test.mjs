@@ -53,3 +53,55 @@ test("formatStartFeedback shows pid, port, logs and stop hint", () => {
   assert.match(out, /serve logs web/);
   assert.match(out, /serve stop web/);
 });
+
+import { runServeCommand } from "../src/cli/serve/commands.mjs";
+import { readDefinition as readDef, listDefinitions as listDefs } from "../src/cli/serve/store.mjs";
+
+function capture() {
+  let out = "", err = "";
+  return { stdout: { write: (s) => { out += s; } }, stderr: { write: (s) => { err += s; } }, get out() { return out; }, get err() { return err; } };
+}
+
+test("serve add writes a definition and prints next steps", async () => {
+  const root = await tmpRoot();
+  const cap = capture();
+  await runServeCommand({ args: ["serve", "add", "web", "--slug", "WEB", "--port", "4100", "--state-dir", root], stdout: cap.stdout, stderr: cap.stderr, env: {} });
+  assert.deepEqual(await readDef(root, "web"), { slug: "WEB", port: 4100, paused: false });
+  assert.match(cap.out, /serve start web/);
+});
+
+test("serve add rejects an invalid name and a literal api key", async () => {
+  const root = await tmpRoot();
+  const cap = capture();
+  await assert.rejects(
+    () => runServeCommand({ args: ["serve", "add", "../evil", "--slug", "X", "--state-dir", root], stdout: cap.stdout, stderr: cap.stderr, env: {} }),
+    /invalid_service_name/,
+  );
+});
+
+test("serve list with no services prints guidance", async () => {
+  const root = await tmpRoot();
+  const cap = capture();
+  await runServeCommand({ args: ["serve", "list", "--state-dir", root], stdout: cap.stdout, stderr: cap.stderr, env: {} });
+  assert.match(cap.out, /No services configured/);
+});
+
+test("serve rm deletes the definition for a stopped service", async () => {
+  const root = await tmpRoot();
+  await runServeCommand({ args: ["serve", "add", "web", "--slug", "WEB", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
+  await runServeCommand({ args: ["serve", "rm", "web", "--force", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
+  assert.deepEqual(await listDefs(root), []);
+});
+
+test("serve start delegates to startService with an injected spawn", async () => {
+  const root = await tmpRoot();
+  await runServeCommand({ args: ["serve", "add", "web", "--slug", "WEB", "--port", "4100", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
+  const cap = capture();
+  await runServeCommand({
+    args: ["serve", "start", "web", "--state-dir", root],
+    stdout: cap.stdout, stderr: cap.stderr, env: { LINEAR_API_KEY: "k" },
+    spawnProcess: (cmd) => { writePidRecord(root, "web", { pid: 77, startTimeMs: 1, argv0: cmd, port: 4100 }); return { unref() {} }; },
+    waitForPid: false,
+  });
+  assert.match(cap.out, /service 'web' started/);
+});
