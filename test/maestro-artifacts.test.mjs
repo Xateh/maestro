@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -116,6 +116,27 @@ test("resolveArtifact returns null for traversal and unknown selectors", async (
     assert.equal(await resolveArtifact(task, ""), null);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveArtifact returns null for a symlink inside run_dir that escapes it (F3)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "artifacts-symlink-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "artifacts-secret-"));
+  try {
+    const secret = path.join(outside, "secret.txt");
+    await writeFile(secret, "TOP SECRET");
+    // Agent plants a symlink in its own run_dir, with a name matching a known
+    // artifact pattern, pointing at a file outside the run dir.
+    await symlink(secret, path.join(dir, "evil.stdout.log"));
+    const task = { run_dir: dir, steps: [] };
+
+    // Lexical containment passes (the link path is inside run_dir), but the
+    // resolved target escapes — resolveArtifact must realpath-check and refuse.
+    assert.equal(await resolveArtifact(task, "evil.stdout"), null);
+    assert.equal(await resolveArtifact(task, "evil.stdout.log"), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });
 
