@@ -1,4 +1,7 @@
-.maestro/
+.maestro/*
+!.maestro/roles/
+.maestro/roles/*
+!.maestro/roles/*.md
 node_modules/
 .serena/
 .remember/

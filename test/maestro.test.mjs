@@ -681,9 +681,12 @@ test("root package exposes Maestro scripts and dependencies", async () => {
   assert.ok(pkg.dependencies.liquidjs);
 });
 
-test("root gitignore ignores Maestro runtime and worktree state", async () => {
+test("root gitignore ignores Maestro runtime but tracks shipped role units", async () => {
   const ignore = await readFile(new URL("../.gitignore", import.meta.url), "utf8");
-  assert.match(ignore, /^\.maestro\/$/m);
+  // Runtime/worktree state under .maestro/ stays ignored …
+  assert.match(ignore, /^\.maestro\/\*$/m);
+  // … but the shipped portable role units are tracked (re-included).
+  assert.match(ignore, /^!\.maestro\/roles\/\*\.md$/m);
 });
 
 test("readWorkflow expands output_schema_ref into an inline schema (F4)", async () => {
