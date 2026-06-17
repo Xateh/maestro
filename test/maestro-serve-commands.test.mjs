@@ -105,3 +105,15 @@ test("serve start delegates to startService with an injected spawn", async () =>
   });
   assert.match(cap.out, /service 'web' started/);
 });
+
+test("serve rm removes a service whose isolated state dir has content", async () => {
+  const root = await tmpRoot();
+  await runServeCommand({ args: ["serve", "add", "web", "--slug", "WEB", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
+  // simulate worker-created isolated state under services/web/
+  const { servicePaths } = await import("../src/cli/serve/store.mjs");
+  const sd = servicePaths(root, "web").stateDir;
+  await fs.mkdir(path.join(sd, "work"), { recursive: true });
+  await fs.writeFile(path.join(sd, "work", "x.txt"), "data");
+  await runServeCommand({ args: ["serve", "rm", "web", "--force", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
+  await assert.rejects(() => fs.stat(sd)); // state dir gone
+});

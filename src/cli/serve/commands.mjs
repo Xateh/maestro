@@ -6,7 +6,7 @@ import { startMaestro } from "../runtime.mjs";
 import { StructuredLogger } from "../../logger.mjs";
 
 import {
-  ensureServicesDir, writeDefinition, readDefinition, listDefinitions, servicePaths, removeFile, writePidRecord, assertValidServiceName,
+  ensureServicesDir, writeDefinition, readDefinition, listDefinitions, servicePaths, removeFile, removeDir, writePidRecord, assertValidServiceName,
 } from "./store.mjs";
 import { validateOverlayFields, buildOverlay } from "./resolve.mjs";
 import {
@@ -36,7 +36,7 @@ function parse(args) {
     if (a === "--all") { flags.all = true; continue; }
     if (a === "-f" || a === "--follow") { flags.follow = true; continue; }
     if (a === "-n") { flags.lines = Number(rest[++i]); continue; }
-    if (a === "--foreground") { flags.foreground = true; continue; }
+    if (a === "--foreground") { continue; }
     if (a === "--json") { flags.json = true; continue; }
     positional.push(a);
   }
@@ -114,7 +114,7 @@ export async function runServeCommand({ args, stdout = process.stdout, stderr = 
     }
     const p = servicePaths(stateRoot, name);
     for (const f of [p.def, p.pid, p.log, `${p.pid}.lock`]) await removeFile(f);
-    await removeFile(p.stateDir).catch(() => {});
+    await removeDir(p.stateDir);
     write(`✓ service '${name}' removed\n`);
     return {};
   }

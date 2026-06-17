@@ -118,6 +118,10 @@ export async function removeFile(filePath) {
   await fs.rm(filePath, { force: true });
 }
 
+export async function removeDir(dirPath) {
+  await fs.rm(dirPath, { recursive: true, force: true });
+}
+
 export async function listDefinitions(stateRoot) {
   const dir = servicesDir(stateRoot);
   let entries;
