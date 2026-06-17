@@ -32,10 +32,7 @@ export async function main() {
     await runLocalMaestroCommand(invocation);
     return;
   }
-  const serverArgv = route.kind === "serve"
-    ? [process.argv[0], process.argv[1], ...route.serverArgs]
-    : process.argv;
-  const args = parseServerArgs(serverArgv);
+  const args = parseServerArgs(process.argv);
   const logger = new StructuredLogger();
   try {
     await loadLocalSecrets(path.resolve(process.cwd(), DEFAULT_LOCAL_STATE_DIR));

@@ -109,10 +109,6 @@ test("routeCli matrix", () => {
   assert.equal(routeCli(["status"]).kind, "local");
   assert.equal(routeCli(["init"]).kind, "local");
 
-  const serve = routeCli(["serve", "--config", "ops/config.json", "--port", "4100"]);
-  assert.equal(serve.kind, "serve");
-  assert.deepEqual(serve.serverArgs, ["--config", "ops/config.json", "--port", "4100"]);
-
   // A bare positional (no longer a deprecated .md route) is a usage error.
   assert.equal(routeCli(["wf.md"]).kind, "error");
 
@@ -142,5 +138,20 @@ test("registry local names stay in sync with known dispatch set", () => {
     "setup", "workflow", "export", "import", "init", "role", "import-agent"]) {
     assert.ok(LOCAL_COMMAND_NAMES.includes(expected), `missing local command ${expected}`);
   }
-  assert.ok(!LOCAL_COMMAND_NAMES.includes("serve"), "serve must not be a local command");
+  assert.ok(LOCAL_COMMAND_NAMES.includes("serve"), "serve is now a local command group");
+});
+
+test("serve management subcommands route as local; serve run --foreground routes via local too", () => {
+  assert.equal(routeCli(["serve"]).kind, "local");
+  assert.equal(routeCli(["serve", "list"]).kind, "local");
+  assert.equal(routeCli(["serve", "add", "web", "--slug", "WEB"]).kind, "local");
+  assert.equal(routeCli(["serve", "start", "web"]).kind, "local");
+  assert.equal(routeCli(["serve", "run", "web", "--foreground"]).kind, "local");
+});
+
+test("serve is registered as a subcommand group with management subcommands", () => {
+  const help = routeCli(["serve", "--help"]);
+  assert.equal(help.kind, "help");
+  assert.match(help.text, /add/);
+  assert.match(help.text, /pause/);
 });

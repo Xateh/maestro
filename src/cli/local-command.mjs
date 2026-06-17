@@ -96,6 +96,11 @@ export async function runLocalMaestroCommand({
     return runProjectCommand({ args, cwd, stdout, stderr, store, gitRunner });
   }
 
+  if (command === "serve") {
+    const { runServeCommand } = await import("./serve/commands.mjs");
+    return runServeCommand({ args, stdout, stderr, env: process.env, spawnProcess });
+  }
+
   if (command === "tui") {
     const parsed = parseSharedStateArgs(args, cwd);
     warnFlags(findUnknownFlags(parsed.positional, new Set()), "tui", stderr);

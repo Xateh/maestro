@@ -432,14 +432,24 @@ export const COMMAND_TREE = {
     },
     {
       name: "serve",
-      kind: "server",
-      synopsis: "maestro serve [--config <path>] [--state-dir <dir>] [--port <n>]",
-      summary: "server mode: poll Linear, auto-dispatch issues",
-      flags: [
-        { flag: "--config <path>", desc: "config.json path" },
-        STATE_DIR_FLAG,
-        { flag: "--port <n>", desc: "HTTP port" },
+      kind: "local",
+      synopsis: "maestro serve <subcommand>",
+      summary: "manage background tracker-polling services",
+      subcommands: [
+        { name: "list", synopsis: "maestro serve list [--json]", summary: "show all services + state" },
+        { name: "add", synopsis: "maestro serve add <name> --slug <SLUG> [--port N --workflow W --var NAME --workspace DIR --shared-state]", summary: "register a service" },
+        { name: "edit", synopsis: "maestro serve edit <name> [--slug … --port … …]", summary: "update a service definition" },
+        { name: "rm", synopsis: "maestro serve rm <name> [--force]", summary: "remove a service" },
+        { name: "start", synopsis: "maestro serve start <name|--all>", summary: "start service(s) in the background" },
+        { name: "stop", synopsis: "maestro serve stop <name|--all>", summary: "stop service(s)" },
+        { name: "pause", synopsis: "maestro serve pause <name>", summary: "stop + mark paused" },
+        { name: "resume", synopsis: "maestro serve resume <name>", summary: "clear paused + start" },
+        { name: "status", synopsis: "maestro serve status <name>", summary: "detail for one service" },
+        { name: "logs", synopsis: "maestro serve logs <name> [-f] [-n N]", summary: "tail a worker log" },
+        { name: "adopt", synopsis: "maestro serve adopt [name]", summary: "materialize a legacy tracker as a service" },
+        { name: "run", synopsis: "maestro serve run <name> --foreground", summary: "(internal) foreground worker entrypoint" },
       ],
+      flags: [STATE_DIR_FLAG],
     },
   ],
 };
@@ -593,9 +603,6 @@ export function routeCli(rawArgs = []) {
   if (preDashDash.includes("--help") || preDashDash.includes("-h")) {
     const resolved = resolveCommandPath(commandTokens(preDashDash));
     return { kind: "help", text: formatHelp(resolved.matched), exitCode: 0 };
-  }
-  if (first === "serve") {
-    return { kind: "serve", serverArgs: rawArgs.slice(1) };
   }
   if (LOCAL_COMMAND_SET.has(first)) {
     return { kind: "local" };
