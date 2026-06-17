@@ -44,6 +44,21 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  test-terminal-backend:
+    name: Test (terminal backend, default)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+      - run: npm ci
+      # Pin the zero-dependency terminal backend as a first-class tested lane:
+      # the default when herdr is absent, exercised here without relying on the
+      # auto-fallback path being incidentally hit.
+      - run: npm run test:terminal
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

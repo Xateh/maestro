@@ -28,7 +28,7 @@ import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../sta
 import { resolveAliasEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
-import { resolveRoleSchema, validatePayload, validateInline, emptyPayloadForSchema } from "../schemas/index.mjs";
+import { resolveRoleSchema, validateRolePayload, emptyPayloadForSchema } from "../schemas/index.mjs";
 import { buildEvaluationPayload } from "../evaluation.mjs";
 import { deriveScores, enforceGates } from "../scoring.mjs";
 import { parseUsage } from "../usage-parse.mjs";
@@ -213,6 +213,30 @@ export function makeRoleNode(roleDef, {
     // ── load fresh task from DB (captures any resume-time updates) ────────────
     let currentTask = await db.getTask(task.id);
 
+    // ── opt-in strict schema enforcement (U2) ────────────────────────────────
+    // Soft validation is the default everywhere (additive evidence, never alters
+    // routing). A role may opt in with `enforce_output_schema: true`; when it does
+    // and the validated payload does not conform, halt the run with a typed
+    // `output_schema_violation` blocker instead of recording soft evidence and
+    // continuing. Returns a halt result (caller returns it) or null to proceed.
+    const haltOnSchemaViolation = async (schemaValidation) => {
+      if (!roleDef.enforce_output_schema || !schemaValidation || schemaValidation.ok) return null;
+      const blocker = {
+        code: "output_schema_violation",
+        role: roleKey,
+        schema: schemaValidation.schema,
+        errors: schemaValidation.errors,
+      };
+      await db.updateTask(task.id, {
+        status: "waiting_user",
+        active_step: null,
+        current_state: roleKey,
+        blockers: [blocker, ...(currentTask.blockers ?? [])],
+      });
+      if (markProjectTaskStatus) await markProjectTaskStatus(currentTask, "waiting_user");
+      return { event: "error", currentState: roleKey };
+    };
+
     // ── loop limit: bound cycle revisits (max_visits / loop_limits) ──────────
     const maxVisits = resolveMaxVisits(workflow, transitionKey) ?? resolveMaxVisits(workflow, roleKey);
     if (maxVisits !== null && visitCount >= maxVisits) {
@@ -257,14 +281,9 @@ export function makeRoleNode(roleDef, {
       const stageStartedAt = new Date().toISOString();
       const resolved = resolveRoleSchema(roleDef);
       const payload = resolved.schema ? emptyPayloadForSchema(resolved.schema) : {};
-      let schemaValidation = null;
-      if (resolved.source === "name" && resolved.schema) {
-        const r = validatePayload(resolved.name, payload);
-        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
-      } else if (resolved.source === "inline" && resolved.schema) {
-        const r = validateInline(resolved.schema, payload);
-        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
-      }
+      const schemaValidation = validateRolePayload(roleDef, payload);
+      const schemaHalt = await haltOnSchemaViolation(schemaValidation);
+      if (schemaHalt) return schemaHalt;
       let handoffPath = null;
       if (task.run_dir) {
         try {
@@ -363,15 +382,9 @@ export function makeRoleNode(roleDef, {
       }
 
       const payload = buildEvaluationPayload(records);
-      const resolved = resolveRoleSchema(roleDef);
-      let schemaValidation = null;
-      if (resolved.source === "name" && resolved.schema) {
-        const r = validatePayload(resolved.name, payload);
-        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
-      } else if (resolved.source === "inline" && resolved.schema) {
-        const r = validateInline(resolved.schema, payload);
-        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
-      }
+      const schemaValidation = validateRolePayload(roleDef, payload);
+      const schemaHalt = await haltOnSchemaViolation(schemaValidation);
+      if (schemaHalt) return schemaHalt;
 
       let handoffPath = null;
       if (task.run_dir) {
@@ -551,15 +564,9 @@ export function makeRoleNode(roleDef, {
         outcome: outcome === "done" ? "clean" : outcome, // "clean" | fail_event name
       };
 
-      const resolved = resolveRoleSchema(roleDef);
-      let schemaValidation = null;
-      if (resolved.source === "name" && resolved.schema) {
-        const r = validatePayload(resolved.name, payload);
-        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
-      } else if (resolved.source === "inline" && resolved.schema) {
-        const r = validateInline(resolved.schema, payload);
-        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
-      }
+      const schemaValidation = validateRolePayload(roleDef, payload);
+      const schemaHalt = await haltOnSchemaViolation(schemaValidation);
+      if (schemaHalt) return schemaHalt;
 
       // ── persist (DB sentinel "regression"; engine-visible provider null) ──
       let handoffPath = null;
@@ -637,15 +644,9 @@ export function makeRoleNode(roleDef, {
         blocked_reasons: gateResult.blocked_reasons,
       };
 
-      const resolved = resolveRoleSchema(roleDef);
-      let schemaValidation = null;
-      if (resolved.source === "name" && resolved.schema) {
-        const r = validatePayload(resolved.name, payload);
-        schemaValidation = { ok: r.ok, errors: r.errors, schema: resolved.name };
-      } else if (resolved.source === "inline" && resolved.schema) {
-        const r = validateInline(resolved.schema, payload);
-        schemaValidation = { ok: r.ok, errors: r.errors, schema: "inline" };
-      }
+      const schemaValidation = validateRolePayload(roleDef, payload);
+      const schemaHalt = await haltOnSchemaViolation(schemaValidation);
+      if (schemaHalt) return schemaHalt;
 
       // ── persist (DB sentinel "scoring"; engine-visible provider null) ──────
       let handoffPath = null;
@@ -1059,17 +1060,9 @@ export function makeRoleNode(roleDef, {
       }
 
       // ── soft schema validation (additive evidence; never alters routing) ────
-      let schemaValidation = null;
-      if (rawHandoff != null) {
-        const resolved = resolveRoleSchema(roleDef);
-        if (resolved.source === "name" && resolved.schema) {
-          const result = validatePayload(resolved.name, payload);
-          schemaValidation = { ok: result.ok, errors: result.errors, schema: resolved.name };
-        } else if (resolved.source === "inline" && resolved.schema) {
-          const result = validateInline(resolved.schema, payload);
-          schemaValidation = { ok: result.ok, errors: result.errors, schema: "inline" };
-        }
-      }
+      const schemaValidation = rawHandoff != null ? validateRolePayload(roleDef, payload) : null;
+      const schemaHalt = await haltOnSchemaViolation(schemaValidation);
+      if (schemaHalt) return schemaHalt;
 
       // ── custom event passthrough: handoff may route a declared transition ──
       // Only events explicitly declared in workflow.transitions[state] and not

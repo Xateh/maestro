@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450" role="img" aria-label="Placeholder for the Maestro end-to-end demo recording — capture pending.">
+  <title>maestro demo — end-to-end run (recording pending)</title>
+  <rect width="800" height="450" rx="10" fill="#0d1117" />
+  <rect x="0.5" y="0.5" width="799" height="449" rx="10" fill="none" stroke="#30363d" />
+  <circle cx="24" cy="24" r="6" fill="#ff5f56" />
+  <circle cx="44" cy="24" r="6" fill="#ffbd2e" />
+  <circle cx="64" cy="24" r="6" fill="#27c93f" />
+  <text x="400" y="29" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13">maestro demo — plan → execute → review</text>
+  <line x1="0" y1="48" x2="800" y2="48" stroke="#30363d" />
+  <!-- play glyph -->
+  <circle cx="400" cy="200" r="40" fill="none" stroke="#60a5fa" stroke-width="3" />
+  <path d="M388 180 l26 20 l-26 20 z" fill="#60a5fa" />
+  <text x="400" y="290" text-anchor="middle" fill="#60a5fa" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="22" font-weight="700">maestro demo — end-to-end run</text>
+  <text x="400" y="324" text-anchor="middle" fill="#6b7280" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="14">recording pending — see CAPTURE.md</text>
+</svg>

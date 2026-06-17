@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450" role="img" aria-label="Placeholder for the maestro doctor preflight output screenshot — capture pending.">
+  <title>maestro doctor — preflight (screenshot pending)</title>
+  <rect width="800" height="450" rx="10" fill="#0d1117" />
+  <rect x="0.5" y="0.5" width="799" height="449" rx="10" fill="none" stroke="#30363d" />
+  <circle cx="24" cy="24" r="6" fill="#ff5f56" />
+  <circle cx="44" cy="24" r="6" fill="#ffbd2e" />
+  <circle cx="64" cy="24" r="6" fill="#27c93f" />
+  <text x="400" y="29" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13">maestro doctor — preflight</text>
+  <line x1="0" y1="48" x2="800" y2="48" stroke="#30363d" />
+  <text x="400" y="220" text-anchor="middle" fill="#60a5fa" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="22" font-weight="700">maestro doctor — preflight</text>
+  <text x="400" y="256" text-anchor="middle" fill="#6b7280" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="14">screenshot pending — see CAPTURE.md</text>
+</svg>

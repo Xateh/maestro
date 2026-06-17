@@ -124,7 +124,7 @@ export const COMMAND_TREE = {
       flags: [
         { flag: "--yes", desc: "non-interactive: scaffold + detect local runtimes, skip wizards" },
         { flag: "--dry-run", desc: "show what would be created without writing" },
-        { flag: "--workflow <name>", desc: "workflow template: default | extended | local | solo | full-audit-sweep | triage | research" },
+        { flag: "--workflow <name>", desc: "workflow template: default | extended | local | solo | full-audit-sweep | full-audit-sweep-gated | triage | research" },
         STATE_DIR_FLAG,
       ],
     },

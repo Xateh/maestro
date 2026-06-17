@@ -1,6 +1,6 @@
 {
   "name": "maestro-orchestrator",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Multi-agent plan→execute→review orchestrator built on LangGraph",
   "repository": {
     "type": "git",
@@ -43,6 +43,7 @@
     "test:maestro": "node --test test/maestro.test.mjs",
     "test:mcp": "node --test test/maestro-mcp.test.mjs",
     "test:ollama": "node --test test/maestro-ollama.test.mjs",
+    "test:terminal": "MAESTRO_BACKEND=terminal npm test",
     "agent:ocr": "node scripts/local-agents.mjs ocr",
     "agent:eval": "node scripts/local-agents.mjs eval",
     "test:enterprise": "npm run test:package && npm run test:maestro && npm run test:mcp",

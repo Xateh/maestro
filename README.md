@@ -85,11 +85,12 @@ session. If you can run `claude --version`, you're ready.
 - **Dual-backend persistence** — every task, step, and handoff lands in
   `.maestro/maestro.db` (SQLite, default) or a PostgreSQL database when
   `DATABASE_URL=postgres://…` is set. Logs stay on disk; the DB stores paths.
-- **Visible agent panes** — the default backend seats each step in a
-  [herdr](CREDITS.md#herdr) terminal pane, one tab per task. Tabs close on
-  success, stay open while a task waits on you, and a resumed task picks up in
-  the *same* tab. Tune with `herdr.close_tab_on`, or bypass entirely with
-  `MAESTRO_BACKEND=terminal`.
+- **Visible agent panes (optional acceleration)** — the zero-dependency
+  terminal backend is the default; install [herdr](CREDITS.md#herdr) on your
+  `PATH` and the engine auto-selects it to seat each step in a terminal pane, one
+  tab per task. Tabs close on success, stay open while a task waits on you, and a
+  resumed task picks up in the *same* tab. Tune with `herdr.close_tab_on`, or
+  force the default with `MAESTRO_BACKEND=terminal`.
 - **MCP server** — eight tools expose Maestro state, task creation, and
   workflow validation to any MCP-compatible agent (Claude Code, Cursor, …).
   One `.mcp.json` entry, no other config.
@@ -137,7 +138,7 @@ session. If you can run `claude --version`, you're ready.
 |---|---|
 | **Linux or macOS** | Windows is not supported (Maestro relies on unix domain sockets and bash-spawned agent runners). On Windows, use [WSL2](https://learn.microsoft.com/windows/wsl/). |
 | **Node.js ≥ 22.13** | Uses the built-in `node:sqlite` (`DatabaseSync`). Check with `node --version`. |
-| **herdr** (optional) | Default terminal-pane backend. Install separately; set `MAESTRO_BACKEND=terminal` to bypass. |
+| **herdr** (optional) | Optional acceleration over the zero-dependency terminal-pane default. Install separately and the engine auto-selects it; `MAESTRO_BACKEND=terminal` forces the default. |
 | **Provider CLIs** | At least one of `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `ollama` — whichever you already have installed and authenticated. The default workflow uses `claude` (planner) and `codex` (executor + reviewer). |
 
 ### Installation
@@ -278,15 +279,19 @@ Editing by hand replaces the whole file, so keep every role you want — the TUI
 is the safe path. See [docs/configuration.md](docs/configuration.md) for the
 full role schema.
 
-**Terminal backend:**
+**Terminal backend (the zero-dependency default):**
 
 ```bash
 MAESTRO_BACKEND=terminal maestro task "..."
 ```
 
-Bypasses herdr and runs agents via direct `child_process.spawn` (no visible
-panes). When herdr isn't installed, Maestro falls back to the terminal backend
-automatically with a one-line notice.
+The terminal backend runs agents via direct `child_process.spawn` (no visible
+panes) and is **the default** — a fresh install with nothing else on `PATH` uses
+it automatically (with a one-line notice). [herdr](CREDITS.md#herdr) is an
+**optional acceleration**: when its binary is found on `PATH`, the engine
+auto-selects it to seat each step in a visible terminal pane. Set
+`MAESTRO_BACKEND=terminal` to force the default even when herdr is installed.
+The terminal backend is covered by its own CI lane (`npm run test:terminal`).
 
 ---
 

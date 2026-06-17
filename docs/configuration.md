@@ -267,6 +267,10 @@ Defines the role graph loaded by LangGraph. The default workflow declares
 | `extended` | `default` + a read-only `system_evaluator` role the reviewer can escalate to, plus an `evaluate` mode that runs the evaluator standalone |
 | `local` | `default` with every role on `ollama` (the executor keeps write permission) |
 | `solo` | executor only; defines only the `task` mode, so `--plan-only` errors with `unknown_mode` |
+| `full-audit-sweep` | the 9-stage spine (implementation → static_analysis → review → threat_model → edge_cases → tests → evaluation → regression → scoring → human_approval). Ships the `scoring` node with **no gates declared** ⇒ informational (scoring always emits `passed`) |
+| `full-audit-sweep-gated` | `full-audit-sweep` plus one declared gate, `no_high_severity_findings` — the documented gated example: a high-severity review finding routes scoring to `$halt` (blocked) instead of `human_approval` |
+| `triage` | a single classifier role that branches by `classification` (`bug`/`feature`/`clarify`) |
+| `research` | `gather` → `synthesize` (read-only research, no code changes) |
 
 Both `maestro import` and `maestro workflow use` back up the previous file to
 `workflow.json.bak` before writing (`workflow use` fully replaces the file;

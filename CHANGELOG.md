@@ -7,6 +7,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Schema contract closeout (v0.1.2, AUDIT F4)** — `output_schema_ref` is now a
+  first-class, enforceable contract end to end.
+  - **One shared validator.** The five duplicated `resolve→validate` branches in
+    `langgraph/nodes.mjs` (stub / command / regression / scoring + the LLM
+    handoff) collapse into a single `validateRolePayload(roleDef, payload)` helper
+    in `schemas/index.mjs`, returning the same `{ ok, errors, schema }` evidence
+    (or `null` when nothing is declared).
+  - **Opt-in strict enforcement.** A role may set `enforce_output_schema: true` to
+    promote soft validation to a hard halt — a non-conforming payload routes to
+    `$halt` with a typed `output_schema_violation` blocker instead of recording
+    soft evidence and continuing. Soft validation stays the default; the flag is
+    type-checked in `workflow-validate.mjs` (warns when set without a schema).
+  - **TUI round-trip guard.** `writeWorkflow` strips a ref-derived `output_schema`
+    before persisting, so editing a ref-declared workflow keeps `output_schema_ref`
+    authoritative and never bakes the inline schema onto disk.
+- **`full-audit-sweep-gated` workflow template** — the documented gated example
+  (ratifies the default-workflow gate decision): the lean `full-audit-sweep`
+  ships `scoring` with no gates (informational), while `full-audit-sweep-gated`
+  opts in to exactly one `no_high_severity_findings` gate (reviewer-severity →
+  `$halt`).
+- **`npm run test:terminal`** — a named lane that runs the full suite under
+  `MAESTRO_BACKEND=terminal`, pinning the zero-dependency terminal backend (the
+  default) as a first-class tested configuration in CI. README/CONTRIBUTING now
+  document the terminal backend as the default and `herdr` as optional
+  acceleration.
+- **`maestro serve` multi-service management** — `serve` becomes a service
+  manager: register, run, and supervise multiple tracker-backed services from a
+  single state dir. Each service is a named definition (`serve add <name> --slug
+  … [--port --workflow --var --workspace --shared-state]`) backed by an
+  owner-checked `0600` definition + pid-record store. Lifecycle is
+  identity-verified against the recorded pid via `/proc` (liveness, `stop`,
+  `pause`, `resume`) with a detached worker spawn under an exclusive start lock,
+  so a stale pid can't be killed or double-started. `serve list`/`status`
+  derive live state; `serve logs <name> [-f] [-n N]` tails a bounded worker log;
+  `serve adopt` materializes a legacy single-tracker config as a `default`
+  service. Service overlays resolve the `server` config block with a var
+  denylist and port/api-key validation, failing fast at start on an unset
+  api-key var or a port collision.
+- **Portable roles — Maestro Role Convention (MRC)** — author a role once and
+  reuse it across workflows, and consume Claude Code subagents and skills
+  directly. A role loader normalizes `.claude/agents`, `SKILL.md`, and native
+  `.maestro/roles` units into one `RoleDef`; a role's `source` plus inline
+  overrides compose (no `source` ⇒ unchanged behavior). Per-role
+  `tools`/`deny_tools` allowlists thread through the adapter seam — claude
+  hard-enforces via `--allowedTools`/`--disallowedTools`, codex folds Bash scope
+  into `--sandbox`, other providers record advisory scope in the run manifest.
+  Ships `triage` (classifier branch) and `research` (gather→synthesize) demo
+  workflows, `maestro role list|show|lint` + `import-agent` CLI,
+  classification/research schemas, and `docs/role-convention.md`.
+- **Per-alias env for multi-account CLIs** — provider aliases may now be objects
+  `{name, command?, env?}`, so multiple accounts of the same CLI (e.g. two
+  Claude logins on different `CLAUDE_CONFIG_DIR`s) work purely through
+  `config.json` instead of hand-written shell aliases. Alias env merges over
+  provider env (alias wins) with `~`/`$VAR` expansion; the resolved binary is
+  spawned directly (no `bash -ic`) while the account name stays the routing
+  identity. Bare-string aliases are unchanged. New module `src/providers.mjs`
+  plus a full TUI account manager (add/edit/delete + env editor with denylist
+  rejection).
+- **Opt-in autonomous claude write mode** — a write-permission role may set
+  `MAESTRO_CLAUDE_WRITE_MODE` (e.g. `acceptEdits`, `bypassPermissions`) so a
+  non-interactive claude applies edits without a human at the CLI, matching
+  codex's `approval_policy=never`. Unset preserves the legacy permission mode.
+- **TUI & CLI authoring** — `maestro setup tracker` wizard writes
+  `server.tracker` (Linear) and chains the `LINEAR_API_KEY` prompt; the
+  full-screen TUI gains workflow editing (switch / new / delete / remove-role /
+  apply-template / validate) and detail-screen actions (run / edit /
+  approve-substitution / skip-role / switch-provider). Role detail and footer
+  keybinds wrap (ANSI-aware) instead of clipping.
+
+### Changed (BREAKING)
+
+- **`maestro serve` is now a subcommand group**, not a one-shot foreground
+  server. The v0.1.1 `maestro serve [--config] [--state-dir] [--port]`
+  invocation no longer starts a server (`maestro serve --config …` errors with
+  `unknown serve subcommand`). Use `maestro serve start <name>` after `serve
+  add`, or start a server directly with the flag-first form `maestro [--config
+  <path>] [--port <n>]` (no `serve` word).
+
+### Changed
+
+- **Bare `maestro` prints help** (like git/docker/npm) instead of defaulting to
+  server mode, which previously died with a cryptic
+  `unsupported_tracker_kind: missing`. Flag-first invocations (`maestro --port
+  4100`) still start the server.
+
+### Fixed
+
+- **Engine — robust agent failure handling.** Failure classifiers
+  (`isUsageLimitFailure`/`isContextWindowFailure`) now read only the error
+  channel (message + stderr + genuine stream-json error lines), so an agent that
+  merely *discusses* "rate limits" or "context windows" no longer false-trips a
+  retry. A claude run that emits a terminal `subtype:"success"` is salvaged
+  instead of discarded as `agent_failed` on a non-zero exit (e.g. after gated
+  tool denials). A custom event routed to `$complete` now finalizes the run as
+  succeeded instead of stranding it as running. F7: SIGTERM timeouts escalate to
+  SIGKILL after a 2s grace. F8: stream tails decode through a `StringDecoder` so
+  a multibyte codepoint split across chunks reassembles.
+- **Persistence — data-integrity + resource bounds.** F5: `updateTask` reads
+  synchronously so concurrent updates to one id can't interleave and drop a
+  patch. F6: SQLite opens with WAL + `busy_timeout=5000`. F9: the rate-limiter
+  evicts the LRU bucket past `maxBuckets`. F4 (base): `output_schema_ref` expands
+  to an inline schema at workflow-load time (guarded by `assertInsideDir`) — the
+  foundation the schema-contract closeout above completes.
+- **Project cleanup tolerates out-of-band-removed worktrees** — a vanished
+  worktree path is no longer `cd`'d into (which failed with an opaque `spawn git
+  ENOENT`); cleanup clears git metadata best-effort and stays idempotent.
+
+### Security
+
+- **Dashboard XSS (F1)** — the inlined snapshot JSON neutralized only lowercase
+  `</script>`; every `<` is now escaped, closing mixed-case `</Script>` and
+  `<!--` breakouts via attacker-influenced issue titles/descriptions.
+- **Symlink-escape read boundary (F2/F3)** — `assertInsideDirReal` /
+  `isInsideDirReal` (realpath both ends) gate the MCP read tools, so a symlink
+  planted in an agent-writable run dir can't exfiltrate arbitrary files; the
+  `assertInsideDir` docstring is corrected to state it is lexical-only.
+- **Role `source` path-escape** — the engine's source-resolution loop now guards
+  `role.source` with `isSafeRelativeRef` before `loadRole` (a `..`/absolute
+  source becomes a `bad_role_source` blocker), the sole enforceable gate since
+  `composeRole` strips `source` before the non-blocking validator. An
+  imported/shared workflow could otherwise read an arbitrary file into the agent
+  prompt and the run-manifest.
+- **Secret handling (F10/F11)** — stored secrets skip `ENV_KEY_DENYLIST` keys on
+  load (no `LD_PRELOAD`/`NODE_OPTIONS` promotion into `process.env`); KDF
+  `N`/`r`/`p` read from the secret envelope are bounds-checked before scrypt, so
+  a tampered envelope can't drive a decrypt-time CPU/memory DoS.
+- **`serve` hardening** — service overlays apply a var denylist and reject name
+  traversal; start fails fast on an unset api-key var or a port collision.
+- **Dependency** — bump the transitive `hono` pin to 4.12.25
+  (GHSA-wwfh-h76j-fc44, path traversal); `npm audit --omit=dev` reports 0
+  vulnerabilities.
+
+## [0.1.1] - 2026-06-16
+
 ### Changed (BREAKING)
 
 - **Dispatch consolidation & WORKFLOW.md removal (SP0b)** — the server (Linear
@@ -406,4 +542,5 @@ Initial release.
 - The `agent:ocr` / `agent:eval` scripts fail fast with an install hint when the
   Ollama binary is absent, instead of surfacing a raw spawn error mid-run.
 
+[0.1.1]: https://github.com/Xateh/maestro/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Xateh/maestro/releases/tag/v0.1.0

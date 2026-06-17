@@ -6,6 +6,7 @@ import {
   listSchemas,
   validatePayload,
   validateInline,
+  validateRolePayload,
   resolveRoleSchema,
   emptyPayloadForSchema,
   schemaSkeleton,
@@ -374,4 +375,56 @@ test("SP4 regression payload (with extra fields) conforms to the regression sche
   };
   const r = validatePayload("regression", payload);
   assert.equal(r.ok, true);
+});
+
+// ── U1: validateRolePayload shared helper ──────────────────────────────────
+// The helper must return the SAME verdict the 5 inlined node-site branches
+// produced, and null for the cases those branches left schemaValidation null.
+
+test("validateRolePayload: name source matches validatePayload verdict", () => {
+  const roleDef = { output_schema: "evaluation" };
+  const good = buildEvaluationPayload([okResult({ name: "ok" })]);
+  const out = validateRolePayload(roleDef, good);
+  assert.equal(out.schema, "evaluation");
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.errors, []);
+  // mirrors the inlined branch exactly
+  const ref = validatePayload("evaluation", good);
+  assert.equal(out.ok, ref.ok);
+  assert.deepEqual(out.errors, ref.errors);
+});
+
+test("validateRolePayload: name source surfaces failure verdict", () => {
+  const roleDef = { output_schema: "evaluation" };
+  const bad = { not: "an evaluation" };
+  const out = validateRolePayload(roleDef, bad);
+  assert.equal(out.schema, "evaluation");
+  assert.equal(out.ok, false);
+  assert.ok(out.errors.length > 0);
+});
+
+test("validateRolePayload: inline source matches validateInline verdict", () => {
+  const schema = { type: "object", required: ["k"], properties: { k: { type: "string" } } };
+  const roleDef = { output_schema: schema };
+  const okOut = validateRolePayload(roleDef, { k: "v" });
+  assert.equal(okOut.schema, "inline");
+  assert.equal(okOut.ok, true);
+  const badOut = validateRolePayload(roleDef, { k: 1 });
+  assert.equal(badOut.ok, false);
+  assert.deepEqual(okOut.errors, validateInline(schema, { k: "v" }).errors);
+});
+
+test("validateRolePayload: ref-expanded-to-inline role validates as inline", () => {
+  // _expandSchemaRefs rewrites output_schema_ref into an inline output_schema
+  // object upstream; by the time the helper sees it, it is an inline object.
+  const expanded = { output_schema: { type: "object", required: ["x"], properties: { x: { type: "number" } } } };
+  const out = validateRolePayload(expanded, { x: 1 });
+  assert.equal(out.schema, "inline");
+  assert.equal(out.ok, true);
+});
+
+test("validateRolePayload: returns null for none/unknown/unexpanded-ref", () => {
+  assert.equal(validateRolePayload({}, {}), null);                       // none
+  assert.equal(validateRolePayload({ output_schema: "nope" }, {}), null); // unknown
+  assert.equal(validateRolePayload({ output_schema_ref: "x.json" }, {}), null); // ref (unexpanded)
 });

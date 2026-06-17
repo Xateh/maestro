@@ -707,6 +707,57 @@ test("readWorkflow expands output_schema_ref into an inline schema (F4)", async 
   });
 });
 
+test("write-back of a ref-expanded workflow keeps output_schema_ref, drops the baked schema (U3)", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: () => {} });
+    await mkdir(store.root, { recursive: true });
+    const schema = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } } };
+    await writeFile(path.join(store.root, "custom-schema.json"), JSON.stringify(schema), "utf8");
+    await writeFile(store.workflowPath, JSON.stringify({
+      version: 2,
+      initial: "x",
+      roles: { x: { provider: "claude", output_schema_ref: "custom-schema.json" } },
+      transitions: { x: { done: "$complete" } },
+    }), "utf8");
+
+    // Simulate the TUI round-trip: read (expands ref → inline) then write the
+    // expanded roles straight back, the way the editor's `{ ...role }` spread does.
+    const wf = await store.readWorkflow();
+    assert.deepEqual(wf.roles.x.output_schema, schema); // expansion still works
+    await store.writeWorkflow({ roles: wf.roles });
+
+    // On disk, the ref must survive and the baked schema must NOT be persisted.
+    const onDisk = JSON.parse(await readFile(store.workflowPath, "utf8"));
+    assert.equal(onDisk.roles.x.output_schema_ref, "custom-schema.json");
+    assert.equal(onDisk.roles.x.output_schema, undefined);
+
+    // And re-reading still re-expands from the ref → no information lost.
+    const reread = await store.readWorkflow();
+    assert.deepEqual(reread.roles.x.output_schema, schema);
+  });
+});
+
+test("readWorkflow does not mutate the underlying role object when expanding a ref (U3)", async () => {
+  await withTempDir(async (dir) => {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro"), onWarn: () => {} });
+    await mkdir(store.root, { recursive: true });
+    const schema = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } } };
+    await writeFile(path.join(store.root, "custom-schema.json"), JSON.stringify(schema), "utf8");
+    await writeFile(store.workflowPath, JSON.stringify({
+      version: 2,
+      initial: "x",
+      roles: { x: { provider: "claude", output_schema_ref: "custom-schema.json" } },
+      transitions: { x: { done: "$complete" } },
+    }), "utf8");
+
+    const wf = await store.readWorkflow();
+    // Mutating the expanded copy must not bleed into a fresh read.
+    wf.roles.x.output_schema.required.push("tampered");
+    const fresh = await store.readWorkflow();
+    assert.deepEqual(fresh.roles.x.output_schema, schema);
+  });
+});
+
 test("readWorkflow skips an output_schema_ref that escapes the state dir (F4)", async () => {
   await withTempDir(async (dir) => {
     const warnings = [];

@@ -29,14 +29,18 @@ there.
 
 - Node.js **>= 22.13** (Maestro uses the built-in `node:sqlite` driver).
 - `npm ci` to install dependencies.
-- Optional: [herdr](https://github.com/herdr) on your `PATH` if you want agents
-  to run in visible terminal panes; without it, set `MAESTRO_BACKEND=terminal`.
+- The **terminal backend is the zero-dependency default** — agents run via
+  direct `child_process.spawn`, no extra install. [herdr](https://github.com/herdr)
+  is an optional acceleration: put it on your `PATH` to run agents in visible
+  terminal panes (the engine auto-selects it when present). Force the default
+  with `MAESTRO_BACKEND=terminal`.
 
 ## Before you open a PR
 
 ```bash
-npm test          # full suite (node --test, no API keys or agent CLIs needed)
-npm run lint      # Biome, lint-only (no formatter)
+npm test           # full suite (node --test, no API keys or agent CLIs needed)
+npm run test:terminal  # same suite, pinned to the default terminal backend
+npm run lint       # Biome, lint-only (no formatter)
 ```
 
 Both must pass. Tests are hermetic — they use temp dirs, stub runners, and a
