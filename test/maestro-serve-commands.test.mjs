@@ -117,3 +117,17 @@ test("serve rm removes a service whose isolated state dir has content", async ()
   await runServeCommand({ args: ["serve", "rm", "web", "--force", "--state-dir", root], stdout: capture().stdout, stderr: capture().stderr, env: {} });
   await assert.rejects(() => fs.stat(sd)); // state dir gone
 });
+
+import { LocalTaskStore } from "../src/task-store.mjs";
+
+test("bare serve with a legacy tracker and no services auto-adopts as 'default'", async () => {
+  const root = await tmpRoot();
+  const store = new LocalTaskStore({ root });
+  await store.init();
+  await store.writeConfig({ server: { tracker: { kind: "linear", api_key: "$LINEAR_API_KEY", project_slug: "WEB" } } });
+  const cap = capture();
+  await runServeCommand({ args: ["serve", "--state-dir", root], stdout: cap.stdout, stderr: cap.stderr, env: {} });
+  assert.match(cap.out, /default/);
+  const { readDefinition } = await import("../src/cli/serve/store.mjs");
+  assert.equal((await readDefinition(root, "default")).slug, "WEB");
+});

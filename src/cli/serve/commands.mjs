@@ -57,7 +57,11 @@ export async function runServeCommand({ args, stdout = process.stdout, stderr = 
   const writeErr = (s) => stderr.write(s);
 
   if (sub === undefined || sub === "list") {
-    const rows = await listStatuses(stateRoot);
+    let rows = await listStatuses(stateRoot);
+    if (rows.length === 0) {
+      const adopted = await tryAutoAdopt({ stateRoot, write, writeErr });
+      if (adopted) rows = await listStatuses(stateRoot);
+    }
     if (flags.json) { write(JSON.stringify(rows, null, 2) + "\n"); return {}; }
     if (rows.length === 0) { write(emptyGuidance()); return {}; }
     write(formatStatusTable(rows));
@@ -210,6 +214,17 @@ async function runWorker({ stateRoot, name, env, logger = new StructuredLogger()
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   return new Promise(() => {});
+}
+
+async function tryAutoAdopt({ stateRoot, write, writeErr }) {
+  const { LocalTaskStore } = await import("../../task-store.mjs");
+  const store = new LocalTaskStore({ root: stateRoot });
+  await store.init();
+  const tracker = (await store.readConfig()).server?.tracker;
+  if (!tracker?.project_slug) return false;
+  await writeDefinition(stateRoot, "default", { slug: tracker.project_slug, paused: false });
+  write(`Found a configured tracker with no named service.\nTreating it as service 'default' (${tracker.project_slug}).\n  Make it explicit: maestro serve adopt default\n\n`);
+  return true;
 }
 
 async function runAdopt({ stateRoot, rest, write, writeErr }) {
