@@ -9,12 +9,22 @@
 [![Changelog](https://img.shields.io/badge/changelog-keep--a--changelog-orange.svg)](CHANGELOG.md)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-Maestro is a multi-agent **plan → execute → review** orchestrator built on
-[LangGraph](https://github.com/langchain-ai/langgraphjs). It dispatches the
-coding CLIs already installed on your machine — `claude`, `codex`, `gemini`,
-`copilot`, `antigravity`, `ollama` — so each role in the pipeline runs the
-model best suited to it, authenticated however you already have it set up.
-No API keys, no vendor lock-in, no per-token billing you didn't sign up for.
+Maestro is a **harness for precise, auditable agent workflows**, built on
+[LangGraph](https://github.com/langchain-ai/langgraphjs). You declare the exact
+graph — which roles run, which model drives each, where the gates and loops sit —
+and Maestro conducts the coding CLIs already installed on your machine
+(`claude`, `codex`, `gemini`, `copilot`, `antigravity`, `ollama`) across it.
+Every handoff between roles is **typed, scoped, recorded, and replayable**: raw
+output stays on disk, only compact contracts pass downstream, and any run can be
+re-opened and audited later. No API keys, no vendor lock-in, no per-token billing
+you didn't sign up for.
+
+The pipeline isn't the point — the **precision** is. `plan → execute → review`
+is just the stock graph. Compose your own: a one-shot task, a long-running
+multi-stage project, or an unattended background service that polls your tracker
+and runs the right workflow on a cadence (`maestro serve`). Right model per role,
+gates where you want them, loops that terminate, every run inspectable after the
+fact.
 
 ```
 prompt → [planner] ──handoff──► [executor] ──handoff──► [reviewer] → done
@@ -24,10 +34,11 @@ prompt → [planner] ──handoff──► [executor] ──handoff──► [r
         architecture)             edits code)            approves)
 ```
 
-That's the stock `default` workflow. Mix and match freely: swap any role to any
-provider (`gemini` for big-context research, `ollama` for fully local, …) in
-`.maestro/config.json` or live in the TUI. The pipeline stays the same; only the
-instruments change.
+That's the stock `default` workflow — one graph among many. Mix and match
+freely: swap any role to any provider (`gemini` for big-context research,
+`ollama` for fully local, …) in `.maestro/config.json` or live in the TUI,
+or reshape the graph itself (`maestro workflow use`) — add stages, gates, and
+bounded loops. You hold the score; only the instruments change.
 
 ---
 

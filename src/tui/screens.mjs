@@ -148,6 +148,9 @@ export function renderTasksScreen(model, size) {
   const tasks = model.tasks ?? [];
   if (tasks.length === 0) {
     body.push(paint(`  No ${model.view} tasks. The stage is quiet.`, ANSI.dim, color));
+    body.push("");
+    body.push(paint("  A harness for precise, auditable agent workflows.", ANSI.dim, color));
+    body.push(paint("  Compose the graph; conduct your local CLI agents across it.", ANSI.dim, color));
     return frame(model, size, body);
   }
 
