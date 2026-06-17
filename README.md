@@ -101,9 +101,17 @@ session. If you can run `claude --version`, you're ready.
 - **Preflight + receipts** — `maestro doctor` checks Node, provider CLIs,
   herdr, and `.maestro` state before anything runs; every task run ends with a
   per-role summary (duration, output size, outcome).
-- **Workflow templates** — `maestro init --workflow extended|local|solo`
-  scaffolds ready-made pipelines, including an all-local Ollama setup and an
-  executor-only fast loop.
+- **Portable roles (MRC)** — author a role once as a unit
+  (`.maestro/roles/*.md`, a superset of the Claude Code subagent frontmatter),
+  or point a workflow role at an existing `.claude/agents/*.md` subagent or
+  skill via `source`; Maestro normalizes all three into one role. Per-role
+  `tools` allowlists are enforced where the provider supports it (Claude
+  `--allowedTools`/`--disallowedTools`) and advisory elsewhere. See
+  [docs/role-convention.md](docs/role-convention.md).
+- **Workflow templates** — `maestro init --workflow extended|local|solo|triage|research`
+  scaffolds ready-made pipelines: an all-local Ollama setup, an executor-only
+  fast loop, a single-role classifier (`triage`), and a gather→synthesize
+  `research` flow.
 - **Import/export bundles** — package a workflow as a shareable bundle and
   import it elsewhere (with automatic backup of the existing workflow).
 - **Security model** — host commands off by default, network binaries
@@ -228,6 +236,8 @@ the same tab, same context.
 | `maestro project <subcommand>` | Multi-task project commands (worktrees) |
 | `maestro setup <subcommand>` | Configure providers, keys, and imports |
 | `maestro workflow <subcommand>` | Workflow file commands |
+| `maestro role list · show · lint` | Inspect portable role units (`.maestro/roles`, `.claude/agents`, skills) |
+| `maestro import-agent <path>` | Convert a `.claude/agents` subagent into a native role unit |
 | `maestro export` / `maestro import <bundle>` | Share workflows as bundles |
 | `maestro serve [--config <path>] [--port <n>]` | Server mode (Linear polling) |
 
@@ -501,6 +511,7 @@ Releases are manual and documented in [RELEASING.md](RELEASING.md).
 - [docs/cli.md](docs/cli.md) — every command, flags, env vars
 - [docs/configuration.md](docs/configuration.md) — `.maestro/` layout, config schema, provider setup, tab lifecycle
 - [docs/import-export.md](docs/import-export.md) — workflow bundle format, export/import flow
+- [docs/role-convention.md](docs/role-convention.md) — portable role units (MRC), tool allowlists, provider capability matrix
 - [docs/local-llm.md](docs/local-llm.md) — fully local setup with Ollama
 - [docs/mcp.md](docs/mcp.md) — MCP tools reference and registration
 - [src/mcp/SCHEMA.md](src/mcp/SCHEMA.md) — raw MCP tool schema (kept in sync with `server.mjs`)
