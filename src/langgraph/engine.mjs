@@ -16,7 +16,7 @@ import { TerminalAgentRunner, directCommandExists } from "../agent-runner.mjs";
 import { openStore } from "../db/store.mjs";
 import { buildGraph } from "./graph.mjs";
 import { resolveInitialState, isTerminalAfterState } from "../state-machine.mjs";
-import { findCycles, validateWorkflow } from "../workflow-validate.mjs";
+import { findCycles, isSafeRelativeRef, validateWorkflow } from "../workflow-validate.mjs";
 import { DEFAULT_LOCAL_STATE_DIR } from "../task-store.mjs";
 import { buildRunManifest, readMaestroVersion } from "../run-manifest.mjs";
 import { loadRole, composeRole } from "../setup/role-loader.mjs";
@@ -363,6 +363,19 @@ export async function runLangGraphTask(taskId, {
       // `source` is an MRC unit ref ONLY when it is a STRING (D5). A legacy
       // import provenance OBJECT source is left untouched.
       if (typeof role?.source !== "string") continue;
+      // Path-escape guard (audit F1): this loop is the sole enforceable gate —
+      // composeRole strips `source` before the non-blocking validateWorkflow, so
+      // reject absolute/".." refs HERE, before loadRole reads an arbitrary file
+      // into the prompt + run-manifest.
+      if (!isSafeRelativeRef(role.source)) {
+        blockers.push({
+          code: "bad_role_source",
+          role: stateName,
+          source: role.source,
+          message: `role "${stateName}" source must be a relative path inside the project, got ${JSON.stringify(role.source)}`,
+        });
+        continue;
+      }
       const loaded = await loadRole(role.source, { cwd: taskCwd });
       if (!loaded.ok) {
         blockers.push({ code: loaded.error.code, role: stateName, source: loaded.error.source, message: loaded.error.message });

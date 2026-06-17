@@ -547,6 +547,55 @@ test("runLangGraphTask: custom event routing to $complete finalizes succeeded", 
   }
 });
 
+// Security (audit finding F1): a role `source` that escapes the project (absolute
+// or "..") must be blocked BEFORE loadRole reads it — otherwise an imported/shared
+// workflow could read an arbitrary file into the prompt + run-manifest. The
+// engine MRC loop is the sole enforceable gate (validateWorkflow runs after
+// composeRole strips `source` and is non-blocking).
+test("runLangGraphTask: unsafe role.source path is blocked before load (path-escape guard)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-srcguard-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "x", cwd: dir, reviewEnabled: false });
+    await writeFile(
+      path.join(store.root, "workflow.json"),
+      JSON.stringify({
+        version: 2,
+        initial: "worker",
+        roles: {
+          worker: {
+            label: "W",
+            provider: "codex",
+            prompt_template: "worker",
+            permission: "read",
+            source: "../../../../../../etc/hostname", // escapes the project
+          },
+        },
+        transitions: { worker: { done: "$complete", error: "$halt" } },
+        modes: { task: { initial: "worker" } },
+      }),
+    );
+    const runner = {
+      runStep: async () => ({ stdout: 'MAESTRO_HANDOFF: {"summary":"x"}', stderr: "", stdoutPath: null, stderrPath: null }),
+    };
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+    assert.equal(finalTask.status, "waiting_user");
+    assert.ok(
+      (finalTask.blockers ?? []).some((b) => b.code === "bad_role_source"),
+      "unsafe source must produce a bad_role_source blocker, not be read",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ── makeRoleNode: provider availability / fallback ───────────────────────────────
 
 const HANDOFF_OUT = { stdout: 'MAESTRO_HANDOFF: {"summary":"ok"}', stderr: "", stdoutPath: null, stderrPath: null };
