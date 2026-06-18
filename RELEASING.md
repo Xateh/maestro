@@ -3,6 +3,15 @@
 How to release `maestro-orchestrator`. GitHub Releases are automated from
 tags; **npm publish stays manual on purpose** — there is no publish CI.
 
+> **Tag the merge commit, never a pre-merge branch tip.** The version bump and
+> changelog cut (steps 1–2) land through a normal PR to `main`. The release tag
+> is cut **only after that PR merges**, on the resulting commit on `main` (step
+> 7). Tagging a feature-branch tip before merge pins the release to a commit
+> that may still gain follow-up commits (a CI fix, a review change) or never
+> reach `main` at all — the tag then disagrees with `main`. If a release PR
+> picks up extra commits after you opened it, that's fine: the tag waits for the
+> final merged state, so it always names exactly what shipped.
+
 > **⚠️ Read before every publish:** the GitHub repository is currently
 > **private**. `npm publish` puts the full source (everything in `bin/` and
 > `src/`) on the public npm registry, where it stays cached and mirrored even
@@ -45,10 +54,14 @@ tags; **npm publish stays manual on purpose** — there is no publish CI.
    npm publish --access public
    ```
 
-7. **Tag to cut the GitHub Release:**
+7. **Merge the release PR, then tag the merge commit on `main`:**
+
+   Steps 1–2 are committed on a release branch and reviewed as a PR. Once it is
+   green and merged, tag the merged state — not the branch tip:
 
    ```bash
-   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git checkout main && git pull
+   git tag -a vX.Y.Z -m "vX.Y.Z"   # on the merge commit, package.json == X.Y.Z
    git push origin vX.Y.Z
    ```
 
