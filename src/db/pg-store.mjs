@@ -106,16 +106,34 @@ export class PostgresTaskStore {
   }
 
   async updateTask(id, patchOrFn) {
-    const current = await this.getTask(id);
-    if (!current) throw new Error(`task_not_found: ${id}`);
-    const now = new Date().toISOString();
-    const patch = typeof patchOrFn === "function" ? patchOrFn(current) : patchOrFn;
-    const updated = { ...current, ...patch, updated_at: now };
-    await this._pool.query(
-      "UPDATE tasks SET status = $1, updated_at = $2, data = $3 WHERE id = $4",
-      [updated.status ?? current.status, now, JSON.stringify(updated), id],
-    );
-    return updated;
+    // Read+merge+write in one transaction with SELECT ... FOR UPDATE so a
+    // concurrent updateTask on the same id blocks on the row lock instead of
+    // interleaving at an await and dropping one side's patch. (F5 — SQLite
+    // gets the same serialization for free via its synchronous read→write.)
+    const client = await this._pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query(
+        "SELECT data FROM tasks WHERE id = $1 FOR UPDATE",
+        [id],
+      );
+      if (!rows[0]) throw new Error(`task_not_found: ${id}`);
+      const current = rows[0].data;
+      const now = new Date().toISOString();
+      const patch = typeof patchOrFn === "function" ? patchOrFn(current) : patchOrFn;
+      const updated = { ...current, ...patch, updated_at: now };
+      await client.query(
+        "UPDATE tasks SET status = $1, updated_at = $2, data = $3 WHERE id = $4",
+        [updated.status ?? current.status, now, JSON.stringify(updated), id],
+      );
+      await client.query("COMMIT");
+      return updated;
+    } catch (err) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async listTasks({ limit = 50, status = null } = {}) {
