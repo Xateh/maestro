@@ -13,9 +13,6 @@ Three legs:
 - **Tools = declared allowlists.** A role can declare the tools it may use; maestro
   enforces or advises that policy per provider (see the [capability matrix](#tool-capability-matrix)).
 
-See the full design spec at
-`docs/superpowers/specs/2026-06-16-maestro-role-convention-design.md`.
-
 ## Role unit format
 
 A native unit is a markdown file at `.maestro/roles/<name>.md` — YAML

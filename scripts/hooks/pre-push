@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Two jobs:
-#  1. Block internal artifacts (*.private.md, graphify-out/) from reaching any
+#  1. Block internal artifacts (*.private.md, graphify-out/, design/spec scratch,
+#     and the dev->public release tooling — see the grep below) from reaching any
 #     remote other than origin (i.e. public) — a technical backstop to the CI gate.
 #  2. Auto-refresh the graphify-data branch (graphify-out/ snapshot) on push to
 #     origin (maestro-dev).
@@ -14,8 +15,10 @@ zero="0000000000000000000000000000000000000000"
 if [ "$remote" != "origin" ]; then
   while read -r _local_ref local_sha _remote_ref _remote_sha; do
     [ "$local_sha" = "$zero" ] && continue   # branch deletion
+    # Keep these patterns in sync with scripts/strip-private.sh and the
+    # no-private-files job in .github/workflows/ci.yml.
     bad="$(git ls-tree -r --name-only "$local_sha" \
-      | grep -E '(^|/)[^/]*\.private\.md$|^graphify-out/' || true)"
+      | grep -E '(^|/)[^/]*\.private\.md$|^graphify-out/|^docs/(superpowers|specs|internal)/|^scripts/(strip-private|graphify-sync|install-hooks)\.sh$|^scripts/hooks/' || true)"
     if [ -n "$bad" ]; then
       echo "pre-push: refusing to push internal artifacts to '$remote':" >&2
       echo "$bad" | sed 's/^/  /' >&2
