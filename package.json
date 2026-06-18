@@ -1,6 +1,6 @@
 {
   "name": "maestro-orchestrator",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "A harness for precise, auditable agent workflows — compose a graph of roles, drive the CLI agents already on your machine, with typed, gated, replayable handoffs. Built on LangGraph.",
   "repository": {
     "type": "git",
@@ -53,7 +53,6 @@
     "headroom:setup": "bash scripts/headroom-setup.sh"
   },
   "dependencies": {
-    "ajv": "^8.17.1",
     "@langchain/langgraph": "^1.3.6",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex": "^0.133.0",
@@ -61,6 +60,7 @@
     "@opentelemetry/auto-instrumentations-node": "^0.77.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.219.0",
     "@opentelemetry/sdk-node": "^0.219.0",
+    "ajv": "^8.17.1",
     "headroom-ai": "^0.22.4",
     "liquidjs": "^10.25.7",
     "pg": "^8.21.0",

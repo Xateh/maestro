@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-18
+
 ### Added
 
-- **Schema contract closeout (v0.1.2, AUDIT F4)** — `output_schema_ref` is now a
+- **Schema contract closeout (v0.2.0, AUDIT F4)** — `output_schema_ref` is now a
   first-class, enforceable contract end to end.
   - **One shared validator.** The five duplicated `resolve→validate` branches in
     `langgraph/nodes.mjs` (stub / command / regression / scoring + the LLM
@@ -542,5 +544,6 @@ Initial release.
 - The `agent:ocr` / `agent:eval` scripts fail fast with an install hint when the
   Ollama binary is absent, instead of surfacing a raw spawn error mid-run.
 
+[0.2.0]: https://github.com/Xateh/maestro/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Xateh/maestro/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Xateh/maestro/releases/tag/v0.1.0
