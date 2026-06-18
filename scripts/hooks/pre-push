@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
-# Auto-refresh the graphify-data branch (graphify-out/ snapshot) whenever we push
-# to origin (maestro-dev). Never runs for the public remote. Installed into
-# .git/hooks/pre-push by scripts/install-hooks.sh.
+# Two jobs:
+#  1. Block internal artifacts (*.private.md, graphify-out/) from reaching any
+#     remote other than origin (i.e. public) — a technical backstop to the CI gate.
+#  2. Auto-refresh the graphify-data branch (graphify-out/ snapshot) on push to
+#     origin (maestro-dev).
+# Installed into .git/hooks/pre-push by scripts/install-hooks.sh.
 set -euo pipefail
 
 remote="${1:-}"
+zero="0000000000000000000000000000000000000000"
 
-# Only sync on pushes to origin; leave public (and any other remote) untouched.
-[ "$remote" = "origin" ] || exit 0
+# Guard: refuse to push internal artifacts to a non-origin (public) remote.
+if [ "$remote" != "origin" ]; then
+  while read -r _local_ref local_sha _remote_ref _remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue   # branch deletion
+    bad="$(git ls-tree -r --name-only "$local_sha" \
+      | grep -E '(^|/)[^/]*\.private\.md$|^graphify-out/' || true)"
+    if [ -n "$bad" ]; then
+      echo "pre-push: refusing to push internal artifacts to '$remote':" >&2
+      echo "$bad" | sed 's/^/  /' >&2
+      echo "Strip them (scripts/strip-private.sh) before pushing to public." >&2
+      exit 1
+    fi
+  done
+  exit 0
+fi
+
+# origin only past here: auto-sync graphify-data snapshot.
 # Avoid recursion: graphify-sync.sh sets this when it pushes graphify-data.
 [ -n "${GRAPHIFY_SYNC:-}" ] && exit 0
 
