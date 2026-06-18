@@ -2,22 +2,12 @@
 
 Thanks for taking a seat in the orchestra. Here's how to keep rehearsals short.
 
-## Repository layout & how changes ship
+## How changes ship
 
-Maestro lives in two GitHub repositories that share one history:
-
-- **`Xateh/maestro`** (public) — the canonical `main`. This is what ships.
-- **`Xateh/maestro-dev`** (private) — where work-in-progress branches live.
-
-**Rule:** open every pull request from a branch in the **private** repo
-(`maestro-dev`) **against the public repo's `main`** (`Xateh/maestro`). Do not
-merge feature branches into the private repo's `main` directly. After a PR lands
-on public `main`, the private repo's `main` is fast-forwarded to match.
-
-This keeps the `main` branch of both repositories identical at all times — the
-public `main` is always the single source of truth, and the private `main` is a
-mirror of it. Day-to-day development (branches, drafts, experiments) stays in
-the private repo; only finished, reviewed work reaches public `main`.
+`main` is the single source of truth — it is what ships, and it only ever moves
+forward through reviewed pull requests. Branch off `main`, keep your work
+focused, and open a PR against `main` when it is ready. Nothing lands on `main`
+unreviewed.
 
 ## Code of Conduct
 
