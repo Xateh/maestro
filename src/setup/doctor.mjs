@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { BUILTIN_PROVIDER_NAMES } from "../adapters/registry.mjs";
 import { directCommandExists } from "../agent-runner.mjs";
 import { deepMergeConfig } from "../config-local.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
@@ -64,9 +65,13 @@ export async function runDoctor({
     : check("node", "node", "fail", `v${nodeVersion} — Maestro requires ${minNode}`));
 
   for (const provider of [...CLI_PROVIDERS, ...LOCAL_AGENT_PROVIDERS]) {
+    // Providers without a built-in adapter (pi/hermes/openclaw) ship as
+    // experimental custom-adapter defaults — mark them so the probe is honest
+    // about their status. See docs/local-llm.md.
+    const expTag = BUILTIN_PROVIDER_NAMES.has(provider) ? "" : " · experimental (custom adapter)";
     const found = await commandExists(provider, { cwd, env });
     if (!found) {
-      checks.push(check(`provider:${provider}`, provider, "skip", "not installed"));
+      checks.push(check(`provider:${provider}`, provider, "skip", `not installed${expTag}`));
       continue;
     }
     let detail = "installed";
@@ -77,7 +82,7 @@ export async function runDoctor({
     } catch {
       detail = "installed (--version failed)";
     }
-    checks.push(check(`provider:${provider}`, provider, "pass", detail));
+    checks.push(check(`provider:${provider}`, provider, "pass", `${detail}${expTag}`));
   }
 
   const herdrBin = env.HERDR_BIN ?? "herdr";

@@ -83,7 +83,7 @@ Key fields:
       "label": "Claude",
       "adapter": "built-in:claude",
       "default_alias": "claude",
-      "aliases": { "claude": "claude", "opus": "claude-opus-4-8" },
+      "aliases": ["claude"],   // bare strings or { name, command?, env? } objects — see "Aliases & per-alias env"
       "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
       "efforts": ["low", "medium", "high"]
     },
@@ -91,7 +91,7 @@ Key fields:
       "label": "Codex",
       "adapter": "built-in:codex",
       "default_alias": "codex",
-      "aliases": {},
+      "aliases": ["codex"],
       "models": [],
       "efforts": ["low", "medium", "high"]
     }
@@ -712,6 +712,39 @@ custom adapter:
 
 Supported `{placeholders}`: `alias`, `model`, `effort`, `role`, `permission`, `prompt`.
 
+### Aliases & per-alias env (multi-account CLIs)
+
+`aliases` is an **array** of account entries. Each entry is either a **bare
+string** (the binary/command to spawn, which doubles as the account identity) or
+an **object** `{ name, command?, env? }`. The object form lets multiple accounts
+of the same CLI (e.g. two Claude logins on different `CLAUDE_CONFIG_DIR`s)
+coexist purely through `config.json` — no hand-written shell aliases:
+
+```jsonc
+"aliases": [
+  "claude",                                    // bare string
+  {                                            // object form
+    "name": "work",
+    "command": "claude",                       // omit → run the provider base binary
+    "env": { "CLAUDE_CONFIG_DIR": "~/.claude-work" }
+  }
+]
+```
+
+Alias `env` merges **over** provider `env` (alias wins) with `~` and `$VAR`
+expansion; the resolved binary is spawned directly (no `bash -ic`) while the
+alias `name` stays the routing identity. A fully-default object (no `env`,
+`command` equals `name`) round-trips back to a bare string on save. The TUI
+account manager (provider menu) edits these, rejecting denylisted env keys.
+Bare-string aliases are unchanged.
+
+### Autonomous claude write mode
+
+A write-permission role may set `MAESTRO_CLAUDE_WRITE_MODE` (e.g. `acceptEdits`
+or `bypassPermissions`) so a non-interactive `claude` applies edits without a
+human at the CLI — matching codex's `approval_policy=never`. Unset preserves the
+legacy interactive permission mode.
+
 ### Local LLMs (Ollama)
 
 The `built-in:ollama` adapter dispatches a fully local model — no API key, no
@@ -851,7 +884,7 @@ overwritten on resume). It is **self-contained**:
 ```jsonc
 {
   "manifest_version": 1,
-  "maestro_version": "0.1.0",
+  "maestro_version": "0.2.0",
   "created_at": "…ISO…",
   "source_task_id": "<id>",
   "task": { /* the 19 replayable input knobs only */ },
