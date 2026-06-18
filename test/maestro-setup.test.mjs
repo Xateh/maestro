@@ -904,6 +904,27 @@ test("runDoctor reports pass for a healthy state dir", async () => {
   });
 });
 
+test("runDoctor marks experimental local providers (pi/hermes/openclaw) and not built-ins", async () => {
+  const { runDoctor } = await import("../src/setup/doctor.mjs");
+  await withTempDir(async (dir) => {
+    const stateDir = path.join(dir, ".maestro");
+    const result = await runDoctor({
+      stateDir, // no state dir: keeps the test to the provider-probe section
+      commandExists: async () => true,
+      exec: async () => ({ stdout: "9.9.9\n" }),
+      openDb: async () => ({ close() {} }),
+    });
+    const byId = Object.fromEntries(result.checks.map((c) => [c.id, c]));
+    // Built-in providers carry no experimental marker.
+    assert.equal(byId["provider:claude"].detail, "9.9.9");
+    assert.equal(byId["provider:ollama"].detail, "9.9.9");
+    // Experimental custom-adapter local CLIs are flagged so the probe is honest.
+    for (const provider of ["pi", "hermes", "openclaw"]) {
+      assert.match(byId[`provider:${provider}`].detail, /experimental/);
+    }
+  });
+});
+
 test("runDoctor flags per-role provider availability (warn on fallback, fail on none)", async () => {
   const { runDoctor } = await import("../src/setup/doctor.mjs");
   const { DEFAULT_WORKFLOW, DEFAULT_PROVIDERS } = await import("../src/task-store.mjs");

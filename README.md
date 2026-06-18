@@ -307,6 +307,12 @@ Default mapping: **planner = claude**, **executor = codex**, **reviewer = codex*
 | `antigravity` | `antigravity` | Optional; bring-your-own CLI |
 | `ollama` | `ollama` | Fully local, offline-capable models — privacy-sensitive or air-gapped work. See [docs/local-llm.md](docs/local-llm.md) |
 
+The default config also ships three **experimental** local providers (`pi`,
+`hermes`, `openclaw`) preconfigured against the `custom` adapter — best-effort
+templates to verify with `maestro setup local`, not first-class integrations.
+`ollama` is the only built-in local adapter. See
+[docs/local-llm.md](docs/local-llm.md#experimental-local-clis-pi-hermes-openclaw).
+
 **Assign a provider to each role:** role → provider mapping lives in
 `.maestro/workflow.json` (the `providers` block in `config.json` only *defines*
 each provider's adapter, models, and aliases). Edit it live in `maestro tui`
