@@ -147,7 +147,7 @@ session. If you can run `claude --version`, you're ready.
 - **Security model** — host commands off by default, network binaries
   hard-denied even when allowlisted, secrets stripped from subprocess env, MCP
   file access path-traversal-guarded.
-- **Interactive web dashboard** — `maestro serve` exposes a Linear-inspired
+- **Interactive web dashboard** — server mode exposes a Linear-inspired
   browser UI at `http://localhost:<port>/`. Live-polls task state every 5 s,
   filter tabs (All / Running / Retrying / Completed), click any row for a
   detail panel, and trigger an orchestrator refresh — all without page reloads.
@@ -257,7 +257,7 @@ the same tab, same context.
 | `task` | planner → executor → reviewer | `maestro task "<prompt>"` |
 | `plan-only` | planner only; stops at handoff | `maestro task --plan-only "<prompt>"` |
 | `evaluate` | system evaluator only (extended template) | `maestro task --mode evaluate "<prompt>"` |
-| server | polls Linear, auto-dispatches | `maestro serve [--config <path>] [--port <n>]` |
+| server | polls Linear, auto-dispatches | `maestro [--config <path>] [--port <n>]` (flag-first) or `maestro serve start <name>` |
 
 ### CLI Commands
 
@@ -277,7 +277,8 @@ the same tab, same context.
 | `maestro role list · show · lint` | Inspect portable role units (`.maestro/roles`, `.claude/agents`, skills) |
 | `maestro import-agent <path>` | Convert a `.claude/agents` subagent into a native role unit |
 | `maestro export` / `maestro import <bundle>` | Share workflows as bundles |
-| `maestro serve [--config <path>] [--port <n>]` | Server mode (Linear polling) |
+| `maestro [--config <path>] [--port <n>]` | One-off server (Linear polling); flag-first, no `serve` word |
+| `maestro serve <subcommand>` | Manage background tracker-polling services (`add`, `start`, `stop`, `list`, `logs`, `adopt`, …) |
 
 Run `maestro help <command>` for flags and details, or see
 [docs/cli.md](docs/cli.md) for the full reference.
@@ -440,7 +441,8 @@ See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
 </div>
 -->
 
-When running `maestro serve`, Maestro starts an HTTP server (default port from
+When running a server (flag-first `maestro --port …` or `maestro serve start
+<name>`), Maestro starts an HTTP server (default port from
 `config.json → server.port`). Visit `http://localhost:<port>/` for the dashboard:
 
 - **Live task board** — auto-polls `/api/v1/state` every 5 s (active tasks) or
