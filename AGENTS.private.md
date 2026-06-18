@@ -6,6 +6,13 @@
 > fails any pull request to public `main` that still carries a `*.private.md`
 > file. Do not move this content into `CONTRIBUTING.md`, `RELEASING.md`,
 > `README.md`, or any other tracked file that ships to public `main`.
+>
+> **Internal artifacts get the same treatment.** Both `*.private.md` (these
+> agent instructions) and `graphify-out/` (internal knowledge-graph data) are
+> private. `graphify-out/` is `.gitignored` on normal branches and snapshotted
+> only to the origin-only `graphify-data` branch (see `scripts/graphify-sync.sh`,
+> never pushed to `public`); the strip script and CI guard cover it too as a
+> backstop. Never push the `graphify-data` branch to `public`.
 
 ## Remotes
 
