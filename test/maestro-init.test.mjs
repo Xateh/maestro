@@ -6,13 +6,18 @@ import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
 import { resolveWorkspaceLocalInvocation } from "../bin/maestro.mjs";
+import { PACKAGE_ROOT } from "../src/cli/workspace-resolve.mjs";
 import { runInitWizard } from "../src/setup/init.mjs";
 import {
   EXTENDED_WORKFLOW,
   WORKFLOW_TEMPLATES,
   applyWorkflowTemplate,
 } from "../src/setup/workflow-templates.mjs";
-import { DEFAULT_LOCAL_CONFIG_V2, DEFAULT_WORKFLOW } from "../src/task-store.mjs";
+import {
+  DEFAULT_LOCAL_CONFIG_V2,
+  DEFAULT_LOCAL_STATE_DIR,
+  DEFAULT_WORKFLOW,
+} from "../src/task-store.mjs";
 import { validateWorkflow } from "../src/workflow-validate.mjs";
 
 function makeOutput() {
@@ -287,14 +292,15 @@ test("local commands discover a caller-side .maestro by walking up", async () =>
     });
     assert.deepEqual(found.args, ["status", "--state-dir", stateDir]);
 
-    // no caller-side state → historical package-root default
+    // no caller-side state → historical package-root default (independent of
+    // the checkout dir name, which differs between the public/private repos)
     const fallback = resolveWorkspaceLocalInvocation({
       args: ["status"],
       env: {},
       processCwd: nested,
       exists: () => false,
     });
-    assert.equal(fallback.args[2].endsWith(path.join("maestro", ".maestro")), true);
+    assert.equal(fallback.args[2], path.join(PACKAGE_ROOT, DEFAULT_LOCAL_STATE_DIR));
 
     // explicit flag wins; init never gets a default injected
     const explicit = resolveWorkspaceLocalInvocation({
