@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-18
+
+### Fixed
+
+- **Local LLM provider alignment.** `maestro doctor` and the CLI/config docs
+  (`docs/cli.md`, `docs/configuration.md`, `docs/local-llm.md`) now match the
+  experimental local providers actually shipped in the adapter registry, so
+  doctor no longer reports drift against providers it doesn't recognize.
+
 ## [0.2.0] - 2026-06-18
 
 ### Added

@@ -99,18 +99,60 @@ maestro doctor --json     # machine-readable result
 
 ## Server Mode
 
-### `serve [--config <path>] [--state-dir <dir>] [--port <n>]`
-
-Start server mode: poll Linear and auto-dispatch issues as graph tasks (the same
-LangGraph engine `maestro task` uses). Also starts the HTTP server, which serves
+Server mode polls Linear and auto-dispatches issues as graph tasks (the same
+LangGraph engine `maestro task` uses), and starts the HTTP server, which serves
 the **interactive web dashboard** at `/` and a JSON API at `/api/v1/*`.
 
+There are two ways to start it.
+
+### One-off foreground server — flag-first `maestro [--config <path>] [--state-dir <dir>] [--port <n>]`
+
+Invoke `maestro` with **no subcommand word**, just flags. This runs a single
+server in the foreground until you `Ctrl-C`.
+
 ```bash
-maestro serve                       # reads ./.maestro/config.json
-maestro serve --port 4100
-maestro serve --config ./.maestro   # explicit state dir for config.json
-maestro serve --state-dir ./alt     # reads ./alt/config.json
+maestro                       # reads ./.maestro/config.json
+maestro --port 4100
+maestro --config ./.maestro   # explicit state dir for config.json
+maestro --state-dir ./alt     # reads ./alt/config.json
 ```
+
+> **Breaking change (v0.2.0):** `maestro serve --config …` no longer starts a
+> server — `serve` is now a service-manager subcommand group (below), so the bare
+> flag form (no `serve` word) is the one-off equivalent. `maestro serve --config`
+> errors with `unknown serve subcommand`.
+
+### Managed background services — `serve <subcommand>`
+
+`serve` registers, runs, and supervises multiple tracker-backed services from a
+single state dir. Each service is a named definition backed by an owner-checked
+`0600` store; lifecycle is identity-verified against the recorded pid.
+
+| Subcommand | Synopsis | Purpose |
+|---|---|---|
+| `serve list` | `serve list [--json]` | show all services + state |
+| `serve add` | `serve add <name> --slug <SLUG> [--port N --workflow W --var NAME --workspace DIR --shared-state]` | register a service |
+| `serve edit` | `serve edit <name> [--slug … --port … …]` | update a service definition |
+| `serve rm` | `serve rm <name> [--force]` | remove a service |
+| `serve start` | `serve start <name\|--all>` | start service(s) in the background |
+| `serve stop` | `serve stop <name\|--all>` | stop service(s) |
+| `serve pause` | `serve pause <name>` | stop + mark paused |
+| `serve resume` | `serve resume <name>` | clear paused + start |
+| `serve status` | `serve status <name>` | detail for one service |
+| `serve logs` | `serve logs <name> [-f] [-n N]` | tail a bounded worker log |
+| `serve adopt` | `serve adopt [name]` | materialize a legacy single-tracker config as a `default` service |
+
+```bash
+maestro serve add prod --slug PROD --port 4100 --workflow full-audit-sweep
+maestro serve start prod
+maestro serve list
+maestro serve logs prod -f
+maestro serve stop --all
+```
+
+Service overlays resolve the `server` config block with a var denylist and
+port/api-key validation, failing fast at start on an unset api-key var or a port
+collision.
 
 All server settings (tracker, polling, workspace, hooks, agent limits, intake
 template, and which named workflow to run) come from the `server` block in
@@ -348,6 +390,19 @@ scripts. Keys are optional — provider CLIs handle their own auth.
 Unlock later with `MAESTRO_SECRET_PASSPHRASE` or the interactive prompt; real
 environment variables still take precedence. `maestro doctor` reports the
 active store mode.
+
+### `setup tracker [--project-slug <slug>] [--api-key <key>] [--var NAME]`
+
+Configure the Linear tracker for server mode: a wizard that writes
+`server.tracker` to `config.json` and chains the `LINEAR_API_KEY` prompt.
+`--project-slug` sets the Linear project slug/key; `--api-key` stores the key
+non-interactively; `--var NAME` overrides the env var name the key is read from
+(default `LINEAR_API_KEY`).
+
+```bash
+maestro setup tracker                              # interactive
+maestro setup tracker --project-slug TEAM --api-key "$LINEAR_API_KEY"
+```
 
 ### `setup harden [--project] [--dry-run]`
 
