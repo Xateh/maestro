@@ -14,6 +14,13 @@ const BUILTIN_ADAPTERS = {
   "built-in:ollama": buildOllamaCommand,
 };
 
+// Provider names that resolve to a first-class built-in adapter (no "built-in:"
+// prefix). Everything else (e.g. the experimental pi/hermes/openclaw defaults)
+// is driven through the generic `custom` adapter.
+export const BUILTIN_PROVIDER_NAMES = new Set(
+  Object.keys(BUILTIN_ADAPTERS).map((id) => id.replace(/^built-in:/, "")),
+);
+
 // Tokenize a custom command template: "{alias} --model {model}" etc.
 // Unrecognized or empty-valued tokens drop the preceding flag + value pair.
 function buildCustomCommand(providerDef, { prompt, cwd, alias, model, effort, permission, role, tools, deny_tools } = {}) {

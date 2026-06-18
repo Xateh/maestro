@@ -86,6 +86,28 @@ never leaves the machine for the review step.
 Rule of thumb: keep a few GB of headroom beyond the model size; the
 `agent:eval` system evaluator will warn you when the host is tight.
 
+## Experimental local CLIs (pi, hermes, openclaw)
+
+Beyond Ollama, Maestro's default config ships three **experimental** local
+providers preconfigured against the `custom` adapter: `pi`, `hermes`, and
+`openclaw`. They appear in `maestro doctor` (flagged `experimental (custom
+adapter)`), in the TUI provider picker, and are probed by `maestro setup local`.
+
+They are **best-effort command templates, not first-class integrations** — only
+`ollama` has a built-in adapter. The shipped templates are reasonable defaults
+but may not match your installed CLI's exact invocation:
+
+| Provider | Default template | Prompt via |
+|---|---|---|
+| `pi` | `pi --model {model} -p` | arg |
+| `hermes` | `hermes --model {model}` | stdin |
+| `openclaw` | `openclaw agent --message` | arg |
+
+Run `maestro setup local` to detect which are installed and discover their
+models, then **verify and correct the `command_template`** in
+`.maestro/config.json` (or `.maestro/config.local.json`) before assigning one to
+a role — exactly as you would for any other custom-adapter runtime below.
+
 ## Other local runtimes (LM Studio, llama.cpp, …)
 
 Anything with a non-interactive CLI works via the `custom` adapter — no code
