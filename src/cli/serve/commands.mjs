@@ -235,7 +235,7 @@ async function runWorker({ stateRoot, name, env, logger = new StructuredLogger()
   return new Promise(() => {});
 }
 
-async function tryAutoAdopt({ stateRoot, write, writeErr }) {
+async function tryAutoAdopt({ stateRoot, write }) {
   const { LocalTaskStore } = await import("../../task-store.mjs");
   const store = new LocalTaskStore({ root: stateRoot });
   await store.init();

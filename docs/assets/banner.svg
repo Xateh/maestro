@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="200" viewBox="0 0 720 200" role="img" aria-label="Maestro — your agents, conducted. A planner, executor, and reviewer baton handoff.">
+  <title>Maestro — your agents, conducted.</title>
+  <style>
+    /* Mid-tone palette readable on both GitHub light and dark themes. */
+    .ink   { fill: #4b5563; }   /* slate — wordmark, neutral on either theme */
+    .muted { fill: #6b7280; }   /* tagline + node labels */
+    .accent{ fill: #60a5fa; }   /* single accent — matches the Biome badge */
+    .accent-stroke { stroke: #60a5fa; }
+    .baton { stroke: #6b7280; }
+
+    @media (prefers-color-scheme: dark) {
+      .ink   { fill: #e5e7eb; }
+      .muted { fill: #9ca3af; }
+      .baton { stroke: #9ca3af; }
+    }
+  </style>
+
+  <!-- Wordmark -->
+  <text x="48" y="92" class="ink"
+        font-family="'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="68" font-weight="800" letter-spacing="6">MAESTRO</text>
+
+  <!-- Accent baton tick under the M, evoking a downbeat -->
+  <rect x="50" y="104" width="44" height="5" rx="2.5" class="accent" />
+
+  <!-- Tagline -->
+  <text x="52" y="134" class="muted"
+        font-family="'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="22" font-style="italic" letter-spacing="1">your agents, conducted.</text>
+
+  <!-- Baton / handoff motif: planner ▸ executor ▸ reviewer -->
+  <g font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" letter-spacing="1">
+    <!-- node: planner -->
+    <circle cx="120" cy="170" r="7" fill="none" class="accent-stroke" stroke-width="2.5" />
+    <text x="135" y="175" class="muted">planner</text>
+
+    <!-- handoff arrow -->
+    <line x1="205" y1="170" x2="247" y2="170" class="baton" stroke-width="2" />
+    <path d="M247 170 l-8 -4 l0 8 z" fill="#60a5fa" />
+
+    <!-- node: executor -->
+    <circle cx="262" cy="170" r="7" fill="none" class="accent-stroke" stroke-width="2.5" />
+    <text x="277" y="175" class="muted">executor</text>
+
+    <!-- handoff arrow -->
+    <line x1="356" y1="170" x2="398" y2="170" class="baton" stroke-width="2" />
+    <path d="M398 170 l-8 -4 l0 8 z" fill="#60a5fa" />
+
+    <!-- node: reviewer -->
+    <circle cx="413" cy="170" r="7" fill="none" class="accent-stroke" stroke-width="2.5" />
+    <text x="428" y="175" class="muted">reviewer</text>
+  </g>
+</svg>

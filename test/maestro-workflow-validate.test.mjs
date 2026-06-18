@@ -71,6 +71,26 @@ test("non-string / absolute / escaping output_schema_ref → bad_output_schema (
   assert.ok(!codes(okRef).includes("bad_output_schema"));
 });
 
+test("enforce_output_schema must be a boolean (U2)", () => {
+  const bad = validateWorkflow(baseWorkflow({
+    executor: { provider: "codex", output_schema: "implementation", enforce_output_schema: "yes" },
+  }));
+  assert.equal(bad.ok, false);
+  assert.ok(codes(bad).includes("bad_enforce_output_schema"));
+
+  const okFlag = validateWorkflow(baseWorkflow({
+    executor: { provider: "codex", output_schema: "implementation", enforce_output_schema: true },
+  }));
+  assert.ok(!codes(okFlag).includes("bad_enforce_output_schema"));
+});
+
+test("enforce_output_schema:true with no resolvable schema → advisory warning (U2)", () => {
+  const result = validateWorkflow(baseWorkflow({
+    executor: { provider: "codex", enforce_output_schema: true }, // no output_schema
+  }));
+  assert.ok(codes(result).includes("enforce_without_schema"));
+});
+
 test("bad gates → bad_gates error (unknown key, ranges, non-bool flags)", () => {
   const unknownKey = validateWorkflow(baseWorkflow(
     { executor: { provider: "codex" } },

@@ -2,22 +2,12 @@
 
 Thanks for taking a seat in the orchestra. Here's how to keep rehearsals short.
 
-## Repository layout & how changes ship
+## How changes ship
 
-Maestro lives in two GitHub repositories that share one history:
-
-- **`Xateh/maestro`** (public) — the canonical `main`. This is what ships.
-- **`Xateh/maestro-dev`** (private) — where work-in-progress branches live.
-
-**Rule:** open every pull request from a branch in the **private** repo
-(`maestro-dev`) **against the public repo's `main`** (`Xateh/maestro`). Do not
-merge feature branches into the private repo's `main` directly. After a PR lands
-on public `main`, the private repo's `main` is fast-forwarded to match.
-
-This keeps the `main` branch of both repositories identical at all times — the
-public `main` is always the single source of truth, and the private `main` is a
-mirror of it. Day-to-day development (branches, drafts, experiments) stays in
-the private repo; only finished, reviewed work reaches public `main`.
+`main` is the single source of truth — it is what ships, and it only ever moves
+forward through reviewed pull requests. Branch off `main`, keep your work
+focused, and open a PR against `main` when it is ready. Nothing lands on `main`
+unreviewed.
 
 ## Code of Conduct
 
@@ -29,14 +19,18 @@ there.
 
 - Node.js **>= 22.13** (Maestro uses the built-in `node:sqlite` driver).
 - `npm ci` to install dependencies.
-- Optional: [herdr](https://github.com/herdr) on your `PATH` if you want agents
-  to run in visible terminal panes; without it, set `MAESTRO_BACKEND=terminal`.
+- The **terminal backend is the zero-dependency default** — agents run via
+  direct `child_process.spawn`, no extra install. [herdr](https://github.com/herdr)
+  is an optional acceleration: put it on your `PATH` to run agents in visible
+  terminal panes (the engine auto-selects it when present). Force the default
+  with `MAESTRO_BACKEND=terminal`.
 
 ## Before you open a PR
 
 ```bash
-npm test          # full suite (node --test, no API keys or agent CLIs needed)
-npm run lint      # Biome, lint-only (no formatter)
+npm test           # full suite (node --test, no API keys or agent CLIs needed)
+npm run test:terminal  # same suite, pinned to the default terminal backend
+npm run lint       # Biome, lint-only (no formatter)
 ```
 
 Both must pass. Tests are hermetic — they use temp dirs, stub runners, and a

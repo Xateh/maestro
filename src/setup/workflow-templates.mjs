@@ -324,10 +324,25 @@ function buildResearchWorkflow() {
   };
 }
 
+// Gated example (U4): the full-audit-sweep with one declared workflow gate.
+// The decision is that the LEAN default ships scoring with NO gates declared
+// (informational — scoring always emits "passed"); gated flows ship as named
+// templates. This is the documented gated example: a high-severity review
+// finding blocks the run at scoring (→ $halt via the `blocked` edge) instead of
+// proceeding to human_approval. The scoring machinery (scoring.mjs:enforceGates)
+// already supports the gate; this template merely opts in.
+function buildFullAuditSweepGatedWorkflow() {
+  const base = buildFullAuditSweepWorkflow();
+  base.roles.scoring.instructions =
+    "Derives the six reliability scores from prior stage evidence and enforces the declared `no_high_severity_findings` gate — a high-severity review finding routes to the blocked edge ($halt).";
+  return { ...base, gates: { no_high_severity_findings: true } };
+}
+
 export const EXTENDED_WORKFLOW = buildExtendedWorkflow();
 export const LOCAL_WORKFLOW = buildLocalWorkflow();
 export const SOLO_WORKFLOW = buildSoloWorkflow();
 export const FULL_AUDIT_SWEEP_WORKFLOW = buildFullAuditSweepWorkflow();
+export const FULL_AUDIT_SWEEP_GATED_WORKFLOW = buildFullAuditSweepGatedWorkflow();
 export const TRIAGE_WORKFLOW = buildTriageWorkflow();
 export const RESEARCH_WORKFLOW = buildResearchWorkflow();
 
@@ -337,6 +352,7 @@ export const WORKFLOW_TEMPLATES = {
   local: LOCAL_WORKFLOW,
   solo: SOLO_WORKFLOW,
   "full-audit-sweep": FULL_AUDIT_SWEEP_WORKFLOW,
+  "full-audit-sweep-gated": FULL_AUDIT_SWEEP_GATED_WORKFLOW,
   triage: TRIAGE_WORKFLOW,
   research: RESEARCH_WORKFLOW,
 };

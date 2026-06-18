@@ -44,6 +44,21 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  test-terminal-backend:
+    name: Test (terminal backend, default)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.x
+          cache: npm
+      - run: npm ci
+      # Pin the zero-dependency terminal backend as a first-class tested lane:
+      # the default when herdr is absent, exercised here without relying on the
+      # auto-fallback path being incidentally hit.
+      - run: npm run test:terminal
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -72,3 +87,29 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
+
+  no-private-files:
+    name: No private files on public main
+    # Backstop for the private->public split. Only enforce in the PUBLIC repo on
+    # PRs targeting main: a release branch must have run scripts/strip-private.sh
+    # first. Internal dev PRs in the private repo (Xateh/maestro-dev) legitimately
+    # carry these artifacts and must never be blocked, so this job is skipped there.
+    if: >-
+      github.repository == 'Xateh/maestro' &&
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Fail if any internal artifact is present
+        run: |
+          # *.private.md = internal agent instructions; graphify-out/ = internal
+          # knowledge-graph data. Neither may reach public main.
+          matches="$(git ls-files '*.private.md' 'graphify-out/')"
+          if [ -n "$matches" ]; then
+            echo "Internal artifacts must be stripped before a PR reaches public main:" >&2
+            echo "$matches" >&2
+            echo "Run scripts/strip-private.sh on the release branch and commit." >&2
+            exit 1
+          fi
+          echo "No internal artifacts present — ok."

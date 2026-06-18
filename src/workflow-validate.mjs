@@ -291,6 +291,23 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
       ));
     }
 
+    // ── opt-in strict enforcement flag (U2) ─────────────────────────────────
+    // `enforce_output_schema: true` promotes soft validation to a hard halt at
+    // runtime. Must be boolean; declaring it without a resolvable schema is a
+    // no-op (advisory), since there is nothing to enforce.
+    if (role?.enforce_output_schema !== undefined && !isBool(role.enforce_output_schema)) {
+      errors.push(issue(
+        "bad_enforce_output_schema",
+        `role "${roleName}" enforce_output_schema must be a boolean, got ${JSON.stringify(role.enforce_output_schema)}`,
+      ));
+    } else if (role?.enforce_output_schema === true
+      && (resolved.source === "none" || resolved.source === "unknown")) {
+      warnings.push(issue(
+        "enforce_without_schema",
+        `role "${roleName}" sets enforce_output_schema but declares no resolvable output_schema — nothing to enforce`,
+      ));
+    }
+
     // Verifier-named role lacking any resolvable schema → advisory warning.
     if (VERIFIER_ROLE_NAMES.has(roleName)
       && (resolved.source === "none" || resolved.source === "unknown")) {

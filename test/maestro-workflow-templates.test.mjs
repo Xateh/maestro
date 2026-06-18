@@ -71,6 +71,35 @@ test("each stage sets a unique prompt_template == its state name", () => {
   }
 });
 
+// ── U4: default-workflow gate decision (ratified) ────────────────────────────
+// Decision: the lean default (full-audit-sweep) ships the `scoring` node with NO
+// gates declared ⇒ informational (event always "passed"). Gated flows ship as a
+// named example template that opts in to exactly one gate.
+
+test("U4: lean full-audit-sweep ships scoring with no gates declared (informational)", () => {
+  const wf = resolveWorkflowTemplate("full-audit-sweep");
+  // scoring routes passed→human_approval, blocked→$halt — but with no gates the
+  // scoring node always emits "passed", so the block edge is dormant by default.
+  assert.deepEqual(wf.transitions.scoring, {
+    passed: "human_approval",
+    blocked: "$halt",
+    error: "$halt",
+  });
+  assert.equal(wf.gates, undefined, "lean default must declare no workflow gates");
+  assert.equal(wf.roles.scoring.gates, undefined, "lean default scoring role declares no gates");
+});
+
+test("U4: gated example template declares exactly one gate + stays valid", () => {
+  assert.ok(Object.hasOwn(WORKFLOW_TEMPLATES, "full-audit-sweep-gated"));
+  const wf = resolveWorkflowTemplate("full-audit-sweep-gated");
+  assert.deepEqual(Object.keys(wf.gates), ["no_high_severity_findings"]);
+  assert.equal(wf.gates.no_high_severity_findings, true);
+  // same gated scoring edge as the lean default, now load-bearing.
+  assert.equal(wf.transitions.scoring.blocked, "$halt");
+  const result = validateWorkflow(wf, { config: { version: 2, providers: { claude: { adapter: "built-in:claude" }, codex: { adapter: "built-in:codex" } } } });
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+});
+
 test("shipped .maestro/roles units load + compose without error", async () => {
   _clearRoleCache();
   for (const name of ["triage", "gather", "synthesize"]) {

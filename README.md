@@ -1,13 +1,14 @@
-# Maestro
+<div align="center">
 
-**Your agents, conducted.**
+<!-- <img src="docs/assets/banner.svg" width="720" alt="Maestro — your agents, conducted." /> -->
 
-[![CI](https://github.com/Xateh/maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/Xateh/maestro/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A522.13-brightgreen.svg)](package.json)
-[![Code style: Biome](https://img.shields.io/badge/code_style-biome-60a5fa.svg)](biome.json)
-[![Changelog](https://img.shields.io/badge/changelog-keep--a--changelog-orange.svg)](CHANGELOG.md)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+<em>Your agents, conducted.</em>
+
+[![CI](https://github.com/Xateh/maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/Xateh/maestro/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node](https://img.shields.io/badge/node-%E2%89%A522.13-brightgreen.svg)](package.json) [![Code style: Biome](https://img.shields.io/badge/code_style-biome-60a5fa.svg)](biome.json) [![Changelog](https://img.shields.io/badge/changelog-keep--a--changelog-orange.svg)](CHANGELOG.md) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+[Getting Started](#getting-started) · [Why](#why-maestro) · [Usage](#usage) · [Dashboard](#web-dashboard) · [Architecture](#architecture)
+
+</div>
 
 Maestro is a **harness for precise, auditable agent workflows**, built on
 [LangGraph](https://github.com/langchain-ai/langgraphjs). You declare the exact
@@ -26,12 +27,28 @@ and runs the right workflow on a cadence (`maestro serve`). Right model per role
 gates where you want them, loops that terminate, every run inspectable after the
 fact.
 
-```
-prompt → [planner] ──handoff──► [executor] ──handoff──► [reviewer] → done
-            │                       │                       │
-          claude                  codex                   codex
-        (plans +                 (writes +              (reviews +
-        architecture)             edits code)            approves)
+### Demo
+
+One prompt, three roles, hands off automatically — plan, execute, review:
+
+<!--
+<div align="center">
+
+<img src="docs/assets/demo.svg" width="800" alt="Maestro running a task end to end: planner hands off to executor, executor to reviewer, then the task completes." />
+
+</div>
+-->
+
+```mermaid
+flowchart LR
+    prompt([prompt]) --> planner[planner]
+    planner -- handoff --> executor[executor]
+    executor -- handoff --> reviewer[reviewer]
+    reviewer --> done([done])
+
+    planner -.- p1["claude<br/>plans + architecture"]
+    executor -.- e1["codex<br/>writes + edits code"]
+    reviewer -.- r1["codex<br/>reviews + approves"]
 ```
 
 That's the stock `default` workflow — one graph among many. Mix and match
@@ -59,6 +76,7 @@ bounded loops. You hold the score; only the instruments change.
 - [MCP Integration](#mcp-integration)
 - [Observability](#observability)
 - [Security Model](#security-model)
+- [Known Limitations](#known-limitations)
 - [Architecture](#architecture)
 - [Environment Variables](#environment-variables)
 - [Development](#development)
@@ -96,11 +114,12 @@ session. If you can run `claude --version`, you're ready.
 - **Dual-backend persistence** — every task, step, and handoff lands in
   `.maestro/maestro.db` (SQLite, default) or a PostgreSQL database when
   `DATABASE_URL=postgres://…` is set. Logs stay on disk; the DB stores paths.
-- **Visible agent panes** — the default backend seats each step in a
-  [herdr](CREDITS.md#herdr) terminal pane, one tab per task. Tabs close on
-  success, stay open while a task waits on you, and a resumed task picks up in
-  the *same* tab. Tune with `herdr.close_tab_on`, or bypass entirely with
-  `MAESTRO_BACKEND=terminal`.
+- **Visible agent panes (optional acceleration)** — the zero-dependency
+  terminal backend is the default; install [herdr](CREDITS.md#herdr) on your
+  `PATH` and the engine auto-selects it to seat each step in a terminal pane, one
+  tab per task. Tabs close on success, stay open while a task waits on you, and a
+  resumed task picks up in the *same* tab. Tune with `herdr.close_tab_on`, or
+  force the default with `MAESTRO_BACKEND=terminal`.
 - **MCP server** — eight tools expose Maestro state, task creation, and
   workflow validation to any MCP-compatible agent (Claude Code, Cursor, …).
   One `.mcp.json` entry, no other config.
@@ -148,7 +167,7 @@ session. If you can run `claude --version`, you're ready.
 |---|---|
 | **Linux or macOS** | Windows is not supported (Maestro relies on unix domain sockets and bash-spawned agent runners). On Windows, use [WSL2](https://learn.microsoft.com/windows/wsl/). |
 | **Node.js ≥ 22.13** | Uses the built-in `node:sqlite` (`DatabaseSync`). Check with `node --version`. |
-| **herdr** (optional) | Default terminal-pane backend. Install separately; set `MAESTRO_BACKEND=terminal` to bypass. |
+| **herdr** (optional) | Optional acceleration over the zero-dependency terminal-pane default. Install separately and the engine auto-selects it; `MAESTRO_BACKEND=terminal` forces the default. |
 | **Provider CLIs** | At least one of `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `ollama` — whichever you already have installed and authenticated. The default workflow uses `claude` (planner) and `codex` (executor + reviewer). |
 
 ### Installation
@@ -219,6 +238,14 @@ keeps its terminal tab open with the conversation intact. Answer with
 `maestro message`, `maestro approve`, or the TUI, and the pipeline resumes in
 the same tab, same context.
 
+<!--
+<div align="center">
+
+<img src="docs/assets/doctor.svg" width="720" alt="maestro doctor preflight output checking Node, provider CLIs, herdr, and .maestro state." />
+
+</div>
+-->
+
 ---
 
 ## Usage
@@ -255,6 +282,18 @@ the same tab, same context.
 Run `maestro help <command>` for flags and details, or see
 [docs/cli.md](docs/cli.md) for the full reference.
 
+The full-screen TUI (`maestro tui`) gives you a live task board and a workflow
+graph screen (press `2`) that draws roles, handoff arrows, and event transitions.
+
+<!--
+<table align="center">
+  <tr>
+    <td align="center"><img src="docs/assets/tui-board.svg" width="400" alt="Maestro TUI task board with filter views and approve/deny keys." /><br/><sub>Task board</sub></td>
+    <td align="center"><img src="docs/assets/tui-graph.svg" width="400" alt="Maestro TUI workflow graph showing roles, handoff arrows, and event transitions." /><br/><sub>Workflow graph (press <code>2</code>)</sub></td>
+  </tr>
+</table>
+-->
+
 ### Providers
 
 Default mapping: **planner = claude**, **executor = codex**, **reviewer = codex**.
@@ -289,15 +328,19 @@ Editing by hand replaces the whole file, so keep every role you want — the TUI
 is the safe path. See [docs/configuration.md](docs/configuration.md) for the
 full role schema.
 
-**Terminal backend:**
+**Terminal backend (the zero-dependency default):**
 
 ```bash
 MAESTRO_BACKEND=terminal maestro task "..."
 ```
 
-Bypasses herdr and runs agents via direct `child_process.spawn` (no visible
-panes). When herdr isn't installed, Maestro falls back to the terminal backend
-automatically with a one-line notice.
+The terminal backend runs agents via direct `child_process.spawn` (no visible
+panes) and is **the default** — a fresh install with nothing else on `PATH` uses
+it automatically (with a one-line notice). [herdr](CREDITS.md#herdr) is an
+**optional acceleration**: when its binary is found on `PATH`, the engine
+auto-selects it to seat each step in a visible terminal pane. Set
+`MAESTRO_BACKEND=terminal` to force the default even when herdr is installed.
+The terminal backend is covered by its own CI lane (`npm run test:terminal`).
 
 ---
 
@@ -383,6 +426,14 @@ See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
 
 ## Web Dashboard
 
+<!--
+<div align="center">
+
+<img src="docs/assets/dashboard.svg" width="800" alt="Maestro web dashboard with a live task board and All / Running / Retrying / Completed filter tabs." />
+
+</div>
+-->
+
 When running `maestro serve`, Maestro starts an HTTP server (default port from
 `config.json → server.port`). Visit `http://localhost:<port>/` for the dashboard:
 
@@ -434,6 +485,21 @@ implemented for production/enterprise deployments:
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    cli["bin/maestro.mjs<br/>CLI entry"] --> engine["LangGraph engine<br/>src/langgraph/"]
+    engine --> nodes["role nodes<br/>planner · executor · reviewer"]
+    nodes --> adapters["adapters<br/>src/adapters/"]
+    adapters --> procs["provider subprocesses<br/>claude · codex · gemini · …"]
+
+    engine -.-> db[("DB<br/>SQLite / Postgres")]
+    nodes -.-> logs[("run logs<br/>.maestro/runs/")]
+    procs -.-> herdr["herdr panes<br/>(default backend)"]
+```
+
+<details>
+<summary>Full module tree</summary>
+
 ```
 bin/maestro.mjs (CLI entry)
 │
@@ -472,11 +538,16 @@ bin/maestro.mjs (CLI entry)
 └─ src/mcp/server.mjs      MCP stdio server (8 tools)
 ```
 
+</details>
+
 Full architecture documentation: [docs/architecture.md](docs/architecture.md)
 
 ---
 
 ## Environment Variables
+
+<details>
+<summary>Environment variables (full table)</summary>
 
 | Variable | Default | Description |
 |---|---|---|
@@ -489,12 +560,14 @@ Full architecture documentation: [docs/architecture.md](docs/architecture.md)
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP collector base URL (e.g. `http://localhost:4318`). Enables OpenTelemetry tracing. No-op when unset. |
 | `OTEL_SERVICE_NAME` | `maestro-orchestrator` | Override the OTel service name reported in traces. |
 | `MAESTRO_SECRET_PASSPHRASE` | unset | Unlocks the encrypted secret store (`secrets.local.enc.json`) without an interactive prompt. Real environment variables still take precedence. |
-| `MAESTRO_OLLAMA_BIN` | `"ollama"` | Ollama binary or alias for the built-in local provider and the `agent:ocr`/`agent:eval` scripts. |
-| `MAESTRO_OLLAMA_MODEL` | `"llama3.2"` | Default text model for local (Ollama) runs. |
-| `MAESTRO_OLLAMA_VISION_MODEL` | `"llama3.2-vision"` | Vision model for the OCR agent (multimodal). |
+| `MAESTRO_OLLAMA_BIN` | `"ollama"` | Ollama binary or alias used by the `agent:ocr`/`agent:eval` helper scripts. |
+| `MAESTRO_OLLAMA_MODEL` | `"llama3.2"` | Text model for the `agent:eval` helper script. |
+| `MAESTRO_OLLAMA_VISION_MODEL` | `"llama3.2-vision"` | Vision model for the `agent:ocr` helper script (multimodal). |
 | `HEADROOM_PROXY_URL` | `http://localhost:8787` | Headroom compression proxy endpoint used for prior-output context compaction. |
 | `NO_COLOR` | unset | Set to any value to disable ANSI color in CLI/TUI output (honors the [NO_COLOR](https://no-color.org) standard). |
 | `MAESTRO_HTTP_RATELIMIT` | on | Set to `off` to disable the dashboard/API per-IP rate limiter (reads ~120/min, writes ~12/min; `429` + `Retry-After` otherwise). |
+
+</details>
 
 ---
 

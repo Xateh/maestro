@@ -90,6 +90,24 @@ export function resolveRoleSchema(roleDef = {}) {
   return { name: null, schema: null, source: "none" };
 }
 
+// Validate a payload against the schema a role declares, collapsing the
+// resolve→validate branch that the runtime previously inlined at every node
+// site. Returns the `{ ok, errors, schema }` evidence shape, or `null` when the
+// role declares nothing enforceable (source "none"/"unknown", or an unexpanded
+// "ref" — refs are baked to inline upstream by `_expandSchemaRefs`).
+export function validateRolePayload(roleDef, payload) {
+  const resolved = resolveRoleSchema(roleDef);
+  if (!resolved.schema) return null; // nothing to enforce
+  const r = resolved.source === "name"
+    ? validatePayload(resolved.name, payload)
+    : validateInline(resolved.schema, payload);
+  return {
+    ok: r.ok,
+    errors: r.errors,
+    schema: resolved.source === "name" ? resolved.name : "inline",
+  };
+}
+
 // Build a minimal payload covering a schema's `required` keys, with each value
 // the empty/zero instance of its declared type. Required keys whose property has
 // an `enum` take the FIRST enum member (so enum-bearing stubs validate clean).

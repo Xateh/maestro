@@ -316,6 +316,95 @@ test("makeRoleNode: role with no schema → schema_validation omitted", async ()
   }
 });
 
+// ── makeRoleNode: opt-in strict enforcement (U2) ─────────────────────────────────
+// enforce_output_schema:true turns a soft validation failure into a hard halt
+// (event "error" + a typed output_schema_violation blocker). Default (flag absent)
+// stays soft: a non-conformant payload still routes "done".
+
+test("makeRoleNode: enforce_output_schema halts with output_schema_violation on bad payload", async () => {
+  const roleDef = {
+    ...DEFAULT_WORKFLOW.roles.executor,
+    output_schema: "implementation",
+    enforce_output_schema: true,
+  };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "missing arrays" })}`,
+  });
+  try {
+    assert.equal(result.event, "error"); // routing HALTED
+    const task = await db.getTask("20260614-000001-schema");
+    assert.equal(task.status, "waiting_user");
+    const blocker = (task.blockers ?? []).find((b) => b.code === "output_schema_violation");
+    assert.ok(blocker, "expected an output_schema_violation blocker");
+    assert.equal(blocker.role, "executor");
+    assert.equal(blocker.schema, "implementation");
+    assert.ok(Array.isArray(blocker.errors) && blocker.errors.length > 0);
+    // a halted run records no handoff for this stage
+    assert.equal(handoffs.length, 0);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: enforce_output_schema passes through a conformant payload", async () => {
+  const roleDef = {
+    ...DEFAULT_WORKFLOW.roles.executor,
+    output_schema: "implementation",
+    enforce_output_schema: true,
+  };
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify(IMPL_OK)}`,
+  });
+  try {
+    assert.equal(result.event, "done");
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, true);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: without enforce_output_schema a bad payload stays soft (done)", async () => {
+  const roleDef = { ...DEFAULT_WORKFLOW.roles.executor, output_schema: "implementation" };
+  const { dir, db, result } = await runNodeWithSchema({
+    roleDef,
+    stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "missing arrays" })}`,
+  });
+  try {
+    assert.equal(result.event, "done"); // soft default — never halts
+    assert.equal(result.priorHandoffs[0].schema_validation.ok, false);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("makeRoleNode: enforce_output_schema halts a non-LLM stub stage too", async () => {
+  // Stubs auto-generate a payload from emptyPayloadForSchema; an inline schema
+  // with a constraint the empty value can't meet (minLength) forces a violation,
+  // proving strict enforcement is wired at the non-LLM node sites as well.
+  const roleDef = {
+    ...DEFAULT_WORKFLOW.roles.executor,
+    kind: "stub",
+    enforce_output_schema: true,
+    output_schema: { type: "object", required: ["token"], properties: { token: { type: "string", minLength: 3 } } },
+  };
+  const { dir, db, result, handoffs } = await runNodeWithSchema({ roleDef, stdout: "" });
+  try {
+    assert.equal(result.event, "error");
+    const task = await db.getTask("20260614-000001-schema");
+    const blocker = (task.blockers ?? []).find((b) => b.code === "output_schema_violation");
+    assert.ok(blocker, "expected an output_schema_violation blocker on the stub stage");
+    assert.equal(handoffs.length, 0);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("makeRoleNode: inline output_schema validated via validateInline", async () => {
   const roleDef = {
     ...DEFAULT_WORKFLOW.roles.executor,

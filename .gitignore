@@ -15,3 +15,6 @@ graphify-out/
 # local design/spec scratch — never tracked
 docs/specs/
 docs/superpowers/
+
+# private/internal docs — audits, market analysis; never tracked
+docs/internal/

@@ -805,6 +805,33 @@ export class LocalTaskStore {
   // The legacy "default" path keeps writing workflow.json unless a
   // workflows/default.json already exists. Named writes merge over the current
   // named workflow (or DEFAULT_WORKFLOW when absent) and bypass _cachedWorkflow.
+  // Strip a ref-derived `output_schema` before persisting. `readWorkflow` bakes
+  // each `output_schema_ref` into an inline `output_schema` for the runtime; a
+  // naive write-back (e.g. the TUI editor's `{ ...role }` spread) would persist
+  // that bake and leave the ref a dead no-op. Since `_expandSchemaRefs` only ever
+  // bakes when no inline schema was authored, a role carrying BOTH a non-empty
+  // `output_schema_ref` and an `output_schema` is the round-trip case: drop the
+  // inline so the ref stays authoritative. Returns a shallow-cloned workflow;
+  // the input is never mutated.
+  _stripBakedSchemaRefs(workflow) {
+    if (!workflow?.roles || typeof workflow.roles !== "object") return workflow;
+    let roles = workflow.roles;
+    let cloned = false;
+    for (const [roleName, role] of Object.entries(workflow.roles)) {
+      if (!role || typeof role !== "object") continue;
+      const ref = role.output_schema_ref;
+      if (typeof ref !== "string" || ref.length === 0) continue;
+      if (role.output_schema === undefined) continue;
+      if (!cloned) {
+        roles = { ...workflow.roles };
+        cloned = true;
+      }
+      const { output_schema, ...rest } = role;
+      roles[roleName] = rest;
+    }
+    return cloned ? { ...workflow, roles } : workflow;
+  }
+
   async writeWorkflow(nameOrWorkflow, maybeWorkflow) {
     await this.init();
 
@@ -821,14 +848,14 @@ export class LocalTaskStore {
       const namedPath = this.workflowFilePath(DEFAULT_WORKFLOW_NAME);
       const useNamedSlot = await pathExists(namedPath);
       const targetPath = useNamedSlot ? namedPath : this.workflowPath;
-      const next = { ...await this.readWorkflow(DEFAULT_WORKFLOW_NAME), ...patch };
+      const next = this._stripBakedSchemaRefs({ ...await this.readWorkflow(DEFAULT_WORKFLOW_NAME), ...patch });
       await writeJsonAtomic(targetPath, next);
       this._cachedWorkflow = next;
       return next;
     }
 
     const current = (await this.readWorkflow(name)) ?? structuredClone(DEFAULT_WORKFLOW);
-    const next = { ...current, ...patch };
+    const next = this._stripBakedSchemaRefs({ ...current, ...patch });
     await writeJsonAtomic(this.workflowFilePath(name), next);
     // _cachedWorkflow is default-scoped; never serve a named workflow from it.
     this._cachedWorkflow = null;
