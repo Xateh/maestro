@@ -13,5 +13,6 @@ graphify-out/
 .DS_Store
 
 # local design/spec scratch — never tracked
-docs/specs/
+# NOTE: docs/specs/ is tracked in the PRIVATE remote (origin) only.
+# Never push these to the public remote.
 docs/superpowers/
