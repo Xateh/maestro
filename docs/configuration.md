@@ -892,7 +892,7 @@ overwritten on resume). It is **self-contained**:
 ```jsonc
 {
   "manifest_version": 1,
-  "maestro_version": "0.2.0",
+  "maestro_version": "0.3.0",
   "created_at": "…ISO…",
   "source_task_id": "<id>",
   "task": { /* the 19 replayable input knobs only */ },

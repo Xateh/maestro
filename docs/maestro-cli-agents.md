@@ -2,8 +2,8 @@
 
 Maestro is the repo-local terminal orchestration layer for CLI coding agents.
 It keeps Codex as the main delegator, uses Claude for planning, and uses Codex
-for execution and review. Copilot is disabled by default until a concrete role
-is chosen.
+for execution and review. Copilot is disabled by default; it is available as an
+adapter for custom role assignments but not part of the default workflow.
 
 ## Default Flow
 
@@ -15,8 +15,8 @@ user task -> Codex planner decision -> optional Claude planner -> Codex executor
   It runs with `--permission-mode plan` and should not edit files.
 - Codex executes with `codex exec --json -c approval_policy="never" --sandbox workspace-write`.
 - Codex reviews with `codex exec --json -c approval_policy="never" --sandbox read-only`.
-- Copilot is disabled. The adapter exists so a future role can be added without
-  changing the task platform shape.
+- Copilot is disabled by default. The adapter is available for custom role
+  assignments; it is not part of the default workflow.
 
 Planner policy:
 
@@ -484,6 +484,6 @@ falling back to bounded stdout excerpts.
 - Linear-backed polling mode (`maestro serve`) dispatches issues through the
   same graph engine as `maestro task`, configured via the `server` block in
   `config.json`.
-- Copilot is present only as a disabled adapter.
+- Copilot is disabled in the default workflow; the adapter is available for custom role assignments.
 - Local file sync profiles are configuration placeholders. `.env` requires
   explicit future approval before copying.
