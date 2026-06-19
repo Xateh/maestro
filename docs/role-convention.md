@@ -1,7 +1,8 @@
 # Maestro Role Convention (MRC)
 
-Maestro orchestrates **roles** — the stages of a `plan → execute → review`-style
-workflow. The Maestro Role Convention lets you author a role **once** as a
+Maestro orchestrates **roles** — the stages of any workflow graph you declare
+(`plan → execute → review` being just the stock one). The Maestro Role
+Convention lets you author a role **once** as a
 portable unit and reuse it across workflows, and it lets maestro **consume the
 agent units you already have** — Claude Code subagents and skills — without
 rewriting them.
