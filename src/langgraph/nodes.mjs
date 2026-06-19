@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { buildPromptFromHandoffs } from "./prompt.mjs";
+import { contextForEdge } from "./context-contract.mjs";
 import {
   parseAgentHandoff,
   parseAgentQuestion,
@@ -630,11 +631,19 @@ export function makeRoleNode(roleDef, {
         if (h?.role) handoffsByRole[h.role] = h.payload;
       }
 
+      // Per-handoff schema_validation evidence for the output_schema_conformance
+      // gate (B): every prior handoff that carried a schema verdict, by role.
+      const handoffMeta = priorHandoffs.map((h) => ({
+        role: h?.role,
+        schema_validation: h?.schema_validation ?? null,
+      }));
+
       const { scores, score_inputs, missing_evidence } = deriveScores(handoffsByRole);
       const gateResult = enforceGates(
         workflow?.gates ?? roleDef.gates ?? {},
         scores,
         handoffsByRole,
+        handoffMeta,
       );
       const payload = {
         ...scores,
@@ -851,10 +860,16 @@ export function makeRoleNode(roleDef, {
         }
       }
 
+      // Per-edge context contract (experimental, v0.3.0 item A): when the
+      // workflow opts in, narrow the prompt's view of prior handoffs to what the
+      // inbound edge (state.currentState → state.event) declares. A no-op (full
+      // history) when the flag is off or the edge declares nothing.
+      const promptHandoffs = contextForEdge(workflow, priorHandoffs, state.currentState, state.event);
+
       const prompt = buildPromptFromHandoffs({
         role: roleKey,
         task: currentTask,
-        priorHandoffs,
+        priorHandoffs: promptHandoffs,
         handoffMode,
         roleInstructions,
         outputSchema: resolveRoleSchema(roleDef).schema ?? null,

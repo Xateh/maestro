@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-edge context contract — experimental prototype (item A, headline).** A
+  workflow may opt in with `experimental_per_edge_context: true` plus an
+  `edge_context` map (`"<from>:<event>"` or per-source `"<from>"` →
+  `"full"` | `"scoped"` | `["role", …]`) to declare, **per inbound edge**, which
+  prior handoffs the destination node's prompt sees. Off by default — default
+  workflows are byte-identical. New pure module `langgraph/context-contract.mjs`;
+  wired into the LLM node path (only the prompt's view is narrowed, never the
+  durable handoff record). Falsification **verdict: KEEP** — per-edge context
+  provably expresses what per-role static config cannot, demonstrated on the
+  stock `full-audit-sweep`, where `implementation` re-entered via different
+  critics resolves different input views.
+- **`output_schema_conformance` workflow gate (item B).** Promotes per-node soft
+  `schema_validation` evidence into an auditable **run** verdict — "every handoff
+  that declared a schema conformed to it." Declarable in `gates:` (validated in
+  `workflow-validate.mjs`), enforced in `scoring.enforceGates` from per-handoff
+  metadata; any non-conforming handoff blocks and names the offending role(s).
+- **`require_distinct_reviewer` opt-in assertion (item C).** When `true`,
+  `workflow-validate` errors (`non_distinct_reviewer`) if any verifier role
+  (`verifies: true`) shares a provider with an implementation entry role — so a
+  model never reviews its own work. Opt-in; the default-on flip is deferred.
+
+### Notes
+
+- **Report-back determinism probe (item D)** — feasibility write-up returning a
+  **verdict**: report-back is not expressible on the single-active-node engine,
+  and even on a future concurrent engine output-reproducible determinism cannot
+  survive it. The
+  North-Star wording stays *auditable / replayable*; "deterministic" is confined
+  to DAG traversal/wiring, never outputs.
+
 ## [0.2.1] - 2026-06-18
 
 ### Fixed
@@ -553,6 +585,7 @@ Initial release.
 - The `agent:ocr` / `agent:eval` scripts fail fast with an install hint when the
   Ollama binary is absent, instead of surfacing a raw spawn error mid-run.
 
+[0.2.1]: https://github.com/Xateh/maestro/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Xateh/maestro/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Xateh/maestro/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Xateh/maestro/releases/tag/v0.1.0

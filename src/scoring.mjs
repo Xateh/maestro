@@ -158,9 +158,11 @@ function coveragePercent(evidence) {
  * @param {Object} gates    - manifest gates block ({} / absent ⇒ no enforcement).
  * @param {Object} scores   - derived scores from deriveScores.
  * @param {Object} evidence - handoffsByRole (raw upstream payloads).
+ * @param {Array}  handoffMeta - per-handoff `{role, schema_validation}` records
+ *   (for the output_schema_conformance gate); defaults to [].
  * @returns {{passed:boolean, evaluated:Object, blocked_reasons:string[]}}
  */
-export function enforceGates(gates, scores, evidence) {
+export function enforceGates(gates, scores, evidence, handoffMeta = []) {
   const evaluated = {};
   const blockedReasons = [];
   const g = gates && typeof gates === "object" ? gates : {};
@@ -216,6 +218,32 @@ export function enforceGates(gates, scores, evidence) {
         newFailures === null
           ? "all_regressions_pass: no regression evidence"
           : `all_regressions_pass: ${n} new failures`,
+      );
+    }
+  }
+
+  // output_schema_conformance (bool): only enforced when true. Promotes the
+  // per-node soft `schema_validation` evidence into an auditable RUN verdict —
+  // "every handoff that declared a schema conformed to it." Handoffs with no
+  // declared schema (schema_validation null/absent) are not counted; a run with
+  // zero schema-bearing handoffs passes vacuously (consistent with the file's
+  // vacuous-pass rule — nothing to violate). Any single non-conforming handoff
+  // blocks and names the offending role(s).
+  if (g.output_schema_conformance === true) {
+    const meta = Array.isArray(handoffMeta) ? handoffMeta : [];
+    const validated = meta.filter((m) => m?.schema_validation);
+    const violations = validated.filter((m) => m.schema_validation.ok !== true);
+    const passed = violations.length === 0;
+    const offenders = violations.map((m) => m.role);
+    evaluated.output_schema_conformance = {
+      required: true,
+      checked: validated.length,
+      actual: passed ? "all conforming" : offenders,
+      passed,
+    };
+    if (!passed) {
+      blockedReasons.push(
+        `output_schema_conformance: ${violations.length} handoff(s) failed schema validation (${offenders.join(", ")})`,
       );
     }
   }
