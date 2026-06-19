@@ -90,18 +90,17 @@ jobs:
 
   no-private-files:
     name: No private files on public main
-    # Backstop for the private->public split. Enforce in the PUBLIC repo on both
-    # PRs targeting main AND direct pushes to main — a manual `git push public
-    # main` (or a local pre-push hook bypassed with --no-verify) must not sail
-    # through ungated. A release branch must have run scripts/strip-private.sh
-    # first. Internal dev PRs in the private repo (Xateh/maestro-dev) legitimately
-    # carry these artifacts and must never be blocked, so this job is skipped there.
+    # Backstop for the private->public split, and a REQUIRED status check via
+    # branch protection on public main. Direct pushes to public main are blocked
+    # by that protection (PR required, enforced for admins), so every change
+    # arrives as a PR — gating on pull_request alone is sufficient. A release
+    # branch must have run scripts/strip-private.sh first. Internal dev PRs in the
+    # private repo (Xateh/maestro-dev) legitimately carry these artifacts and must
+    # never be blocked, so this job is skipped there.
     if: >-
       github.repository == 'Xateh/maestro' &&
-      (
-        (github.event_name == 'pull_request' && github.base_ref == 'main') ||
-        (github.event_name == 'push' && github.ref == 'refs/heads/main')
-      )
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
