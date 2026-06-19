@@ -27,12 +27,6 @@ export function shareableDef(providers, key, effectiveDef = null) {
   return providers[key] ?? structuredClone(DEFAULT_PROVIDERS[key] ?? effectiveDef ?? {});
 }
 
-export function providerPatch(rawProviders, key, partial, effectiveDef = null) {
-  const providers = structuredClone(rawProviders ?? DEFAULT_PROVIDERS);
-  providers[key] = { ...shareableDef(providers, key, effectiveDef), ...partial };
-  return { providers };
-}
-
 // Set one field (possibly nested, e.g. ["custom","command_template"]) on a
 // provider. Nested merges use the shareable base, not the effective view.
 export function providerFieldPatch(rawProviders, key, fieldPath, value, effectiveDef = null) {
