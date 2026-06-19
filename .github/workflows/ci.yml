@@ -103,9 +103,23 @@ jobs:
       - uses: actions/checkout@v6
       - name: Fail if any internal artifact is present
         run: |
-          # *.private.md = internal agent instructions; graphify-out/ = internal
-          # knowledge-graph data. Neither may reach public main.
-          matches="$(git ls-files '*.private.md' 'graphify-out/')"
+          # Internal artifacts that must never reach public main. Keep this list
+          # in sync with scripts/strip-private.sh and scripts/hooks/pre-push.
+          #   *.private.md          internal agent instructions
+          #   graphify-out/         internal knowledge-graph data
+          #   docs/superpowers|specs|internal/  design scratch + internal docs
+          #   scripts/{strip-private,graphify-sync,install-hooks}.sh, scripts/hooks/
+          #                         the dev->public release tooling itself
+          matches="$(git ls-files \
+            '*.private.md' \
+            'graphify-out/' \
+            'docs/superpowers/' \
+            'docs/specs/' \
+            'docs/internal/' \
+            'scripts/strip-private.sh' \
+            'scripts/graphify-sync.sh' \
+            'scripts/install-hooks.sh' \
+            'scripts/hooks/')"
           if [ -n "$matches" ]; then
             echo "Internal artifacts must be stripped before a PR reaches public main:" >&2
             echo "$matches" >&2
