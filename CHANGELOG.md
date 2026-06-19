@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Role Convention doc no longer pitches Maestro *as* the `plan → execute →
+  review` pipeline.** `docs/role-convention.md` now frames that flow as just the
+  stock graph, consistent with the README's positioning. Documentation only — no
+  behavior or API change.
+
+### Removed
+
+- **Internal planning/spec docs under `docs/superpowers/` are no longer tracked.**
+  They predated the `.gitignore` rule and were still committed; untracked now and
+  a `.gitattributes export-ignore` keeps the tree out of `git archive` release
+  tarballs. Files remain locally; history is unchanged (they document shipped
+  v0.3.0 features).
+
 ## [0.3.0] - 2026-06-19
 
 ### Added
