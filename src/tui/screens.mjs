@@ -7,7 +7,7 @@
  * testable at any terminal size.
  */
 
-import { ANSI, paint, padLine, truncateAnsi, computeColumns, formatRow, wrapText, wrapSegments } from "./layout.mjs";
+import { ANSI, paint, padLine, truncateAnsi, computeColumns, formatRow, wrapSegments } from "./layout.mjs";
 import {
   BUILTIN_ADAPTERS, PERMISSIONS, PROMPT_TEMPLATES, SKIP_VALUES,
 } from "./edit-core.mjs";
@@ -447,6 +447,4 @@ export function renderScreen(model, size) {
   }
 }
 
-export function wrapPrompt(prompt, width) {
-  return wrapText(prompt, width);
-}
+

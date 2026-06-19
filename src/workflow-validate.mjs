@@ -28,6 +28,7 @@ const GATE_VALIDATORS = {
   no_high_severity_findings: isBool,
   all_regressions_pass: isBool,
   min_overall_confidence: isUnit,
+  output_schema_conformance: isBool,
 };
 
 // Syntactic check for output_schema_ref / MRC source: a relative path that does
@@ -336,6 +337,28 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
   }
 
+  // ── cross-provider enforcement (v0.3.0 item C, opt-in) ─────────────────────
+  // `require_distinct_reviewer: true` asserts no verifier role shares a provider
+  // with an implementation entry role — so a model never reviews its own work.
+  // Opt-in: absent/false ⇒ shared providers are tolerated (the default-on flip
+  // is deferred to a later horizon). Verifier = role with `verifies: true`.
+  if (workflow.require_distinct_reviewer !== undefined
+    && !isBool(workflow.require_distinct_reviewer)) {
+    errors.push(issue("bad_require_distinct_reviewer",
+      `require_distinct_reviewer must be a boolean, got ${JSON.stringify(workflow.require_distinct_reviewer)}`));
+  } else if (workflow.require_distinct_reviewer === true) {
+    const entryProviders = new Set(
+      [...entryRoles].map((name) => roles[name]?.provider).filter(Boolean),
+    );
+    for (const [roleName, role] of Object.entries(roles)) {
+      if (role?.verifies === true && role?.provider && entryProviders.has(role.provider)) {
+        errors.push(issue("non_distinct_reviewer",
+          `verifier role "${roleName}" shares provider "${role.provider}" with an implementation entry role — `
+          + `require_distinct_reviewer demands a different reviewer model`));
+      }
+    }
+  }
+
   // ── top-level gates block (manifest v2) ────────────────────────────────────
   if (workflow.gates !== undefined) {
     const gates = workflow.gates;
@@ -348,6 +371,37 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
           errors.push(issue("bad_gates", `unknown gate "${key}" (allowed: ${Object.keys(GATE_VALIDATORS).join(", ")})`));
         } else if (!validator(value)) {
           errors.push(issue("bad_gates", `gate "${key}" has an invalid value ${JSON.stringify(value)}`));
+        }
+      }
+    }
+  }
+
+  // ── per-edge context contract (EXPERIMENTAL, v0.3.0 item A) ────────────────
+  // Opt-in via `experimental_per_edge_context: true` + an `edge_context` map of
+  // "<from>:<event>" (or per-source "<from>") → context spec. Structural checks
+  // only; an absent/false flag means the whole feature is inert.
+  if (workflow.experimental_per_edge_context !== undefined
+    && !isBool(workflow.experimental_per_edge_context)) {
+    errors.push(issue("bad_edge_context",
+      `experimental_per_edge_context must be a boolean, got ${JSON.stringify(workflow.experimental_per_edge_context)}`));
+  }
+  if (workflow.edge_context !== undefined) {
+    const ec = workflow.edge_context;
+    if (ec === null || typeof ec !== "object" || Array.isArray(ec)) {
+      errors.push(issue("bad_edge_context", `edge_context must be an object, got ${JSON.stringify(ec)}`));
+    } else {
+      for (const [edge, spec] of Object.entries(ec)) {
+        const validSpec = spec === "full" || spec === "scoped"
+          || (Array.isArray(spec) && spec.every((s) => typeof s === "string"));
+        if (!validSpec) {
+          errors.push(issue("bad_edge_context",
+            `edge_context "${edge}" spec must be "full", "scoped", or an array of role names, got ${JSON.stringify(spec)}`));
+        }
+        // The key's source state ("<from>" before any ":") must be a known role.
+        const from = String(edge).split(":")[0];
+        if (!roleNames.has(from)) {
+          warnings.push(issue("bad_edge_context",
+            `edge_context key "${edge}" references unknown source role "${from}"`));
         }
       }
     }

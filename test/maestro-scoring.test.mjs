@@ -308,6 +308,56 @@ test("enforceGates: min_coverage with empty coverage:{} ⇒ fail-closed", () => 
   assert.deepEqual(r.blocked_reasons, ["min_coverage: no coverage evidence < 80"]);
 });
 
+// ── enforceGates: output_schema_conformance (B) ──────────────────────────────
+
+test("enforceGates: output_schema_conformance true, all handoffs conform ⇒ pass", () => {
+  const r = enforceGates({ output_schema_conformance: true }, {}, {}, [
+    { role: "review", schema_validation: { ok: true, schema: "review" } },
+    { role: "tests", schema_validation: { ok: true, schema: "tests" } },
+  ]);
+  assert.equal(r.passed, true);
+  assert.equal(r.evaluated.output_schema_conformance.passed, true);
+  assert.equal(r.evaluated.output_schema_conformance.checked, 2);
+  assert.deepEqual(r.blocked_reasons, []);
+});
+
+test("enforceGates: output_schema_conformance true, one handoff violates ⇒ fail (names role)", () => {
+  const r = enforceGates({ output_schema_conformance: true }, {}, {}, [
+    { role: "review", schema_validation: { ok: true, schema: "review" } },
+    { role: "tests", schema_validation: { ok: false, schema: "tests", errors: [{ path: "/x", message: "bad" }] } },
+  ]);
+  assert.equal(r.passed, false);
+  assert.equal(r.evaluated.output_schema_conformance.passed, false);
+  assert.deepEqual(r.evaluated.output_schema_conformance.actual, ["tests"]);
+  assert.equal(r.blocked_reasons.length, 1);
+  assert.match(r.blocked_reasons[0], /output_schema_conformance/);
+  assert.match(r.blocked_reasons[0], /tests/);
+});
+
+test("enforceGates: output_schema_conformance ignores handoffs with no declared schema (vacuous pass)", () => {
+  const r = enforceGates({ output_schema_conformance: true }, {}, {}, [
+    { role: "planner", schema_validation: null },
+    { role: "executor" },
+  ]);
+  assert.equal(r.passed, true);
+  assert.equal(r.evaluated.output_schema_conformance.checked, 0);
+});
+
+test("enforceGates: output_schema_conformance true, missing handoffMeta ⇒ vacuous pass", () => {
+  const r = enforceGates({ output_schema_conformance: true }, {}, {});
+  assert.equal(r.passed, true);
+  assert.equal(r.evaluated.output_schema_conformance.passed, true);
+  assert.equal(r.evaluated.output_schema_conformance.checked, 0);
+});
+
+test("enforceGates: output_schema_conformance FALSE ⇒ not enforced", () => {
+  const r = enforceGates({ output_schema_conformance: false }, {}, {}, [
+    { role: "tests", schema_validation: { ok: false, schema: "tests" } },
+  ]);
+  assert.equal(r.passed, true);
+  assert.deepEqual(r.evaluated, {});
+});
+
 // ── enforceGates: multiple gates + totality ──────────────────────────────────
 
 test("enforceGates: multiple gates, one fails ⇒ blocked with one reason", () => {

@@ -1,9 +1,9 @@
 /**
  * LangGraph execution engine for Maestro.
  *
- * Activated via MAESTRO_ENGINE=langgraph. Replaces the state-machine loop in
- * maestro.mjs with a LangGraph StateGraph while keeping every other concern
- * (herdr CLI execution, run-dir files, MCP tools) unchanged.
+ * LangGraph is the only execution engine. Runs a StateGraph where each node
+ * is a role; all other concerns (herdr CLI execution, run-dir files, MCP tools)
+ * remain unchanged.
  *
  * Token-efficiency contract: only compact typed Handoff objects flow between
  * roles — never raw stdout. Raw logs stay on disk; DB stores their paths.

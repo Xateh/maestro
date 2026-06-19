@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { buildPromptFromHandoffs } from "./prompt.mjs";
+import { contextForEdge } from "./context-contract.mjs";
 import {
   parseAgentHandoff,
   parseAgentQuestion,
@@ -274,10 +275,15 @@ export function makeRoleNode(roleDef, {
       await db.deleteHandoffsByRole(task.id, roleKey);
     }
 
-    // ── stub role: no provider, no agent — emit a schema-conforming payload ──
-    // Stubs still honor resume-skip + loop bounding (above) but NEVER touch the
-    // runner or provider availability. SP3 extends this seam with kind:"command".
-    if (roleDef.kind === "stub") {
+    // ── non-LLM role-kind handlers ───────────────────────────────────────────
+    // stub / command / regression / scoring: inner async closures that share
+    // roleNode's bound variables (db, task, roleKey, currentTask, config, …).
+    // Each returns the same result object the inline branch produced. The LLM
+    // path (below the dispatch) is unchanged.
+
+    // stub: no provider, no agent — emit a schema-conforming payload.
+    // Honors resume-skip + loop bounding above. SP3 seam for kind:"command".
+    async function runStubRole() {
       const stageStartedAt = new Date().toISOString();
       const resolved = resolveRoleSchema(roleDef);
       const payload = resolved.schema ? emptyPayloadForSchema(resolved.schema) : {};
@@ -330,12 +336,10 @@ export function makeRoleNode(roleDef, {
       };
     }
 
-    // ── command role: non-LLM stage that runs declared shell commands ────────
-    // Sibling to the stub branch: honors resume-skip + loop bounding (above) but
-    // NEVER touches the agent runner or provider availability. Runs every command
-    // as evidence and always emits "done" — a failing command is data, not a halt
-    // (no gating; that is SP5). Builds the SP1 `evaluation` payload.
-    if (roleDef.kind === "command") {
+    // command: non-LLM stage that runs declared shell commands.
+    // Honors resume-skip + loop bounding. Failing command = data, not a halt.
+    // Builds the SP1 `evaluation` payload.
+    async function runCommandRole() {
       const stageStartedAt = new Date().toISOString();
       const commands = Array.isArray(roleDef.commands) ? roleDef.commands : [];
       const cwd = currentTask.worktree_path
@@ -432,14 +436,10 @@ export function makeRoleNode(roleDef, {
       };
     }
 
-    // ── regression role: non-LLM corpus runner (SP4) ─────────────────────────
-    // Sibling to stub/command: honors resume-skip + loop bounding (above), NEVER
-    // touches the agent runner. Loads an on-disk corpus, re-runs each case (with
-    // retries) via commandRunner, auto-promotes upstream evaluation.failures[]
-    // into new cases, and emits an OUTCOME-DEPENDENT event (done / fail_event).
-    // It NEVER throws on a case failure, load error, or write error — each is
-    // captured as evidence; only new_failures vs fail_threshold drives the event.
-    if (roleDef.kind === "regression") {
+    // regression: non-LLM corpus runner (SP4). Honors resume-skip + loop
+    // bounding. Loads corpus, re-runs cases with retries, promotes evaluation
+    // failures, emits outcome-dependent event (done / fail_event).
+    async function runRegressionRole() {
       const stageStartedAt = new Date().toISOString();
       const cwd = currentTask.worktree_path
         ?? (currentTask.cwd ? path.resolve(currentTask.cwd) : process.cwd());
@@ -614,15 +614,10 @@ export function makeRoleNode(roleDef, {
       };
     }
 
-    // ── scoring role: non-LLM reliability scoring + gate engine (SP5) ────────
-    // Sibling to stub/command/regression: honors resume-skip + loop bounding
-    // (above), NEVER touches the agent runner. Reads the accumulated upstream
-    // handoffs, derives the six SP1 `scoring` numbers FROM ACTUAL EVIDENCE
-    // (absent ⇒ 0.0 + missing_evidence + score_inputs.missing), enforces the
-    // manifest's declared `gates:`, and emits an OUTCOME-DEPENDENT event
-    // (pass_event / block_event, default "passed"/"blocked"). It NEVER throws —
-    // missing/garbage evidence is handled by the pure scoring module.
-    if (roleDef.kind === "scoring") {
+    // scoring: non-LLM reliability scoring + gate engine (SP5). Honors resume-
+    // skip + loop bounding. Derives scores from upstream handoffs, enforces
+    // declared gates, emits pass_event / block_event.
+    async function runScoringRole() {
       const stageStartedAt = new Date().toISOString();
       // last-write-wins handoffs-by-role map from the accumulated priorHandoffs.
       const handoffsByRole = {};
@@ -630,11 +625,19 @@ export function makeRoleNode(roleDef, {
         if (h?.role) handoffsByRole[h.role] = h.payload;
       }
 
+      // Per-handoff schema_validation evidence for the output_schema_conformance
+      // gate (B): every prior handoff that carried a schema verdict, by role.
+      const handoffMeta = priorHandoffs.map((h) => ({
+        role: h?.role,
+        schema_validation: h?.schema_validation ?? null,
+      }));
+
       const { scores, score_inputs, missing_evidence } = deriveScores(handoffsByRole);
       const gateResult = enforceGates(
         workflow?.gates ?? roleDef.gates ?? {},
         scores,
         handoffsByRole,
+        handoffMeta,
       );
       const payload = {
         ...scores,
@@ -696,6 +699,11 @@ export function makeRoleNode(roleDef, {
         visits: { [roleKey]: 1 },
       };
     }
+
+    if (roleDef.kind === "stub") return runStubRole();
+    if (roleDef.kind === "command") return runCommandRole();
+    if (roleDef.kind === "regression") return runRegressionRole();
+    if (roleDef.kind === "scoring") return runScoringRole();
 
     // ── reviewer: synthetic skip when review_enabled === false ───────────────
     if (roleKey === "reviewer" && currentTask.review_enabled === false) {
@@ -851,10 +859,16 @@ export function makeRoleNode(roleDef, {
         }
       }
 
+      // Per-edge context contract (experimental, v0.3.0 item A): when the
+      // workflow opts in, narrow the prompt's view of prior handoffs to what the
+      // inbound edge (state.currentState → state.event) declares. A no-op (full
+      // history) when the flag is off or the edge declares nothing.
+      const promptHandoffs = contextForEdge(workflow, priorHandoffs, state.currentState, state.event);
+
       const prompt = buildPromptFromHandoffs({
         role: roleKey,
         task: currentTask,
-        priorHandoffs,
+        priorHandoffs: promptHandoffs,
         handoffMode,
         roleInstructions,
         outputSchema: resolveRoleSchema(roleDef).schema ?? null,

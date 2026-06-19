@@ -469,3 +469,68 @@ test("full-audit-sweep validates clean — no bad_scoring_spec", () => {
   assert.equal(result.ok, true);
   assert.ok(!codes(result).includes("bad_scoring_spec"));
 });
+
+// ── require_distinct_reviewer (v0.3.0 item C, opt-in) ────────────────────────
+
+test("require_distinct_reviewer: same provider for entry + verifier ⇒ error", () => {
+  const wf = baseWorkflow(
+    {
+      executor: { provider: "codex" },
+      review: { provider: "codex", verifies: true, output_schema: "review" },
+    },
+    {
+      transitions: {
+        executor: { done: "review", error: "$halt" },
+        review: { done: "$complete", error: "$halt" },
+      },
+      require_distinct_reviewer: true,
+    },
+  );
+  const result = validateWorkflow(wf);
+  assert.equal(result.ok, false);
+  assert.ok(codes(result).includes("non_distinct_reviewer"));
+});
+
+test("require_distinct_reviewer: distinct providers ⇒ clean", () => {
+  const wf = baseWorkflow(
+    {
+      executor: { provider: "codex" },
+      review: { provider: "claude", verifies: true, output_schema: "review" },
+    },
+    {
+      transitions: {
+        executor: { done: "review", error: "$halt" },
+        review: { done: "$complete", error: "$halt" },
+      },
+      require_distinct_reviewer: true,
+    },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(!codes(result).includes("non_distinct_reviewer"));
+});
+
+test("require_distinct_reviewer absent ⇒ shared provider tolerated (opt-in only)", () => {
+  const wf = baseWorkflow(
+    {
+      executor: { provider: "codex" },
+      review: { provider: "codex", verifies: true, output_schema: "review" },
+    },
+    {
+      transitions: {
+        executor: { done: "review", error: "$halt" },
+        review: { done: "$complete", error: "$halt" },
+      },
+    },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(!codes(result).includes("non_distinct_reviewer"));
+});
+
+test("require_distinct_reviewer non-boolean ⇒ bad_require_distinct_reviewer", () => {
+  const wf = baseWorkflow(
+    { executor: { provider: "codex" } },
+    { require_distinct_reviewer: "yes" },
+  );
+  const result = validateWorkflow(wf);
+  assert.ok(codes(result).includes("bad_require_distinct_reviewer"));
+});

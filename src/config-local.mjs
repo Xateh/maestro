@@ -2,8 +2,6 @@
 // Local values are merged over config.json at read time and must never be
 // written back into shareable files (config.json, export bundles).
 
-export const LOCAL_EXCLUDED_FILES = ["config.local.json", "secrets.local.json"];
-
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
