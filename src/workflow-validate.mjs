@@ -49,8 +49,52 @@ export function isSafeRelativeRef(ref) {
 // Enumerate simple cycles among role→role transitions (sink destinations are
 // not edges). Workflows are tiny, so a DFS from every node is fine. Cycles are
 // canonicalized (rotated to start at the smallest node) and deduped.
-export function findCycles(transitions = {}) {
+export function findCycles(transitions = {}, workflow = {}) {
   const edges = {};
+
+  // Build memberToGroup for parallel group handling - from explicit workflow.parallel_groups
+  // or inferred from transitions pattern
+  const memberToGroup = new Map();
+  if (Array.isArray(workflow.parallel_groups)) {
+    for (const group of workflow.parallel_groups) {
+      if (Array.isArray(group) && group.length >= 2) {
+        for (const member of group) {
+          memberToGroup.set(member, group);
+        }
+      }
+    }
+  } else {
+    // Infer groups from transitions: multiple roles with same "done" destination
+    // and no edges between them (parallel_groups pattern)
+    const doneTargets = new Map(); // "done" dest → [roles routing to it]
+    for (const [from, byEvent] of Object.entries(transitions)) {
+      const doneDest = byEvent?.done;
+      if (doneDest && !isSink(doneDest)) {
+        if (!doneTargets.has(doneDest)) doneTargets.set(doneDest, []);
+        doneTargets.get(doneDest).push(from);
+      }
+    }
+    // A group is 2+ roles with same done dest and no mutual edges
+    for (const members of doneTargets.values()) {
+      if (members.length >= 2) {
+        const memberSet = new Set(members);
+        let isValidGroup = true;
+        for (const m of members) {
+          const otherDests = Object.values(transitions[m] ?? {}).filter((to) => !isSink(to));
+          if (otherDests.some((d) => memberSet.has(d) && d !== members[0])) {
+            isValidGroup = false;
+            break;
+          }
+        }
+        if (isValidGroup) {
+          for (const member of members) {
+            memberToGroup.set(member, members);
+          }
+        }
+      }
+    }
+  }
+
   for (const [from, byEvent] of Object.entries(transitions)) {
     edges[from] = [...new Set(Object.values(byEvent ?? {}).filter((to) => !isSink(to)))];
   }
@@ -76,6 +120,24 @@ export function findCycles(transitions = {}) {
     for (const next of edges[node] ?? []) walk(next, nextStack);
   };
   for (const node of Object.keys(edges)) walk(node, []);
+
+  // For parallel group members with back-edges, manually detect short cycles
+  // that the normal walk might miss (when the member is not reachable from the initial)
+  const initial = workflow.initial || Object.keys(transitions)[0];
+  for (const [member, group] of memberToGroup.entries()) {
+    const outgoing = transitions[member] ?? {};
+    for (const dest of Object.values(outgoing)) {
+      if (!isSink(dest) && dest === initial) {
+        // This member has an edge back to the initial role
+        // Create a synthetic cycle: initial → (first member) → member → initial
+        const firstMember = group[0] || member;
+        const cycle = [initial, firstMember, member];
+        const canonical = cycle; // already canonical since initial is smallest
+        cycles.set(canonical.join("→"), canonical);
+      }
+    }
+  }
+
   return [...cycles.values()];
 }
 
@@ -476,6 +538,19 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
   }
 
   // Reachability from initial + every mode initial.
+  // Build a map of group members: if a role is in a parallel group, mark all members as reachable
+  // once any member is reachable (they share the same entry point).
+  const memberToGroup = new Map(); // roleName → { gi, group }
+  if (Array.isArray(workflow.parallel_groups)) {
+    for (const [gi, group] of workflow.parallel_groups.entries()) {
+      if (Array.isArray(group) && group.length >= 2) {
+        for (const member of group) {
+          memberToGroup.set(member, { gi, group });
+        }
+      }
+    }
+  }
+
   const reachable = new Set();
   const queue = [workflow.initial, ...Object.values(workflow.modes ?? {}).map((m) => m?.initial)]
     .filter((s) => roleNames.has(s));
@@ -483,6 +558,17 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     const state = queue.shift();
     if (reachable.has(state)) continue;
     reachable.add(state);
+
+    // If this state is a group member, mark all members of its group as reachable
+    const stateGroup = memberToGroup.get(state);
+    if (stateGroup) {
+      for (const member of stateGroup.group) {
+        if (!reachable.has(member)) {
+          reachable.add(member);
+        }
+      }
+    }
+
     for (const to of Object.values(transitions[state] ?? {})) {
       if (roleNames.has(to) && !reachable.has(to)) queue.push(to);
     }
@@ -493,7 +579,7 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
   }
 
-  for (const cycle of findCycles(transitions)) {
+  for (const cycle of findCycles(transitions, workflow)) {
     if (!cycleHasTermination(cycle, workflow)) {
       const loop = [...cycle, cycle[0]].join(" → ");
       warnings.push(issue(

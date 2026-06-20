@@ -456,7 +456,7 @@ export async function runLangGraphTask(taskId, {
   // question_answers in the prompt.
   const loopBlocked = (task.blockers ?? []).filter((b) => b.code === "loop_limit_exceeded");
   if (loopBlocked.length > 0) {
-    const cycles = findCycles(workflow.transitions ?? {});
+    const cycles = findCycles(workflow.transitions ?? {}, workflow);
     for (const blocker of loopBlocked) {
       if (!blocker.role) continue;
       const cycleRoles = new Set([blocker.role]);

@@ -102,9 +102,20 @@ function buildGroupNode(gi, group, workflow, config, opts) {
       }
     } catch { /* observability never breaks a run */ }
 
+    // If any member emitted a non-"done" event, propagate the first one
+    // (typically changes_requested for rework loops)
+    let groupEvent = "done";
+    for (let i = 0; i < settled.length; i++) {
+      const result = settled[i];
+      if (result.status === "fulfilled" && result.value?.event && result.value.event !== "done") {
+        groupEvent = result.value.event;
+        break;
+      }
+    }
+
     return {
       priorHandoffs: allHandoffs,
-      event: "done", // group always emits "done"; scoring handles missing evidence
+      event: groupEvent,
       currentState: `pg_${gi}`,
       visits: allVisits,
     };
