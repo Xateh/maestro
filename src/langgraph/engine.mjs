@@ -32,6 +32,16 @@ function _dbPath(maestroRoot) {
 let _herdrProbe = null;
 let _fallbackNoticeShown = false;
 
+// SP10b: per-run AbortControllers for real cancellation.
+// cancelRun() is called by handleCancelTask; the engine checks signal.aborted
+// at each step boundary and resolves the run as "cancelled".
+const runControllers = new Map(); // taskId → AbortController
+
+export function cancelRun(taskId) {
+  const ctrl = runControllers.get(taskId);
+  if (ctrl) ctrl.abort();
+}
+
 /**
  * Pick the agent runner backend. MAESTRO_BACKEND=terminal forces the terminal
  * runner; any other value (or none) auto-selects herdr when its binary exists
@@ -487,6 +497,12 @@ export async function runLangGraphTask(taskId, {
   };
 
   let finalState = null;
+
+  // SP10b: register an AbortController for this run so cancelRun() can signal
+  // the stream loop to stop at the next step boundary.
+  const ctrl = new AbortController();
+  runControllers.set(taskId, ctrl);
+
   // ── OTel seam: one place, every return path ──────────────────────────────
   // Wrap the stream consumption through every final return in an OUTER try so
   // a finally can mirror the recorded steps as `maestro.stage` spans exactly
@@ -500,6 +516,7 @@ export async function runLangGraphTask(taskId, {
       { ...threadConfig, streamMode: "values" },
     );
     for await (const state of stream) {
+      if (ctrl.signal.aborted) { finalState = state; break; } // SP10b: step-boundary cancel
       finalState = state;
       write(stdout, `task ${taskId} role=${state.currentState} event=${state.event}`);
     }
@@ -513,6 +530,30 @@ export async function runLangGraphTask(taskId, {
     const errTask = await db.getTask(taskId);
     await taskStore.updateTask(taskId, _mirrorPatch(errTask));
     return { task: errTask };
+  }
+
+  // ── handle cancellation (SP10b) ──────────────────────────────────────────
+  if (ctrl.signal.aborted) {
+    const cancelledAt = new Date().toISOString();
+    await db.updateTask(taskId, {
+      status: "cancelled",
+      active_step: null,
+      cancelled_at: cancelledAt,
+    });
+    // Best-effort: stamp run-manifest.json
+    if (task.run_dir) {
+      try {
+        const manifestPath = path.join(task.run_dir, "run-manifest.json");
+        const raw = await fs.readFile(manifestPath, "utf8");
+        const manifest = JSON.parse(raw);
+        manifest.cancelled_at = cancelledAt;
+        await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      } catch { /* best effort */ }
+    }
+    const cancelledTask = await db.getTask(taskId);
+    await taskStore.updateTask(taskId, _mirrorPatch(cancelledTask));
+    write(stdout, `task ${taskId} cancelled`);
+    return { task: cancelledTask };
   }
 
   // ── interpret final graph state ───────────────────────────────────────────
@@ -595,6 +636,7 @@ export async function runLangGraphTask(taskId, {
 
   return { task: await db.getTask(taskId) };
   } finally {
+    runControllers.delete(taskId); // SP10b: always clean up
     try {
       const endTaskForEvents = await db.getTask(taskId);
       const events = getStageEvents(endTaskForEvents);

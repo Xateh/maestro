@@ -16,7 +16,7 @@ import { test } from "node:test";
 import { buildGraph } from "../src/langgraph/graph.mjs";
 import { makeRoleNode } from "../src/langgraph/nodes.mjs";
 import { buildPromptFromHandoffs } from "../src/langgraph/prompt.mjs";
-import { runLangGraphTask } from "../src/langgraph/engine.mjs";
+import { runLangGraphTask, cancelRun } from "../src/langgraph/engine.mjs";
 import { SqliteTaskStore } from "../src/db/store.mjs";
 import { getStageEvents } from "../src/stage-events.mjs";
 import { DEFAULT_WORKFLOW, LocalTaskStore } from "../src/task-store.mjs";
@@ -2639,6 +2639,73 @@ test("runLangGraphTask: resume overwrites the manifest, leaving a single file (n
     const manifest = JSON.parse(await readFile(path.join(runDir, "run-manifest.json"), "utf8"));
     assert.equal(manifest.manifest_version, 1);
     assert.deepEqual(manifest.workflow_snapshot, DEFAULT_WORKFLOW);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── SP10b: real mid-run cancellation via AbortController step boundary ──────────
+
+test("SP10b: cancelRun(taskId) causes in-flight run to resolve as cancelled", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-cancel-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    const task = await store.createTask({ prompt: "do work", cwd: dir, reviewEnabled: false });
+
+    // Two-role workflow: first → second (sequential).
+    await writeFile(
+      path.join(store.root, "workflow.json"),
+      JSON.stringify({
+        version: 2,
+        initial: "first",
+        roles: {
+          first:  { label: "First",  provider: "codex", prompt_template: "first",  permission: "read" },
+          second: { label: "Second", provider: "codex", prompt_template: "second", permission: "read" },
+        },
+        transitions: {
+          first:  { done: "second" },
+          second: { done: "$complete" },
+        },
+        modes: { task: { initial: "first" } },
+      }),
+    );
+
+    let secondRoleCalled = false;
+    let firstRoleStarted = false;
+
+    const slowRunner = {
+      runStep: async (opts) => {
+        // Distinguish roles by the prompt_template embedded in the role def
+        const role = opts?.role?.prompt_template ?? opts?.roleDef?.prompt_template ?? "";
+        if (role === "second") {
+          secondRoleCalled = true;
+          return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "second done" })}`, stderr: "", stdoutPath: null, stderrPath: null };
+        }
+        // first role: slow (200ms)
+        firstRoleStarted = true;
+        await new Promise((r) => setTimeout(r, 200));
+        return { stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "first done" })}`, stderr: "", stdoutPath: null, stderrPath: null };
+      },
+    };
+
+    const taskId = task.id;
+    const runPromise = runLangGraphTask(taskId, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: slowRunner,
+      stdout: { write: () => {} },
+      stderr: { write: () => {} },
+      availabilityProbe: () => true,
+    });
+
+    // Cancel after 50ms (first role is mid-run)
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(firstRoleStarted, true, "first role must have started before cancel");
+    cancelRun(taskId);
+
+    const { task: finalTask } = await runPromise;
+    assert.equal(finalTask.status, "cancelled", "task should be cancelled");
+    assert.equal(secondRoleCalled, false, "second role must not have been called");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
