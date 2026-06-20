@@ -373,6 +373,53 @@ test("full-audit-sweep validates clean — no bad_command_spec", () => {
   assert.ok(!codes(result).includes("bad_command_spec"));
 });
 
+// ── SP8 kind:"command" coverage.format validation ───────────────────────────
+// Helper for SP8 tests: cmdWorkflow builds a minimal v2 workflow with command role
+function cmdWorkflow(commands) {
+  return {
+    version: 2,
+    initial: "eval",
+    roles: { eval: { kind: "command", commands } },
+    transitions: { eval: { done: "$complete" } },
+  };
+}
+
+test("SP8 validate: unknown coverage.format → bad_command_spec", () => {
+  const wf = cmdWorkflow([{
+    name: "tests", run: "npm test",
+    parser: { coverage: { format: "istanbul", path: "coverage.json" } },
+  }]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_command_spec" && e.message.includes("coverage.format")));
+});
+
+test("SP8 validate: coverage.format=regex without pct → bad_command_spec", () => {
+  const wf = cmdWorkflow([{
+    name: "tests", run: "npm test",
+    parser: { coverage: { format: "regex", path: "output.txt" } },
+  }]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_command_spec" && e.message.includes("pct")));
+});
+
+test("SP8 validate: valid coverage.format=c8-json with path → no error", () => {
+  const wf = cmdWorkflow([{
+    name: "tests", run: "npm test",
+    parser: { coverage: { format: "c8-json", path: "coverage/coverage-summary.json" } },
+  }]);
+  const result = validateWorkflow(wf);
+  assert.ok(!result.errors.some((e) => e.code === "bad_command_spec" && e.message.includes("coverage")));
+});
+
+test("SP8 validate: valid coverage.format=regex with pct → no error", () => {
+  const wf = cmdWorkflow([{
+    name: "tests", run: "npm test",
+    parser: { coverage: { format: "regex", path: "out.txt", pct: "Cov: ([\\d.]+)%" } },
+  }]);
+  const result = validateWorkflow(wf);
+  assert.ok(!result.errors.some((e) => e.code === "bad_command_spec" && e.message.includes("coverage")));
+});
+
 // ── SP4 kind:"regression" role spec validation (bad_regression_spec) ─────────
 
 test("regression role missing fail_event transition → bad_regression_spec", () => {

@@ -31,6 +31,9 @@ const GATE_VALIDATORS = {
   output_schema_conformance: isBool,
 };
 
+// Known coverage format values for command role parser.coverage.format validation (SP8)
+const KNOWN_COVERAGE_FORMATS = new Set(["c8-json", "lcov", "jest-json", "cobertura", "clover", "regex"]);
+
 // Syntactic check for output_schema_ref / MRC source: a relative path that does
 // not escape the state dir. No file I/O — existence is checked at load, not here.
 // Exported (D3) so the loader/CLI lint reuse the same predicate.
@@ -208,6 +211,23 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
           }
           if (typeof run !== "string" || run.length === 0) {
             errors.push(issue("bad_command_spec", `role "${roleName}" command "${name ?? i}" is missing a non-empty "run"`));
+          }
+          // ── SP8: validate coverage.format in command parser ──
+          const cov = command?.parser?.coverage;
+          if (cov !== undefined) {
+            if (!cov || typeof cov !== "object") {
+              errors.push(issue("bad_command_spec",
+                `role "${roleName}" command "${name ?? i}" parser.coverage must be an object`));
+            } else {
+              const fmt = cov.format;
+              if (typeof fmt !== "string" || !KNOWN_COVERAGE_FORMATS.has(fmt)) {
+                errors.push(issue("bad_command_spec",
+                  `role "${roleName}" command "${name ?? i}" coverage.format must be one of: ${[...KNOWN_COVERAGE_FORMATS].join(", ")}, got ${JSON.stringify(fmt)}`));
+              } else if (fmt === "regex" && (typeof cov.pct !== "string" || cov.pct.length === 0)) {
+                errors.push(issue("bad_command_spec",
+                  `role "${roleName}" command "${name ?? i}" coverage.format "regex" requires a non-empty "pct" regex string`));
+              }
+            }
           }
         }
       }
