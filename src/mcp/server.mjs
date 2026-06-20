@@ -3,12 +3,18 @@ import "../suppress-sqlite-warning.mjs";
 import "../telemetry.mjs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { validateInline } from "../schemas/index.mjs";
 import { openStore } from "../db/store.mjs";
 import { assertInsideDir, assertInsideDirReal, isInsideDirReal, listDir, tailFile } from "../fs-safe.mjs";
 import { WORKFLOW_NAME_RE } from "../task-store.mjs";
@@ -102,6 +108,127 @@ const MAX_PROMPT_BYTES = 100_000;
 
 async function readJSON(filePath) {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
+}
+
+const WORKFLOW_SCHEMA_URI = "maestro://schema/workflow.json";
+const WORKFLOW_SCHEMA_MIME = "application/schema+json";
+const WORKFLOW_SCHEMA_PATH = fileURLToPath(new URL("../../schema/workflow.schema.json", import.meta.url));
+
+let _workflowSchemaText = null;
+let _workflowSchema = null;
+async function readWorkflowSchemaText() {
+  if (_workflowSchemaText === null) {
+    _workflowSchemaText = await fs.readFile(WORKFLOW_SCHEMA_PATH, "utf8");
+  }
+  return _workflowSchemaText;
+}
+
+async function loadWorkflowSchema() {
+  if (!_workflowSchema) {
+    _workflowSchema = JSON.parse(await readWorkflowSchemaText());
+  }
+  return _workflowSchema;
+}
+
+function badWorkflowSchema(errors = []) {
+  return {
+    ok: false,
+    errors: errors.map((error) => ({
+      code: "bad_workflow_schema",
+      path: error.path ?? "",
+      message: error.message ?? "workflow does not match schema/workflow.schema.json",
+    })),
+    warnings: [],
+  };
+}
+
+async function validateWorkflowCandidate(workflow, { config = null } = {}) {
+  const schema = await loadWorkflowSchema();
+  const structural = validateInline(schema, workflow);
+  if (!structural.ok) return badWorkflowSchema(structural.errors);
+  const { validateWorkflow } = await import("../workflow-validate.mjs");
+  return validateWorkflow(workflow, { config });
+}
+
+function mcpValidateConfig(config) {
+  const mcp = config?.server?.mcp ?? {};
+  const maxAttempts = Number.isFinite(mcp.max_validate_attempts)
+    ? Math.max(1, Math.trunc(mcp.max_validate_attempts))
+    : 5;
+  const cooldownMs = Number.isFinite(mcp.validate_cooldown_ms)
+    ? Math.max(0, Math.trunc(mcp.validate_cooldown_ms))
+    : 60_000;
+  return { maxAttempts, cooldownMs };
+}
+
+const validateAttemptGuards = new Map();
+
+function exhaustedVerdict(retryAfterMs) {
+  return {
+    ok: false,
+    errors: [{ code: "validate_attempts_exhausted", retry_after_ms: retryAfterMs }],
+    warnings: [],
+  };
+}
+
+function validateAttemptGuardBegin(
+  attempts,
+  { sessionId = "stdio", maxAttempts = 5, cooldownMs = 60_000, nowMs = Date.now() } = {},
+) {
+  const sessionKey = sessionId || "stdio";
+  const record = attempts.get(sessionKey) ?? { failedAttempts: 0, lastAttemptMs: 0 };
+  if (record.failedAttempts >= maxAttempts) {
+    const elapsedMs = Math.max(0, nowMs - record.lastAttemptMs);
+    if (elapsedMs < cooldownMs) {
+      return {
+        allowed: false,
+        sessionKey,
+        verdict: exhaustedVerdict(cooldownMs - elapsedMs),
+      };
+    }
+    attempts.set(sessionKey, { failedAttempts: 0, lastAttemptMs: 0 });
+  }
+  return { allowed: true, sessionKey };
+}
+
+function validateAttemptGuardSettle(attempts, { sessionKey, ok, nowMs = Date.now() } = {}) {
+  if (!sessionKey) return;
+  if (ok) {
+    attempts.set(sessionKey, { failedAttempts: 0, lastAttemptMs: 0 });
+    return;
+  }
+  const record = attempts.get(sessionKey) ?? { failedAttempts: 0, lastAttemptMs: 0 };
+  attempts.set(sessionKey, {
+    failedAttempts: record.failedAttempts + 1,
+    lastAttemptMs: nowMs,
+  });
+}
+
+function resetValidateAttemptGuards() {
+  validateAttemptGuards.clear();
+}
+
+function listWorkflowResources() {
+  return {
+    resources: [{
+      uri: WORKFLOW_SCHEMA_URI,
+      name: "workflow.schema.json",
+      title: "Maestro workflow JSON Schema",
+      description: "Draft 2020-12 structural schema for .maestro/workflow.json.",
+      mimeType: WORKFLOW_SCHEMA_MIME,
+    }],
+  };
+}
+
+async function readWorkflowResource({ uri } = {}) {
+  if (uri !== WORKFLOW_SCHEMA_URI) throw new Error(`unknown_resource: ${uri}`);
+  return {
+    contents: [{
+      uri: WORKFLOW_SCHEMA_URI,
+      mimeType: WORKFLOW_SCHEMA_MIME,
+      text: await readWorkflowSchemaText(),
+    }],
+  };
 }
 
 // ── Tool implementations ──────────────────────────────────────────────────────
@@ -327,18 +454,44 @@ export async function readWorkflow() {
   return { workflow_json: workflow };
 }
 
-async function validateWorkflowTool() {
+async function validateWorkflowTool(args = {}, extra = {}) {
+  const toolArgs = args ?? {};
+  const hasInlineWorkflow = Object.hasOwn(toolArgs, "workflow");
   let MAESTRO_DIR;
   try {
     ({ MAESTRO_DIR } = maestroPaths());
   } catch (error) {
-    return { ok: false, errors: [{ code: "missing_workflow", message: error.message }], warnings: [] };
+    if (!hasInlineWorkflow) {
+      return { ok: false, errors: [{ code: "missing_workflow", message: error.message }], warnings: [] };
+    }
   }
-  const workflow = await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
-  if (!workflow) return { ok: false, errors: [{ code: "missing_workflow", message: "no readable .maestro/workflow.json" }], warnings: [] };
-  const config = await readJSON(path.join(MAESTRO_DIR, "config.json")).catch(() => null);
-  const { validateWorkflow } = await import("../workflow-validate.mjs");
-  return validateWorkflow(workflow, { config });
+  const config = MAESTRO_DIR ? await readJSON(path.join(MAESTRO_DIR, "config.json")).catch(() => null) : null;
+  const workflow = hasInlineWorkflow
+    ? toolArgs.workflow
+    : await readJSON(path.join(MAESTRO_DIR, "workflow.json")).catch(() => null);
+  if (!hasInlineWorkflow && !workflow) {
+    return { ok: false, errors: [{ code: "missing_workflow", message: "no readable .maestro/workflow.json" }], warnings: [] };
+  }
+
+  if (!hasInlineWorkflow) return validateWorkflowCandidate(workflow, { config });
+
+  const { maxAttempts, cooldownMs } = mcpValidateConfig(config);
+  const nowMs = extra.nowMs ?? Date.now();
+  const guard = validateAttemptGuardBegin(validateAttemptGuards, {
+    sessionId: extra.sessionId,
+    maxAttempts,
+    cooldownMs,
+    nowMs,
+  });
+  if (!guard.allowed) return guard.verdict;
+
+  const result = await validateWorkflowCandidate(workflow, { config });
+  validateAttemptGuardSettle(validateAttemptGuards, {
+    sessionKey: guard.sessionKey,
+    ok: result.ok,
+    nowMs,
+  });
+  return result;
 }
 
 // ── MCP server wiring ─────────────────────────────────────────────────────────
@@ -406,8 +559,16 @@ const TOOLS = [
   },
   {
     name: "maestro_validate_workflow",
-    description: "Validate .maestro/workflow.json: structural errors (bad initial/transitions/modes) and warnings (unreachable roles, unknown providers, cycles without termination clauses). Returns {ok, errors, warnings}.",
-    inputSchema: { type: "object", properties: {} },
+    description: "Validate a workflow. With no `workflow` argument, reads .maestro/workflow.json. With a `workflow` object, validates that inline candidate without changing state. Both paths run schema/workflow.schema.json first and return bad_workflow_schema before semantic validation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflow: {
+          type: "object",
+          description: "Optional inline workflow candidate to validate instead of reading .maestro/workflow.json.",
+        },
+      },
+    },
   },
 ];
 
@@ -424,21 +585,47 @@ const HANDLERS = {
 
 const server = new Server(
   { name: "maestro", version: "1.0.0" },
-  { capabilities: { tools: {} } }
+  { capabilities: { tools: {}, resources: {} } }
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+server.setRequestHandler(ListResourcesRequestSchema, async () => listWorkflowResources());
+server.setRequestHandler(ReadResourceRequestSchema, async (request) => readWorkflowResource({ uri: request.params.uri }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
   const handler = HANDLERS[name];
   if (!handler) throw new Error(`Unknown tool: ${name}`);
-  const result = await handler(args ?? {});
+  const result = await handler(args ?? {}, extra);
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 });
 
+function _resetMaestroPathsForTest() {
+  _paths = null;
+}
+
 // Export helpers for testing without starting the server.
-export { isValidId, assertInsideDir, redactConfig, VALID_MODES, WORKFLOW_NAME_RE, buildTaskArgv, resolveValidModes, createTask, getState, showTask, showRun, listTasks, validateWorkflowTool };
+export {
+  isValidId,
+  assertInsideDir,
+  redactConfig,
+  VALID_MODES,
+  WORKFLOW_NAME_RE,
+  buildTaskArgv,
+  resolveValidModes,
+  createTask,
+  getState,
+  showTask,
+  showRun,
+  listTasks,
+  validateWorkflowTool,
+  listWorkflowResources,
+  readWorkflowResource,
+  resetValidateAttemptGuards,
+  validateAttemptGuardBegin,
+  validateAttemptGuardSettle,
+  _resetMaestroPathsForTest,
+};
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {

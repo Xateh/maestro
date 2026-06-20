@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,11 +20,57 @@ import {
   showRun,
   validateWorkflowTool,
   readWorkflow,
+  listWorkflowResources,
+  readWorkflowResource,
+  resetValidateAttemptGuards,
+  validateAttemptGuardBegin,
+  validateAttemptGuardSettle,
+  _resetMaestroPathsForTest,
 } from "../src/mcp/server.mjs";
 
 import { safeRunnerEnv } from "../src/agent-runner.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "..");
+
+function validWorkflow() {
+  return {
+    version: 2,
+    initial: "executor",
+    roles: { executor: { provider: "codex" } },
+    transitions: { executor: { done: "$complete", error: "$halt" } },
+    modes: { task: { initial: "executor" } },
+  };
+}
+
+function structurallyBadWorkflow() {
+  return {
+    version: 2,
+    initial: "executor",
+    roles: [],
+    transitions: { executor: { done: "$complete" } },
+  };
+}
+
+async function withTempMaestroRoot({ workflow = validWorkflow(), config = {} } = {}, fn) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "maestro-mcp-"));
+  const stateDir = path.join(root, ".maestro");
+  await fs.mkdir(stateDir, { recursive: true });
+  await fs.writeFile(path.join(stateDir, "workflow.json"), `${JSON.stringify(workflow, null, 2)}\n`);
+  await fs.writeFile(path.join(stateDir, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
+  const previousRoot = process.env.MAESTRO_ROOT;
+  process.env.MAESTRO_ROOT = root;
+  _resetMaestroPathsForTest();
+  try {
+    return await fn({ root, stateDir });
+  } finally {
+    if (previousRoot === undefined) delete process.env.MAESTRO_ROOT;
+    else process.env.MAESTRO_ROOT = previousRoot;
+    _resetMaestroPathsForTest();
+    resetValidateAttemptGuards();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
 
 // ── isValidId ─────────────────────────────────────────────────────────────────
 
@@ -161,6 +209,132 @@ test("validateWorkflowTool: returns {ok, errors, warnings} shape", async () => {
   assert.equal(typeof result.ok, "boolean");
   assert.ok(Array.isArray(result.errors));
   assert.ok(Array.isArray(result.warnings));
+});
+
+test("validateWorkflowTool: validates an inline workflow without reading disk workflow bytes", async () => {
+  await withTempMaestroRoot({ workflow: structurallyBadWorkflow() }, async () => {
+    resetValidateAttemptGuards();
+    const result = await validateWorkflowTool({ workflow: validWorkflow() }, { sessionId: "inline-ok", nowMs: 0 });
+    assert.deepEqual(result, { ok: true, errors: [], warnings: [] });
+  });
+});
+
+test("validateWorkflowTool: structural pre-check fires on disk and inline with same verdict", async () => {
+  const bad = structurallyBadWorkflow();
+  await withTempMaestroRoot({ workflow: bad }, async () => {
+    resetValidateAttemptGuards();
+    const disk = await validateWorkflowTool({}, { sessionId: "disk-structural", nowMs: 0 });
+    const inline = await validateWorkflowTool({ workflow: bad }, { sessionId: "inline-structural", nowMs: 0 });
+    assert.deepEqual(disk, inline);
+    assert.equal(disk.ok, false);
+    assert.ok(disk.errors.length > 0);
+    assert.ok(disk.errors.every((error) => error.code === "bad_workflow_schema"));
+  });
+});
+
+test("validateWorkflowTool: inline non-object workflow returns bad_workflow_schema", async () => {
+  await withTempMaestroRoot({ workflow: validWorkflow() }, async () => {
+    const result = await validateWorkflowTool({ workflow: null }, { sessionId: "inline-null", nowMs: 0 });
+    assert.equal(result.ok, false);
+    assert.equal(result.errors[0].code, "bad_workflow_schema");
+  });
+});
+
+test("validateWorkflowTool: inline validate never mutates disk state", async () => {
+  await withTempMaestroRoot({ workflow: validWorkflow() }, async ({ stateDir }) => {
+    const workflowPath = path.join(stateDir, "workflow.json");
+    const before = await fs.readFile(workflowPath, "utf8");
+    const result = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "no-mutate", nowMs: 0 });
+    const after = await fs.readFile(workflowPath, "utf8");
+    assert.equal(result.ok, false);
+    assert.equal(before, after);
+  });
+});
+
+test("validate attempt guard is unit-testable: trip, success reset, cooldown reset, fresh session", () => {
+  const attempts = new Map();
+  const opts = { maxAttempts: 2, cooldownMs: 100 };
+
+  let gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "s1", nowMs: 0 });
+  assert.equal(gate.allowed, true);
+  validateAttemptGuardSettle(attempts, { sessionKey: gate.sessionKey, ok: false, nowMs: 0 });
+
+  gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "s1", nowMs: 10 });
+  assert.equal(gate.allowed, true);
+  validateAttemptGuardSettle(attempts, { sessionKey: gate.sessionKey, ok: false, nowMs: 10 });
+
+  gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "s1", nowMs: 20 });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.verdict.errors[0].code, "validate_attempts_exhausted");
+  assert.equal(gate.verdict.errors[0].retry_after_ms, 90);
+
+  gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "fresh", nowMs: 20 });
+  assert.equal(gate.allowed, true);
+
+  gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "s1", nowMs: 111 });
+  assert.equal(gate.allowed, true, "cooldown should reset and allow validation");
+
+  gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "reset", nowMs: 0 });
+  validateAttemptGuardSettle(attempts, { sessionKey: gate.sessionKey, ok: false, nowMs: 0 });
+  gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "reset", nowMs: 1 });
+  validateAttemptGuardSettle(attempts, { sessionKey: gate.sessionKey, ok: true, nowMs: 1 });
+  gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "reset", nowMs: 2 });
+  assert.equal(gate.allowed, true);
+  validateAttemptGuardSettle(attempts, { sessionKey: gate.sessionKey, ok: false, nowMs: 2 });
+  gate = validateAttemptGuardBegin(attempts, { ...opts, sessionId: "reset", nowMs: 3 });
+  assert.equal(gate.allowed, true, "success should have reset prior failure count");
+});
+
+test("validateWorkflowTool: attempt guard trips and recovers through the tool path", async () => {
+  const config = { server: { mcp: { max_validate_attempts: 2, validate_cooldown_ms: 100 } } };
+  await withTempMaestroRoot({ workflow: validWorkflow(), config }, async () => {
+    resetValidateAttemptGuards();
+    const first = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "tool-s1", nowMs: 0 });
+    const second = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "tool-s1", nowMs: 10 });
+    const blocked = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "tool-s1", nowMs: 20 });
+    assert.equal(first.errors[0].code, "bad_workflow_schema");
+    assert.equal(second.errors[0].code, "bad_workflow_schema");
+    assert.equal(blocked.errors[0].code, "validate_attempts_exhausted");
+    assert.equal(blocked.errors[0].retry_after_ms, 90);
+
+    const fresh = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "tool-fresh", nowMs: 20 });
+    assert.equal(fresh.errors[0].code, "bad_workflow_schema");
+
+    const afterCooldown = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "tool-s1", nowMs: 111 });
+    assert.equal(afterCooldown.errors[0].code, "bad_workflow_schema");
+
+    const failThenSuccess = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "tool-reset", nowMs: 0 });
+    const success = await validateWorkflowTool({ workflow: validWorkflow() }, { sessionId: "tool-reset", nowMs: 1 });
+    const failAfterReset = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "tool-reset", nowMs: 2 });
+    assert.equal(failThenSuccess.errors[0].code, "bad_workflow_schema");
+    assert.equal(success.ok, true);
+    assert.equal(failAfterReset.errors[0].code, "bad_workflow_schema");
+  });
+});
+
+test("validateWorkflowTool: disk mode is exempt from attempt counter", async () => {
+  const config = { server: { mcp: { max_validate_attempts: 1, validate_cooldown_ms: 1000 } } };
+  await withTempMaestroRoot({ workflow: structurallyBadWorkflow(), config }, async () => {
+    resetValidateAttemptGuards();
+    const diskOne = await validateWorkflowTool({}, { sessionId: "disk-exempt", nowMs: 0 });
+    const diskTwo = await validateWorkflowTool({}, { sessionId: "disk-exempt", nowMs: 1 });
+    const inlineOne = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "disk-exempt", nowMs: 2 });
+    const inlineTwo = await validateWorkflowTool({ workflow: structurallyBadWorkflow() }, { sessionId: "disk-exempt", nowMs: 3 });
+    assert.equal(diskOne.errors[0].code, "bad_workflow_schema");
+    assert.equal(diskTwo.errors[0].code, "bad_workflow_schema");
+    assert.equal(inlineOne.errors[0].code, "bad_workflow_schema");
+    assert.equal(inlineTwo.errors[0].code, "validate_attempts_exhausted");
+  });
+});
+
+test("workflow schema resource lists and reads the published schema bytes", async () => {
+  const resources = listWorkflowResources();
+  assert.deepEqual(resources.resources.map((resource) => resource.uri), ["maestro://schema/workflow.json"]);
+  const result = await readWorkflowResource({ uri: "maestro://schema/workflow.json" });
+  const expected = await fs.readFile(path.join(repoRoot, "schema", "workflow.schema.json"), "utf8");
+  assert.equal(result.contents[0].uri, "maestro://schema/workflow.json");
+  assert.equal(result.contents[0].mimeType, "application/schema+json");
+  assert.equal(result.contents[0].text, expected);
 });
 
 test("readWorkflow: returns only workflow_json (no dropped front-matter field)", async () => {

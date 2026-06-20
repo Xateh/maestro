@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "initial": "intake",
+  "require_distinct_reviewer": true,
+  "roles": {
+    "intake": {
+      "label": "GitHub Intake",
+      "provider": "gemini",
+      "permission": "read",
+      "prompt_template": "intake",
+      "tools": ["Read", "Grep"],
+      "output_schema": "classification"
+    },
+    "implementation": {
+      "label": "Implementation",
+      "provider": "codex",
+      "permission": "write",
+      "prompt_template": "implementation",
+      "output_schema": "implementation",
+      "fallback": ["claude"]
+    },
+    "review": {
+      "label": "Review",
+      "provider": "claude",
+      "permission": "read",
+      "prompt_template": "review",
+      "output_schema": "review",
+      "verifies": true
+    }
+  },
+  "transitions": {
+    "intake": {
+      "bug": "implementation",
+      "feature": "implementation",
+      "clarify": "$ask_user",
+      "done": "implementation",
+      "error": "$halt"
+    },
+    "implementation": {
+      "done": "review",
+      "question": "$ask_user",
+      "error": "$halt"
+    },
+    "review": {
+      "done": "$complete",
+      "changes_requested": "implementation",
+      "question": "$ask_user",
+      "error": "$halt"
+    }
+  },
+  "modes": {
+    "task": {
+      "initial": "intake"
+    }
+  }
+}
