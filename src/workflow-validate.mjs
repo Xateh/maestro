@@ -387,6 +387,43 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
   }
 
+  // ── parallel groups (SP7) ──────────────────────────────────────────────────────
+  if (workflow.parallel_groups !== undefined) {
+    if (!Array.isArray(workflow.parallel_groups)) {
+      errors.push(issue("bad_parallel_group", `parallel_groups must be an array of role-name arrays`));
+    } else {
+      for (const [gi, group] of workflow.parallel_groups.entries()) {
+        if (!Array.isArray(group) || group.length < 2) {
+          errors.push(issue("bad_parallel_group",
+            `parallel_groups[${gi}] must contain at least 2 role names — fewer than 2 members is not a valid parallel group`));
+          continue;
+        }
+        const groupSet = new Set(group);
+        for (const [ri, roleName] of group.entries()) {
+          if (!roleNames.has(roleName)) {
+            errors.push(issue("bad_parallel_group",
+              `parallel_groups[${gi}][${ri}]: role "${roleName}" is not defined`));
+            continue;
+          }
+          const role = roles[roleName];
+          // No scoring roles in a parallel group
+          if (role?.kind === "scoring") {
+            errors.push(issue("bad_parallel_group",
+              `parallel_groups[${gi}]: role "${roleName}" is kind:"scoring" — scoring roles read all prior handoffs and cannot run concurrently`));
+          }
+          // No inbound edges from siblings
+          const outbound = Object.values(transitions[roleName] ?? {});
+          for (const dest of outbound) {
+            if (groupSet.has(dest)) {
+              errors.push(issue("bad_parallel_group",
+                `parallel_groups[${gi}]: role "${roleName}" has a sibling edge to "${dest}" — group members must not depend on each other`));
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ── top-level gates block (manifest v2) ────────────────────────────────────
   if (workflow.gates !== undefined) {
     const gates = workflow.gates;

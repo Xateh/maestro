@@ -686,3 +686,63 @@ test("SP10c: both keys present → new key takes precedence + deprecated_experim
     result.errors.map(e => e.message).join(", "),
   );
 });
+
+// ── SP7: parallel_groups validation ──────────────────────────────────────────
+
+function parallelWorkflow(groups, extraRoles = {}, extraTransitions = {}) {
+  const roles = {
+    planner:   { provider: "claude" },
+    reviewerA: { provider: "gemini" },
+    reviewerB: { provider: "gemini" },
+    scoring:   { kind: "scoring", provider: "claude" },
+    ...extraRoles,
+  };
+  const transitions = {
+    planner:   { done: "reviewerA" }, // entry → first group member (remapped at build time)
+    reviewerA: { done: "scoring" },
+    reviewerB: { done: "scoring" },
+    scoring:   { passed: "$complete", blocked: "$halt" },
+    ...extraTransitions,
+  };
+  return {
+    version: 2,
+    initial: "planner",
+    roles,
+    transitions,
+    parallel_groups: groups,
+  };
+}
+
+test("SP7 validate: sibling edge inside group → bad_parallel_group", () => {
+  // reviewerA → reviewerB (sibling dependency)
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]], {}, {
+    reviewerA: { done: "reviewerB" }, // sibling edge
+    reviewerB: { done: "scoring" },
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("sibling")));
+});
+
+test("SP7 validate: scoring role in group → bad_parallel_group", () => {
+  const wf = parallelWorkflow([["reviewerA", "scoring"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("scoring")));
+});
+
+test("SP7 validate: group with only 1 member → bad_parallel_group", () => {
+  const wf = parallelWorkflow([["reviewerA"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("fewer than 2")));
+});
+
+test("SP7 validate: valid parallel group with 2 members → no bad_parallel_group", () => {
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(!result.errors.some((e) => e.code === "bad_parallel_group"), result.errors.map(e => e.message).join(", "));
+});
+
+test("SP7 validate: role not defined → bad_parallel_group (unknown member)", () => {
+  const wf = parallelWorkflow([["reviewerA", "ghost"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("ghost")));
+});
