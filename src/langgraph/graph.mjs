@@ -17,8 +17,98 @@
 
 import { StateGraph, START, END, MemorySaver } from "@langchain/langgraph";
 import { MaestroState } from "./state.mjs";
-import { makeRoleNode } from "./nodes.mjs";
+import { makeRoleNode, makeRoleNodeFn } from "./nodes.mjs";
 import { isSink } from "../state-machine.mjs";
+
+/**
+ * Build a group node function that runs all group members concurrently via
+ * Promise.allSettled and merges their handoffs into a single "done" result.
+ *
+ * @param {string[]} group      - ordered list of role names in this group
+ * @param {object}  workflow    - parsed workflow.json
+ * @param {object}  config      - parsed config.json
+ * @param {object}  opts        - same opts passed to buildGraph
+ * @returns {Function}          - async (state, lgConfig) => MaestroState patch
+ */
+function buildGroupNode(group, workflow, config, opts) {
+  // Pre-build the member role functions (closures, not LangGraph nodes)
+  const memberFns = group.map((roleName) => {
+    const roleDef = workflow.roles[roleName];
+    const providerKey = roleDef.provider ?? config.default_role ?? "executor";
+    const providerDef = config.providers?.[providerKey] ?? null;
+    return {
+      roleName,
+      fn: makeRoleNodeFn(roleDef, {
+        ...opts,
+        providerDef,
+        config,
+        workflow,
+        stateName: roleName,
+      }),
+    };
+  });
+
+  return async (state, lgConfig) => {
+    const start = Date.now();
+
+    // Run all members concurrently
+    const settled = await Promise.allSettled(
+      memberFns.map(({ fn }) => fn(state, lgConfig)),
+    );
+
+    // Merge results
+    const allHandoffs = [];
+    const parallelFailed = [];
+    const allVisits = {};
+
+    for (let i = 0; i < settled.length; i++) {
+      const { roleName } = memberFns[i];
+      const result = settled[i];
+      if (result.status === "fulfilled") {
+        const value = result.value ?? {};
+        allHandoffs.push(...(value.priorHandoffs ?? []));
+        for (const [k, v] of Object.entries(value.visits ?? {})) {
+          allVisits[k] = (allVisits[k] ?? 0) + v;
+        }
+        // Non-"done" events from members count as partial failures
+        if (value.event && value.event !== "done") {
+          parallelFailed.push(roleName);
+        }
+      } else {
+        parallelFailed.push(roleName);
+      }
+    }
+
+    const durationMs = Date.now() - start;
+    const status = parallelFailed.length === 0 ? "passed" : "partial_failure";
+
+    // Record parallel_join stage event via DB (best-effort)
+    try {
+      const task = state.task;
+      if (task?.id && opts.db) {
+        const joinEvent = {
+          kind: "parallel_join",
+          group,
+          duration_ms: durationMs,
+          status,
+          parallel_failed: parallelFailed,
+          timestamp: new Date().toISOString(),
+        };
+        // Persist as a step on the task (evidence-only; not a handoff)
+        await opts.db.updateTask(task.id, {
+          steps: [...(task.steps ?? []), { role: "__parallel_join__", event: joinEvent }],
+        }).catch(() => {}); // best effort
+      }
+    } catch { /* observability never breaks a run */ }
+
+    return {
+      priorHandoffs: allHandoffs,
+      event: "done", // group always emits "done"; scoring handles missing evidence
+      currentState: `pg_${group.join("_")}`,
+      visits: allVisits,
+    };
+  };
+}
 
 /**
  * Build and compile a StateGraph for the given workflow + config.
@@ -34,8 +124,37 @@ import { isSink } from "../state-machine.mjs";
 export function buildGraph(workflow, config, { db, runner, ops = {}, entry = null, resumeCompletedRoles = null, availabilityProbe = null, advisoryEmitted = new Set() }) {
   const graph = new StateGraph(MaestroState);
 
-  // ── add one node per workflow role ────────────────────────────────────────
+  // ── resolve parallel groups ───────────────────────────────────────────────
+  // Build a map: member roleName → groupNodeName (pg_N)
+  const groups = Array.isArray(workflow.parallel_groups) ? workflow.parallel_groups : [];
+  const memberToGroup = new Map(); // roleName → { gi, groupNodeName, group }
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
+    if (!Array.isArray(group) || group.length < 2) continue;
+    const groupNodeName = `pg_${gi}`;
+    for (const roleName of group) {
+      memberToGroup.set(roleName, { gi, groupNodeName, group });
+    }
+  }
+  const addedGroupNodes = new Set(); // track which group nodes have been added
+
+  // ── add role nodes (skip group members; add group nodes instead) ──────────
   for (const [stateName, roleDef] of Object.entries(workflow.roles ?? {})) {
+    if (memberToGroup.has(stateName)) {
+      // This role is a group member — add the group node once, skip the member
+      const { groupNodeName, group } = memberToGroup.get(stateName);
+      if (!addedGroupNodes.has(groupNodeName)) {
+        addedGroupNodes.add(groupNodeName);
+        const groupOpts = {
+          db, runner, ops, availabilityProbe,
+          contextRetryLimit: config.context_retry_limit ?? 1,
+          resumeCompletedRoles, advisoryEmitted,
+        };
+        graph.addNode(groupNodeName, buildGroupNode(group, workflow, config, groupOpts));
+      }
+      continue;
+    }
+    // Non-group role: add normally
     const providerKey = roleDef.provider ?? config.default_role ?? "executor";
     const providerDef = config.providers?.[providerKey] ?? null;
     const node = makeRoleNode(roleDef, {
@@ -54,20 +173,47 @@ export function buildGraph(workflow, config, { db, runner, ops = {}, entry = nul
     graph.addNode(stateName, node);
   }
 
-  // ── wire edges from transition table ─────────────────────────────────────
+  // ── wire edges (remap group member destinations to group node) ────────────
   // Interrupt events can arise from any node regardless of workflow.json entries.
   // Preload them as END so LangGraph never throws on an unmapped event.
   const ALWAYS_TERMINAL = ["error", "question", "waiting", "needs_review"];
 
+  // Helper: remap a destination (if it's a group member, use group node name)
+  const remap = (dest) => {
+    const info = memberToGroup.get(dest);
+    return info ? info.groupNodeName : dest;
+  };
+
+  // Add edges for non-member roles
   for (const [stateName, transitions] of Object.entries(workflow.transitions ?? {})) {
+    // Group members' transitions are handled separately (group node emits "done")
+    if (memberToGroup.has(stateName)) continue;
+
     const edgeMap = {};
-    for (const ev of ALWAYS_TERMINAL) {
-      edgeMap[ev] = END;
-    }
+    for (const ev of ALWAYS_TERMINAL) edgeMap[ev] = END;
     for (const [event, dest] of Object.entries(transitions)) {
-      edgeMap[event] = isSink(dest) ? END : dest;
+      const resolved = isSink(dest) ? END : remap(dest);
+      edgeMap[event] = resolved;
     }
     graph.addConditionalEdges(stateName, (s) => s.event ?? "done", edgeMap);
+  }
+
+  // Add edges for group nodes (each group node always emits "done" → shared successor)
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
+    if (!Array.isArray(group) || group.length < 2) continue;
+    const groupNodeName = `pg_${gi}`;
+
+    // Find the shared successor: the "done" destination of the first group member
+    // (validation ensures all members share the same "done" target)
+    const firstMember = group[0];
+    const successorRaw = workflow.transitions?.[firstMember]?.done;
+    const successor = successorRaw ? (isSink(successorRaw) ? END : remap(successorRaw)) : END;
+
+    const groupEdgeMap = {};
+    for (const ev of ALWAYS_TERMINAL) groupEdgeMap[ev] = END;
+    groupEdgeMap["done"] = successor;
+    graph.addConditionalEdges(groupNodeName, (s) => s.event ?? "done", groupEdgeMap);
   }
 
   // ── entry edge: START → mode initial (custom modes) or workflow initial ──
@@ -76,16 +222,23 @@ export function buildGraph(workflow, config, { db, runner, ops = {}, entry = nul
   // (e.g. a standalone mode created by `setup import`).
   const fallback = workflow.initial ?? "planner";
   const entryState = entry && workflow.roles?.[entry] ? entry : fallback;
+  // Remap entry if it's a group member
+  const remappedEntry = remap(entryState);
+  const remappedFallback = remap(fallback);
   const entryCandidates = new Set(
-    [fallback, entryState, ...Object.values(workflow.modes ?? {}).map((m) => m?.initial)]
-      .filter((state) => workflow.roles?.[state]),
+    [remappedFallback, remappedEntry,
+      ...Object.values(workflow.modes ?? {}).map((m) => remap(m?.initial)).filter(Boolean)]
+      .filter((state) => {
+        // Valid if it's a known role OR a group node
+        return workflow.roles?.[state] || addedGroupNodes.has(state);
+      }),
   );
   if (entryCandidates.size <= 1) {
-    graph.addEdge(START, entryState);
+    graph.addEdge(START, remappedEntry);
   } else {
     graph.addConditionalEdges(
       START,
-      () => entryState,
+      () => remappedEntry,
       Object.fromEntries([...entryCandidates].map((state) => [state, state])),
     );
   }
