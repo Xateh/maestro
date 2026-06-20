@@ -24,13 +24,14 @@ import { isSink } from "../state-machine.mjs";
  * Build a group node function that runs all group members concurrently via
  * Promise.allSettled and merges their handoffs into a single "done" result.
  *
+ * @param {number}  gi          - group index (for consistent node naming)
  * @param {string[]} group      - ordered list of role names in this group
  * @param {object}  workflow    - parsed workflow.json
  * @param {object}  config      - parsed config.json
  * @param {object}  opts        - same opts passed to buildGraph
  * @returns {Function}          - async (state, lgConfig) => MaestroState patch
  */
-function buildGroupNode(group, workflow, config, opts) {
+function buildGroupNode(gi, group, workflow, config, opts) {
   // Pre-build the member role functions (closures, not LangGraph nodes)
   const memberFns = group.map((roleName) => {
     const roleDef = workflow.roles[roleName];
@@ -104,7 +105,7 @@ function buildGroupNode(group, workflow, config, opts) {
     return {
       priorHandoffs: allHandoffs,
       event: "done", // group always emits "done"; scoring handles missing evidence
-      currentState: `pg_${group.join("_")}`,
+      currentState: `pg_${gi}`,
       visits: allVisits,
     };
   };
@@ -142,7 +143,7 @@ export function buildGraph(workflow, config, { db, runner, ops = {}, entry = nul
   for (const [stateName, roleDef] of Object.entries(workflow.roles ?? {})) {
     if (memberToGroup.has(stateName)) {
       // This role is a group member — add the group node once, skip the member
-      const { groupNodeName, group } = memberToGroup.get(stateName);
+      const { gi, groupNodeName, group } = memberToGroup.get(stateName);
       if (!addedGroupNodes.has(groupNodeName)) {
         addedGroupNodes.add(groupNodeName);
         const groupOpts = {
@@ -150,7 +151,7 @@ export function buildGraph(workflow, config, { db, runner, ops = {}, entry = nul
           contextRetryLimit: config.context_retry_limit ?? 1,
           resumeCompletedRoles, advisoryEmitted,
         };
-        graph.addNode(groupNodeName, buildGroupNode(group, workflow, config, groupOpts));
+        graph.addNode(groupNodeName, buildGroupNode(gi, group, workflow, config, groupOpts));
       }
       continue;
     }
