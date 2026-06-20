@@ -161,7 +161,7 @@ async function _writeHandoffFile(runDir, role, { role: r, provider, payload, sch
  * @param {Function}        opts.ops.recordProjectBlocker  - bound: (projectId, blocker) => ...
  * @param {Function}        opts.ops.gitRunner        - raw gitRunner fn: ({args, cwd}) => {stdout,...}
  */
-export function makeRoleNode(roleDef, {
+export function makeRoleNodeFn(roleDef, {
   db,
   runner,
   providerDef,
@@ -1179,4 +1179,8 @@ export function makeRoleNode(roleDef, {
       };
     }
   };
+}
+
+export function makeRoleNode(roleDef, opts) {
+  return makeRoleNodeFn(roleDef, opts);
 }
