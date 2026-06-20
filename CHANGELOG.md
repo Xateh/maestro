@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-20
+
+### Added
+
+- **Parallel groups — concurrent role execution as a single compiled node.** A
+  workflow may declare `parallel_groups` (an array of arrays of role names, each
+  group with `>= 2` members). The members run concurrently
+  (`Promise.allSettled`) as one compiled group node. They must not depend on each
+  other (no sibling edges), cannot be `kind: "scoring"`, and must share the same
+  `done` successor — all validated, with a `bad_parallel_group` error on
+  violation. If any member emits an interrupt/terminal event
+  (`error`/`question`/`waiting`/`needs_review`) or fails hard, that event
+  propagates and halts the run (highest-precedence wins) rather than being
+  swallowed. `run-manifest.json` records the `resolved_parallel_groups`.
+- **Coverage ingestion — structured coverage from command roles.** A command
+  role's `parser.coverage.format` accepts `c8-json`, `lcov`, `jest-json`,
+  `cobertura`, `clover`, or `regex` (the `regex` format requires a `pct` capture
+  pattern). After the command exits, the runner reads the declared coverage file
+  (path-confined, 4 MB cap) and fills `evaluation.coverage` as
+  `{ overall_pct, by_command }` — `overall_pct` is the arithmetic mean across
+  contributing commands. An unknown format is rejected at validation
+  (`bad_command_spec`).
+- **GitHub issue tracker backend.** Set a tracker `kind: "github"` with
+  `owner`/`repo`/`token` (plus an optional `label`, default `maestro`). It polls
+  the REST API for labeled open issues and performs write-backs (comment, close,
+  add-label), staying rate-limit aware.
+- **Inbound webhooks.** `POST /api/v1/webhook/:kind` accepts `github`
+  (HMAC-SHA256 signature via `webhook_secret`, verified timing-safe) and
+  `generic` (bearer token via `webhook_bearer_token`, verified timing-safe).
+  The body is capped at 1 MB. A `webhook_template` (with `{{payload.path}}`
+  interpolation) renders the dispatched task title; the task is created against
+  the configured `workflow`.
+- **Outbound lifecycle notifications.** A `notify` config
+  `{ on: [...events], url, format }` (`format: "slack" | "generic"`) fires
+  best-effort POSTs on `completed`, `halted`, and `approval_needed`. It never
+  throws and makes one attempt per event.
+- **Real mid-run cancellation.** Cancelling a task now aborts the in-flight run
+  at the next step boundary (via `AbortController`), sets status `cancelled`, and
+  stamps `cancelled_at` in `run-manifest.json`. Previously cancellation only
+  updated bookkeeping.
+
 ### Changed
+
+- **Correctness scoring now blends coverage.** When a workflow produces
+  `evaluation.coverage.overall_pct`, `correctness_score` becomes the mean of
+  `pass_rate` and `overall_pct / 100` (was `pass_rate` alone). MIGRATION NOTE:
+  workflows that opt into coverage parsing may see `correctness_score` drop even
+  at a 100% pass rate — check any `min_correctness` gate. Workflows without
+  coverage parsing are unaffected.
+- **`require_distinct_reviewer` is now default-on.** When absent it behaves as
+  `true`, but for this release it emits a WARNING (`non_distinct_reviewer`)
+  rather than an error; it becomes a hard error in v0.5.0.
+
+### Deprecated
+
+- **`experimental_per_edge_context` graduated to the stable key
+  `per_edge_context`.** The old key still works but emits a deprecation warning —
+  rename it.
+- **`require_distinct_reviewer: false` is deprecated.** The check defaults on in
+  v0.4.0 and becomes required in v0.5.0.
+
+### Notes
 
 - **Role Convention doc no longer pitches Maestro *as* the `plan → execute →
   review` pipeline.** `docs/role-convention.md` now frames that flow as just the
@@ -20,9 +81,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point-release train (SP12a–g): authoring surface, provider registry, safety
   policy, budget/resource governance, run core, orchestration surface, and a
   client skill/plugin reference.
-
-### Removed
-
 - **Internal planning/spec docs under `docs/superpowers/` are no longer tracked.**
   They predated the `.gitignore` rule and were still committed; untracked now and
   a `.gitattributes export-ignore` keeps the tree out of `git archive` release
@@ -609,6 +667,8 @@ Initial release.
 - The `agent:ocr` / `agent:eval` scripts fail fast with an install hint when the
   Ollama binary is absent, instead of surfacing a raw spawn error mid-run.
 
+[0.4.0]: https://github.com/Xateh/maestro/releases/tag/v0.4.0
+[0.3.0]: https://github.com/Xateh/maestro/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Xateh/maestro/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Xateh/maestro/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Xateh/maestro/releases/tag/v0.1.1

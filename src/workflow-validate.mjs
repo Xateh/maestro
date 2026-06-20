@@ -420,6 +420,21 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
             }
           }
         }
+        // All members must share the same "done" transition target. Routing
+        // uses group[0]'s done edge for the whole group, so divergent targets
+        // are a silent correctness bug. Normalize a missing "done" transition
+        // to a sentinel so "all missing" matches but "some missing" does not.
+        const MISSING_DONE = Symbol("missing-done");
+        const doneTargets = group.map((roleName) =>
+          (transitions[roleName] ?? {}).done ?? MISSING_DONE);
+        const distinct = new Set(doneTargets);
+        if (distinct.size > 1) {
+          const shown = doneTargets
+            .map((t) => (t === MISSING_DONE ? "(none)" : JSON.stringify(t)))
+            .join(", ");
+          errors.push(issue("bad_parallel_group",
+            `parallel_groups[${gi}]: members have differing "done" targets [${shown}] — all members must share the same "done" target since routing uses the first member's done edge`));
+        }
       }
     }
   }

@@ -755,3 +755,43 @@ test("SP7 validate: role not defined → bad_parallel_group (unknown member)", (
   const result = validateWorkflow(wf);
   assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("ghost")));
 });
+
+test("SP7 validate: members with differing 'done' targets → bad_parallel_group", () => {
+  // Routing uses group[0]'s done edge for the whole group, so divergent done
+  // targets are a silent correctness bug and must be rejected.
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]], {
+    other: { provider: "gemini" },
+  }, {
+    reviewerA: { done: "scoring" },
+    reviewerB: { done: "other" }, // diverges from reviewerA's done target
+    other:     { done: "$complete" },
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(
+    result.errors.some((e) => e.code === "bad_parallel_group" && /differing "done"/.test(e.message)),
+    result.errors.map((e) => e.message).join(", "),
+  );
+});
+
+test("SP7 validate: members with matching 'done' targets → no bad_parallel_group", () => {
+  // Both members share done → "scoring"; the shared-done check must not fire.
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(
+    !result.errors.some((e) => e.code === "bad_parallel_group" && /differing "done"/.test(e.message)),
+    result.errors.map((e) => e.message).join(", "),
+  );
+});
+
+test("SP7 validate: one member missing 'done' while another has one → bad_parallel_group", () => {
+  // A missing done counts as the same bucket only if ALL members are missing it.
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]], {}, {
+    reviewerA: { done: "scoring" },
+    reviewerB: { error: "$halt" }, // no done transition at all
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(
+    result.errors.some((e) => e.code === "bad_parallel_group" && /differing "done"/.test(e.message)),
+    result.errors.map((e) => e.message).join(", "),
+  );
+});

@@ -61,6 +61,7 @@ function buildGroupNode(gi, group, workflow, config, opts) {
     const allHandoffs = [];
     const parallelFailed = [];
     const allVisits = {};
+    const memberEvents = [];
 
     for (let i = 0; i < settled.length; i++) {
       const { roleName } = memberFns[i];
@@ -71,17 +72,32 @@ function buildGroupNode(gi, group, workflow, config, opts) {
         for (const [k, v] of Object.entries(value.visits ?? {})) {
           allVisits[k] = (allVisits[k] ?? 0) + v;
         }
+        const memberEvent = value.event ?? "done";
+        memberEvents.push(memberEvent);
         // Non-"done" events from members count as partial failures
-        if (value.event && value.event !== "done") {
+        if (memberEvent !== "done") {
           parallelFailed.push(roleName);
         }
       } else {
+        // A rejected member node is treated as an "error" event so it can
+        // halt the run instead of being silently swallowed.
+        memberEvents.push("error");
         parallelFailed.push(roleName);
       }
     }
 
     const durationMs = Date.now() - start;
     const status = parallelFailed.length === 0 ? "passed" : "partial_failure";
+
+    // Determine the group's emitted event by precedence. Interrupt/terminal
+    // events (same order as ALWAYS_TERMINAL) must propagate so the conditional
+    // edge map routes them to END instead of marching past a hard error or a
+    // human-in-the-loop pause. The highest-precedence (earliest in the array)
+    // member event wins; otherwise the group emits "done". A member completing
+    // with event "done" — even with a failing/missing score — keeps "done".
+    const EVENT_PRECEDENCE = ["error", "question", "waiting", "needs_review"];
+    const groupEvent =
+      EVENT_PRECEDENCE.find((ev) => memberEvents.includes(ev)) ?? "done";
 
     // Record parallel_join stage event via DB (best-effort)
     try {
@@ -107,7 +123,10 @@ function buildGroupNode(gi, group, workflow, config, opts) {
 
     return {
       priorHandoffs: allHandoffs,
-      event: "done", // group always emits "done"; scoring handles missing evidence
+      // "done" when all members completed normally (scoring handles missing
+      // evidence); otherwise the highest-precedence interrupt/terminal event so
+      // the group's conditional edge map (ALWAYS_TERMINAL → END) halts the run.
+      event: groupEvent,
       currentState: `pg_${gi}`,
       visits: allVisits,
     };

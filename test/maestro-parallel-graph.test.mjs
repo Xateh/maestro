@@ -144,7 +144,57 @@ test("SP7 integration: parallel group merges handoffs from all members", async (
   }
 });
 
-test("SP7 integration: one member fails → other member still runs; task does not crash", async () => {
+// Legitimate partial-failure-for-evidence case: a member completes with the
+// engine-default "done" event but produces no handoff evidence. The group still
+// emits "done" and the run continues to $complete (scoring handles missing
+// evidence). Only interrupt/terminal events halt the group (see next test).
+test("SP7 integration: a member completing 'done' with no evidence → group emits 'done', run continues", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-par-noevidence-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.writeWorkflow("par-noev", makeParallelWorkflow());
+    const task = await store.createTask({ prompt: "no evidence", cwd: dir, workflow: "par-noev", reviewEnabled: false });
+
+    const ranRoles = [];
+    const stubRunner = {
+      runStep: async ({ role }) => {
+        ranRoles.push(role);
+        if (role === "reviewerA") {
+          // Completes normally (event "done") but emits no handoff evidence.
+          return { stdout: "", stderr: "", stdoutPath: null, stderrPath: null };
+        }
+        return {
+          stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "ok" })}`,
+          stderr: "",
+          stdoutPath: null,
+          stderrPath: null,
+        };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+
+    assert.equal(ranRoles.length, 2, "both members must run");
+    // A "done" member with no evidence is a legitimate partial failure: the
+    // group still emits "done" and the run reaches $complete → succeeded.
+    assert.equal(finalTask.status, "succeeded",
+      `a 'done'-with-no-evidence member must not halt the group, got: ${finalTask.status}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// A member whose node REJECTS is treated as an "error" event. error is in
+// ALWAYS_TERMINAL, so the group now propagates "error" and the run HALTS at END
+// instead of marching past the failure. The sibling still runs (allSettled).
+test("SP7 integration: a member that rejects → group emits 'error', run halts (not swallowed)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "maestro-par-fail-"));
   try {
     const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
@@ -156,7 +206,7 @@ test("SP7 integration: one member fails → other member still runs; task does n
       runStep: async ({ role }) => {
         ranRoles.push(role);
         if (role === "reviewerA") {
-          // Throw so Promise.allSettled catches it as a rejection
+          // Throw so Promise.allSettled catches it as a rejection → "error".
           throw new Error("simulated agent crash for reviewerA");
         }
         return {
@@ -182,10 +232,14 @@ test("SP7 integration: one member fails → other member still runs; task does n
     assert.ok(ranRoles.includes("reviewerA"), "reviewerA must have been attempted");
     assert.ok(ranRoles.includes("reviewerB"), "reviewerB must have been attempted");
 
-    // Task must not be left in a "crashed"/"running" state — it must resolve
-    const terminal = ["succeeded", "failed", "waiting_user"];
-    assert.ok(terminal.includes(finalTask.status),
-      `task status must be terminal, got: ${finalTask.status}`);
+    // The rejected member must NOT be silently swallowed: the group propagates
+    // "error", which routes to END and halts the run rather than reaching
+    // $complete. It must NOT finish "succeeded".
+    assert.notEqual(finalTask.status, "succeeded",
+      "a rejecting member must halt the group, not complete successfully");
+    // The interrupt is surfaced as a human-in-the-loop pause.
+    assert.equal(finalTask.status, "waiting_user",
+      `a propagated 'error' must halt at the interrupt path, got: ${finalTask.status}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
