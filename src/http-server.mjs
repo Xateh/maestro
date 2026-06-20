@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { createRateLimiter } from "./http-rate-limit.mjs";
 
@@ -12,6 +13,40 @@ const RATE_LIMITS = {
 // so nothing reaches the orchestrator that could be a traversal or injection.
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_POST_BODY_BYTES = 1024; // refresh carries no body; reject anything large
+
+/**
+ * Validate a GitHub webhook HMAC-SHA256 signature.
+ * Uses timing-safe comparison to prevent timing attacks.
+ */
+export function validateGithubSignature(body, sigHeader, secret) {
+  if (!sigHeader || !secret) return false;
+  if (!sigHeader.startsWith("sha256=")) return false;
+  const digest = createHmac("sha256", secret).update(body).digest("hex");
+  const expected = Buffer.from(`sha256=${digest}`, "utf8");
+  const received = Buffer.from(sigHeader, "utf8");
+  if (expected.length !== received.length) return false;
+  try {
+    return timingSafeEqual(expected, received);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Minimal Liquid-style template renderer: {{a.b.c}} → nested property lookup.
+ * Falls back to empty string for missing keys. No loops/conditionals needed.
+ */
+export function renderWebhookTemplate(template, context) {
+  return String(template).replace(/\{\{([^}]+)\}\}/g, (_, expr) => {
+    const parts = expr.trim().split(".");
+    let value = context;
+    for (const part of parts) {
+      if (value == null || typeof value !== "object") return "";
+      value = value[part];
+    }
+    return value == null ? "" : String(value);
+  });
+}
 
 // Decode + validate a URL path identifier. Returns the clean value, or null
 // when the encoding is malformed or the value is outside the allowed shape.
@@ -499,7 +534,7 @@ function methodNotAllowed(response, allowed) {
   }, { allow: allowed.join(", ") });
 }
 
-export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rateLimit } = {}) {
+export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rateLimit, dispatchFn, config } = {}) {
   // rateLimit: pass a limiter to inject one (tests), `false`/env to disable,
   // or omit for the default in-memory token bucket.
   const limiter = rateLimit === false || process.env.MAESTRO_HTTP_RATELIMIT === "off"
@@ -560,6 +595,70 @@ export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rat
         }
         sendJson(response, 200, details);
         return;
+      }
+
+      // POST /api/v1/webhook/:kind
+      if (request.method === "POST" && url.pathname.startsWith("/api/v1/webhook/")) {
+        const kind = url.pathname.slice("/api/v1/webhook/".length);
+        if (!["github", "generic"].includes(kind)) {
+          return sendJson(response, 404, { error: { code: "not_found" } });
+        }
+
+        // Read body (bounded to 1 MB)
+        const MAX_WEBHOOK_BYTES = 1024 * 1024;
+        const contentLen = Number.parseInt(request.headers["content-length"] ?? "", 10);
+        if (Number.isFinite(contentLen) && contentLen > MAX_WEBHOOK_BYTES) {
+          return sendJson(response, 413, { error: { code: "payload_too_large" } });
+        }
+        const chunks = [];
+        let received = 0;
+        for await (const chunk of request) {
+          received += chunk.length;
+          if (received > MAX_WEBHOOK_BYTES) {
+            return sendJson(response, 413, { error: { code: "payload_too_large" } });
+          }
+          chunks.push(chunk);
+        }
+        const rawBody = Buffer.concat(chunks);
+
+        const serverConfig = config?.server ?? {};
+
+        // Auth / signature check
+        if (kind === "github") {
+          const secret = serverConfig.webhook_secret;
+          if (!secret) return sendJson(response, 500, { error: { code: "webhook_secret_not_configured" } });
+          const sig = request.headers["x-hub-signature-256"] ?? null;
+          if (!validateGithubSignature(rawBody, sig, secret)) {
+            return sendJson(response, 400, { error: { code: "invalid_signature" } });
+          }
+        } else if (kind === "generic") {
+          const expectedToken = serverConfig.webhook_bearer_token;
+          if (!expectedToken) return sendJson(response, 404, { error: { code: "not_found" } });
+          const authHeader = request.headers.authorization ?? "";
+          if (!authHeader.startsWith("Bearer ") || authHeader.slice(7) !== expectedToken) {
+            return sendJson(response, 401, { error: { code: "unauthorized" } });
+          }
+        }
+
+        // Parse payload + render template
+        let payload;
+        try { payload = JSON.parse(rawBody.toString("utf8")); } catch {
+          return sendJson(response, 400, { error: { code: "invalid_json" } });
+        }
+        const template = serverConfig.webhook_template;
+        if (!template) return sendJson(response, 422, { error: { code: "webhook_template_not_configured" } });
+        const taskTitle = renderWebhookTemplate(template, { payload });
+        if (!taskTitle.trim()) return sendJson(response, 422, { error: { code: "empty_task_title" } });
+
+        // Dispatch to orchestrator
+        const workflow = serverConfig.workflow ?? "default";
+        const dispatch = dispatchFn ?? orchestrator?.createWebhookTask?.bind(orchestrator);
+        try {
+          const taskId = await dispatch({ title: taskTitle, workflow });
+          return sendJson(response, 202, { task_id: taskId });
+        } catch (err) {
+          return sendJson(response, 500, { error: { code: "dispatch_failed", message: err?.message } });
+        }
       }
 
       sendJson(response, 404, {
