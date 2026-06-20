@@ -5,6 +5,9 @@
 #
 # Internal artifacts, never to reach public main:
 #   - *.private.md          internal agent instructions
+#   - AGENT.md, CLAUDE.md   internal agent instructions (target + symlink);
+#                           loaded by the harness locally/on origin, stripped
+#                           before public
 #   - graphify-out/         internal knowledge-graph data (also .gitignored, and
 #                           kept on the origin-only `graphify-data` branch)
 #   - docs/internal/        private design docs
@@ -19,8 +22,8 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-mapfile -t private < <(git ls-files '*.private.md' 'graphify-out/' \
-  'docs/internal/' 'docs/specs/' 'docs/superpowers/')
+mapfile -t private < <(git ls-files '*.private.md' 'AGENT.md' 'CLAUDE.md' \
+  'graphify-out/' 'docs/internal/' 'docs/specs/' 'docs/superpowers/')
 
 if [ "${#private[@]}" -eq 0 ]; then
   echo "strip-private: no internal artifacts tracked — nothing to remove"

@@ -109,12 +109,15 @@ jobs:
           # Internal artifacts that must never reach public main. Keep this list
           # in sync with scripts/strip-private.sh and scripts/hooks/pre-push.
           #   *.private.md          internal agent instructions
+          #   AGENT.md, CLAUDE.md   internal agent instructions (target + symlink)
           #   graphify-out/         internal knowledge-graph data
           #   docs/superpowers|specs|internal/  design scratch + internal docs
           #   scripts/{strip-private,graphify-sync,install-hooks}.sh, scripts/hooks/
           #                         the dev->public release tooling itself
           matches="$(git ls-files \
             '*.private.md' \
+            'AGENT.md' \
+            'CLAUDE.md' \
             'graphify-out/' \
             'docs/superpowers/' \
             'docs/specs/' \
