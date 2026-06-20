@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   review` pipeline.** `docs/role-convention.md` now frames that flow as just the
   stock graph, consistent with the README's positioning. Documentation only — no
   behavior or API change.
+- **0.4.0 roadmap gains SP12 — ephemeral (agent-authored) workflows.** Planning
+  only (internal roadmap spec); no code or API change. Captures on-the-fly,
+  agent-generated one-time workflows — a calling agent acts as planner → dispatch
+  → orchestrator over the existing MCP surface — decomposed into a 0.4.x
+  point-release train (SP12a–g): authoring surface, provider registry, safety
+  policy, budget/resource governance, run core, orchestration surface, and a
+  client skill/plugin reference.
 
 ### Removed
 
