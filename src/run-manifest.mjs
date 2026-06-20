@@ -132,7 +132,7 @@ export function buildRunManifest({ task, workflow, maestroVersion, startHead } =
       deny_tools: role.deny_tools,
     }));
   }
-  return {
+  const manifest = {
     manifest_version: MANIFEST_VERSION,
     maestro_version: maestroVersion ?? null,
     created_at: new Date().toISOString(),
@@ -143,6 +143,10 @@ export function buildRunManifest({ task, workflow, maestroVersion, startHead } =
     git: { start_head: startHead ?? null },
     run_dir: t.run_dir ?? null,
   };
+  if (Array.isArray(workflow?.parallel_groups) && workflow.parallel_groups.length > 0) {
+    manifest.resolved_parallel_groups = workflow.parallel_groups;
+  }
+  return manifest;
 }
 
 /**

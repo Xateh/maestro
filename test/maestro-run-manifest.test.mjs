@@ -158,3 +158,34 @@ test("readMaestroVersion reads the real package.json (not the 0.0.0 fallback)", 
   assert.equal(typeof v, "string");
   assert.match(v, /^\d/);
 });
+
+test("SP7: buildRunManifest includes resolved_parallel_groups when workflow has them", () => {
+  const workflow = {
+    initial: "planner",
+    roles: { planner: {}, reviewerA: {}, reviewerB: {} },
+    transitions: { planner: { done: "reviewerA" }, reviewerA: { done: "$complete" }, reviewerB: { done: "$complete" } },
+    parallel_groups: [["reviewerA", "reviewerB"]],
+  };
+  const manifest = buildRunManifest({
+    task: { id: "t1", prompt: "p", workflow: "default", steps: [] },
+    workflow,
+    maestroVersion: "0.4.0",
+    startHead: null,
+  });
+  assert.deepEqual(manifest.resolved_parallel_groups, [["reviewerA", "reviewerB"]]);
+});
+
+test("SP7: buildRunManifest has no resolved_parallel_groups when workflow has none", () => {
+  const workflow = {
+    initial: "planner",
+    roles: { planner: {} },
+    transitions: { planner: { done: "$complete" } },
+  };
+  const manifest = buildRunManifest({
+    task: { id: "t2", prompt: "p", workflow: "default", steps: [] },
+    workflow,
+    maestroVersion: "0.4.0",
+    startHead: null,
+  });
+  assert.ok(!("resolved_parallel_groups" in manifest), "field must not exist when no groups");
+});
