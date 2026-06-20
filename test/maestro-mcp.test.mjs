@@ -19,6 +19,7 @@ import {
   showTask,
   showRun,
   validateWorkflowTool,
+  listProvidersTool,
   readWorkflow,
   listWorkflowResources,
   readWorkflowResource,
@@ -335,6 +336,32 @@ test("workflow schema resource lists and reads the published schema bytes", asyn
   assert.equal(result.contents[0].uri, "maestro://schema/workflow.json");
   assert.equal(result.contents[0].mimeType, "application/schema+json");
   assert.equal(result.contents[0].text, expected);
+});
+
+test("listProvidersTool: returns configured provider registry from config.json", async () => {
+  const config = {
+    providers: {
+      codex: {
+        adapter: "built-in:codex",
+        default_alias: "codex",
+        aliases: ["codex"],
+        models: ["gpt-5.5"],
+        enabled: false,
+      },
+    },
+  };
+  await withTempMaestroRoot({ workflow: validWorkflow(), config }, async () => {
+    const result = await listProvidersTool();
+    assert.deepEqual(result.providers, [{
+      provider: "codex",
+      adapter: "built-in:codex",
+      default_alias: "codex",
+      models: ["gpt-5.5"],
+      capabilities: { plan: true, execute: true, review: true },
+      permission: "read",
+      status: "disabled",
+    }]);
+  });
 });
 
 test("readWorkflow: returns only workflow_json (no dropped front-matter field)", async () => {

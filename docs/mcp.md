@@ -1,6 +1,6 @@
 # Maestro MCP Server
 
-Maestro exposes eight tools and one read-only resource via the
+Maestro exposes nine tools and one read-only resource via the
 [Model Context Protocol](https://modelcontextprotocol.io) stdio transport. Any MCP-compatible
 agent (Claude, Cursor, etc.) can use these to read Maestro state, validate workflow candidates,
 and create tasks without shell access.
@@ -114,6 +114,49 @@ Returns the current `workflow.json` graph definition.
 **Input** — none
 
 **Output** `{ workflow_json: object|null }`
+
+---
+
+### `maestro_list_providers`
+
+List configured providers from `.maestro/config.json` with read-only, offline-safe
+preflight data. The tool checks local CLI reachability and whether declared provider
+or alias env values resolve through Maestro's existing secret/env path. It does not
+perform network calls or deep token validation.
+
+**Input** — none
+
+**Output**
+
+```json
+{
+  "providers": [
+    {
+      "provider": "codex",
+      "adapter": "built-in:codex",
+      "default_alias": "codex",
+      "models": ["gpt-5.5"],
+      "capabilities": { "plan": true, "execute": true, "review": true },
+      "permission": "read",
+      "status": "ready"
+    }
+  ]
+}
+```
+
+**Status values**
+
+| Status | Meaning |
+|---|---|
+| `ready` | Default alias command resolves and any declared env refs resolve. |
+| `missing_cli` | Default alias command is not found on PATH or as an interactive shell alias/function. |
+| `missing_creds` | CLI is present, but at least one declared provider/alias env value is unresolved. |
+| `disabled` | Provider has `enabled: false` in config. |
+| `unknown` | Best-effort preflight could not determine status. |
+
+Capability flags are an open map. Built-in adapters currently report
+`plan`, `execute`, and `review`; provider config can override or extend that map
+for future capabilities such as `image_gen`.
 
 ---
 

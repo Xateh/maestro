@@ -17,6 +17,7 @@ import { spawn } from "node:child_process";
 import { validateInline } from "../schemas/index.mjs";
 import { openStore } from "../db/store.mjs";
 import { assertInsideDir, assertInsideDirReal, isInsideDirReal, listDir, tailFile } from "../fs-safe.mjs";
+import { listProviders } from "../provider-registry.mjs";
 import { WORKFLOW_NAME_RE } from "../task-store.mjs";
 
 // ── Root discovery ────────────────────────────────────────────────────────────
@@ -454,6 +455,12 @@ export async function readWorkflow() {
   return { workflow_json: workflow };
 }
 
+async function listProvidersTool() {
+  const { ROOT, MAESTRO_DIR } = maestroPaths();
+  const config = await readJSON(path.join(MAESTRO_DIR, "config.json")).catch(() => ({}));
+  return listProviders({ config, cwd: ROOT, env: process.env });
+}
+
 async function validateWorkflowTool(args = {}, extra = {}) {
   const toolArgs = args ?? {};
   const hasInlineWorkflow = Object.hasOwn(toolArgs, "workflow");
@@ -558,6 +565,11 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "maestro_list_providers",
+    description: "List configured providers with adapter ids, default aliases, models, capability flags, default permission modes, and best-effort offline auth status.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "maestro_validate_workflow",
     description: "Validate a workflow. With no `workflow` argument, reads .maestro/workflow.json. With a `workflow` object, validates that inline candidate without changing state. Both paths run schema/workflow.schema.json first and return bad_workflow_schema before semantic validation.",
     inputSchema: {
@@ -580,6 +592,7 @@ const HANDLERS = {
   maestro_create_task: createTask,
   maestro_get_state: getState,
   maestro_read_workflow: readWorkflow,
+  maestro_list_providers: listProvidersTool,
   maestro_validate_workflow: validateWorkflowTool,
 };
 
@@ -618,6 +631,7 @@ export {
   showTask,
   showRun,
   listTasks,
+  listProvidersTool,
   validateWorkflowTool,
   listWorkflowResources,
   readWorkflowResource,
