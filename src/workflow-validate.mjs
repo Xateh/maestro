@@ -384,14 +384,17 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
   }
 
-  // ── per-edge context contract (EXPERIMENTAL, v0.3.0 item A) ────────────────
-  // Opt-in via `experimental_per_edge_context: true` + an `edge_context` map of
-  // "<from>:<event>" (or per-source "<from>") → context spec. Structural checks
-  // only; an absent/false flag means the whole feature is inert.
-  if (workflow.experimental_per_edge_context !== undefined
-    && !isBool(workflow.experimental_per_edge_context)) {
+  // ── per-edge context contract (stable in v0.4.0, SP10c) ──────────────────────
+  // Canonical key: `per_edge_context`. Old key `experimental_per_edge_context`
+  // accepted with a deprecation warning for one release (v0.4.0).
+  if (workflow.experimental_per_edge_context !== undefined) {
+    warnings.push(issue("deprecated_experimental_flag",
+      `"experimental_per_edge_context" is deprecated; rename to "per_edge_context" (feature is stable in v0.4.0)`));
+  }
+  const edgeContextEnabled = workflow.per_edge_context ?? workflow.experimental_per_edge_context;
+  if (edgeContextEnabled !== undefined && !isBool(edgeContextEnabled)) {
     errors.push(issue("bad_edge_context",
-      `experimental_per_edge_context must be a boolean, got ${JSON.stringify(workflow.experimental_per_edge_context)}`));
+      `per_edge_context must be a boolean, got ${JSON.stringify(edgeContextEnabled)}`));
   }
   if (workflow.edge_context !== undefined) {
     const ec = workflow.edge_context;
