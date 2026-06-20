@@ -49,13 +49,26 @@ export function deriveScores(handoffsByRole) {
   const scoreInputs = {};
   const missing = [];
 
-  // correctness_score ← evaluation.pass_rate (the unit directly)
+  // correctness_score ← blend of evaluation.pass_rate and evaluation.coverage.overall_pct
   {
     const passRate = byRole.evaluation?.pass_rate;
-    if (isNum(passRate)) {
+    const overallPct = byRole.evaluation?.coverage?.overall_pct;
+    const hasPassRate = isNum(passRate);
+    const hasCoverage = isNum(overallPct);
+
+    if (hasPassRate && hasCoverage) {
+      // Both present: arithmetic mean (pass_rate already [0,1]; overall_pct/100)
+      const v = round4(clamp01((passRate + overallPct / 100) / 2));
+      scores.correctness_score = v;
+      scoreInputs.correctness_score = { from: "evaluation.pass_rate+coverage", value: v };
+    } else if (hasPassRate) {
       const v = round4(clamp01(passRate));
       scores.correctness_score = v;
       scoreInputs.correctness_score = { from: "evaluation.pass_rate", value: v };
+    } else if (hasCoverage) {
+      const v = round4(clamp01(overallPct / 100));
+      scores.correctness_score = v;
+      scoreInputs.correctness_score = { from: "evaluation.coverage.overall_pct", value: v };
     } else {
       scores.correctness_score = 0.0;
       scoreInputs.correctness_score = { from: "evaluation.pass_rate", value: 0, missing: true };
@@ -139,11 +152,12 @@ export function deriveScores(handoffsByRole) {
   return { scores, score_inputs: scoreInputs, missing_evidence: missing };
 }
 
-// First numeric coverage percent of evaluation.coverage.{percent,lines,total}.
+// First numeric coverage percent of evaluation.coverage.{overall_pct,percent,lines,total}.
 function coveragePercent(evidence) {
   const cov = evidence?.evaluation?.coverage;
   if (!cov || typeof cov !== "object") return null;
-  for (const key of ["percent", "lines", "total"]) {
+  // SP8: prefer overall_pct (new shape); fall back to legacy keys
+  for (const key of ["overall_pct", "percent", "lines", "total"]) {
     if (isNum(cov[key])) return cov[key];
   }
   return null;
