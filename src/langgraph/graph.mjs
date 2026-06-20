@@ -95,10 +95,13 @@ function buildGroupNode(gi, group, workflow, config, opts) {
           parallel_failed: parallelFailed,
           timestamp: new Date().toISOString(),
         };
-        // Persist as a step on the task (evidence-only; not a handoff)
-        await opts.db.updateTask(task.id, {
-          steps: [...(task.steps ?? []), { role: "__parallel_join__", event: joinEvent }],
-        }).catch(() => {}); // best effort
+        // Persist as a step on the task (evidence-only; not a handoff).
+        // Use a function patch so updateTask reads current DB steps, not the
+        // stale state.task.steps snapshot (which would silently drop any steps
+        // recorded by member nodes or the implementation node before the join).
+        await opts.db.updateTask(task.id, (current) => ({
+          steps: [...(current.steps ?? []), { role: "__parallel_join__", event: joinEvent }],
+        })).catch(() => {}); // best effort
       }
     } catch { /* observability never breaks a run */ }
 

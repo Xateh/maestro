@@ -476,6 +476,13 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
   }
 
   // Reachability from initial + every mode initial.
+  // Parallel group members are co-reachable: reaching any member reaches all.
+  const memberToGroup = new Map();
+  for (const group of (Array.isArray(workflow.parallel_groups) ? workflow.parallel_groups : [])) {
+    if (Array.isArray(group)) {
+      for (const name of group) memberToGroup.set(name, group);
+    }
+  }
   const reachable = new Set();
   const queue = [workflow.initial, ...Object.values(workflow.modes ?? {}).map((m) => m?.initial)]
     .filter((s) => roleNames.has(s));
@@ -483,6 +490,9 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     const state = queue.shift();
     if (reachable.has(state)) continue;
     reachable.add(state);
+    for (const sibling of (memberToGroup.get(state) ?? [])) {
+      if (roleNames.has(sibling) && !reachable.has(sibling)) queue.push(sibling);
+    }
     for (const to of Object.values(transitions[state] ?? {})) {
       if (roleNames.has(to) && !reachable.has(to)) queue.push(to);
     }

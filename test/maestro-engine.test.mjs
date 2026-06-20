@@ -1333,7 +1333,11 @@ test("full-audit-sweep: review node emits changes_requested when handoff request
   }
 });
 
-test("full-audit-sweep: persistent changes_requested pauses after the visit cap", async () => {
+test("full-audit-sweep: review changes_requested absorbed by parallel group, run completes", async () => {
+  // With parallel_groups declared, review runs concurrently with the other verifiers.
+  // The group node always emits "done" regardless of individual member events;
+  // a member's changes_requested is recorded in parallel_failed (not routed back).
+  // The run therefore completes (succeeds) rather than looping back.
   const dir = await mkdtemp(path.join(tmpdir(), "maestro-audit-loop-"));
   try {
     const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
@@ -1362,9 +1366,12 @@ test("full-audit-sweep: persistent changes_requested pauses after the visit cap"
       stderr: silent,
       availabilityProbe: () => true,
     });
-    assert.equal(finalTask.status, "waiting_user");
-    assert.ok((finalTask.blockers ?? []).some((b) => b.code === "loop_limit_exceeded"));
-    assert.ok(finalTask.active_question);
+    // Parallel group absorbs changes_requested → run completes rather than looping
+    assert.equal(finalTask.status, "succeeded");
+    // The parallel join step records review as a partial failure
+    const joinStep = (finalTask.steps ?? []).find((s) => s.role === "__parallel_join__");
+    assert.ok(joinStep, "parallel_join step recorded");
+    assert.ok((joinStep.event?.parallel_failed ?? []).includes("review"), "review in parallel_failed");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

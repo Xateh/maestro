@@ -278,9 +278,11 @@ test("full-audit-sweep template validates with no errors", () => {
 test("full-audit-sweep: rework cycles each terminate", () => {
   const template = resolveWorkflowTemplate("full-audit-sweep");
   const cycles = findCycles(template.transitions);
-  // review/threat_model/edge_cases each loop to implementation (3) plus the SP4
-  // regression → implementation back-edge (regressions_found) = 4.
-  assert.equal(cycles.length, 4, "three review back-edges + regression loop-back");
+  // With parallel_groups declared, review/threat_model/edge_cases are no longer
+  // reachable via raw transitions (they run via the group node), so their
+  // changes_requested back-edges no longer form cycles in the transition graph.
+  // Only the SP4 regression → implementation back-edge remains = 1 cycle.
+  assert.equal(cycles.length, 1, "regression loop-back (parallel group absorbs verifier cycles)");
   for (const cycle of cycles) {
     assert.ok(cycleHasTermination(cycle, template), `cycle ${cycle.join("→")} must terminate`);
   }
@@ -288,13 +290,20 @@ test("full-audit-sweep: rework cycles each terminate", () => {
 
 test("full-audit-sweep: implementation reaches human_approval which completes", () => {
   const template = resolveWorkflowTemplate("full-audit-sweep");
-  // every role reachable from implementation
+  // Parallel group members are co-reachable: reaching any member reaches all.
+  const memberToSiblings = new Map();
+  for (const group of (template.parallel_groups ?? [])) {
+    for (const name of group) memberToSiblings.set(name, group);
+  }
   const reachable = new Set();
   const queue = [template.initial];
   while (queue.length) {
     const s = queue.shift();
     if (reachable.has(s)) continue;
     reachable.add(s);
+    for (const sibling of (memberToSiblings.get(s) ?? [])) {
+      if (template.roles[sibling] && !reachable.has(sibling)) queue.push(sibling);
+    }
     for (const to of Object.values(template.transitions[s] ?? {})) {
       if (template.roles[to] && !reachable.has(to)) queue.push(to);
     }
