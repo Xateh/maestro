@@ -15,6 +15,9 @@
 #                           (tracked on origin only; stripped before public)
 #   - docs/superpowers/     internal skill/agent scratch (.gitignored, but listed
 #                           here as a backstop should it ever get tracked)
+#   - .claude/              local harness config (settings.json hooks, machine-
+#                           specific paths); loaded locally/on origin, stripped
+#                           before public
 #
 # The companion CI guard (the `no-private-files` job in
 # .github/workflows/ci.yml) is the backstop: it fails any PR to public `main`
@@ -23,7 +26,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 mapfile -t private < <(git ls-files '*.private.md' 'AGENT.md' 'CLAUDE.md' \
-  'graphify-out/' 'docs/internal/' 'docs/specs/' 'docs/superpowers/')
+  'graphify-out/' 'docs/internal/' 'docs/specs/' 'docs/superpowers/' '.claude/')
 
 if [ "${#private[@]}" -eq 0 ]; then
   echo "strip-private: no internal artifacts tracked — nothing to remove"

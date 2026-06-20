@@ -112,6 +112,7 @@ jobs:
           #   AGENT.md, CLAUDE.md   internal agent instructions (target + symlink)
           #   graphify-out/         internal knowledge-graph data
           #   docs/superpowers|specs|internal/  design scratch + internal docs
+          #   .claude/              local harness config (settings.json hooks)
           #   scripts/{strip-private,graphify-sync,install-hooks}.sh, scripts/hooks/
           #                         the dev->public release tooling itself
           matches="$(git ls-files \
@@ -122,6 +123,7 @@ jobs:
             'docs/superpowers/' \
             'docs/specs/' \
             'docs/internal/' \
+            '.claude/' \
             'scripts/strip-private.sh' \
             'scripts/graphify-sync.sh' \
             'scripts/install-hooks.sh' \

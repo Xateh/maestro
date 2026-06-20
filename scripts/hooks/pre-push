@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Two jobs:
 #  1. Block internal artifacts (*.private.md, AGENT.md, CLAUDE.md,
-#     graphify-out/, docs/internal/, docs/specs/, docs/superpowers/) from
-#     reaching any remote other than origin (i.e. public) — a technical
+#     graphify-out/, docs/internal/, docs/specs/, docs/superpowers/, .claude/)
+#     from reaching any remote other than origin (i.e. public) — a technical
 #     backstop to the CI gate.
 #  2. Auto-refresh the graphify-data branch (graphify-out/ snapshot) on push to
 #     origin (maestro-dev).
@@ -17,7 +17,7 @@ if [ "$remote" != "origin" ]; then
   while read -r _local_ref local_sha _remote_ref _remote_sha; do
     [ "$local_sha" = "$zero" ] && continue   # branch deletion
     bad="$(git ls-tree -r --name-only "$local_sha" \
-      | grep -E '(^|/)[^/]*\.private\.md$|^AGENT\.md$|^CLAUDE\.md$|^graphify-out/|^docs/internal/|^docs/specs/|^docs/superpowers/' || true)"
+      | grep -E '(^|/)[^/]*\.private\.md$|^AGENT\.md$|^CLAUDE\.md$|^graphify-out/|^docs/internal/|^docs/specs/|^docs/superpowers/|^\.claude/' || true)"
     if [ -n "$bad" ]; then
       echo "pre-push: refusing to push internal artifacts to '$remote':" >&2
       echo "$bad" | sed 's/^/  /' >&2
