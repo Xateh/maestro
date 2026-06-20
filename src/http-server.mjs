@@ -534,7 +534,7 @@ function methodNotAllowed(response, allowed) {
   }, { allow: allowed.join(", ") });
 }
 
-export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rateLimit, dispatchFn, config } = {}) {
+export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rateLimit, dispatchFn, taskStore, config } = {}) {
   // rateLimit: pass a limiter to inject one (tests), `false`/env to disable,
   // or omit for the default in-memory token bucket.
   const limiter = rateLimit === false || process.env.MAESTRO_HTTP_RATELIMIT === "off"
@@ -635,7 +635,12 @@ export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rat
           const expectedToken = serverConfig.webhook_bearer_token;
           if (!expectedToken) return sendJson(response, 404, { error: { code: "not_found" } });
           const authHeader = request.headers.authorization ?? "";
-          if (!authHeader.startsWith("Bearer ") || authHeader.slice(7) !== expectedToken) {
+          if (!authHeader.startsWith("Bearer ")) {
+            return sendJson(response, 401, { error: { code: "unauthorized" } });
+          }
+          const receivedToken = Buffer.from(authHeader.slice(7), "utf8");
+          const expectedTokenBuf = Buffer.from(expectedToken, "utf8");
+          if (receivedToken.length !== expectedTokenBuf.length || !timingSafeEqual(receivedToken, expectedTokenBuf)) {
             return sendJson(response, 401, { error: { code: "unauthorized" } });
           }
         }
@@ -652,7 +657,14 @@ export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rat
 
         // Dispatch to orchestrator
         const workflow = serverConfig.workflow ?? "default";
-        const dispatch = dispatchFn ?? orchestrator?.createWebhookTask?.bind(orchestrator);
+        const dispatch = dispatchFn ?? (
+          taskStore
+            ? ({ title, workflow: wf }) => taskStore.createTask({ prompt: title, workflow: wf }).then((t) => t.id)
+            : null
+        );
+        if (typeof dispatch !== "function") {
+          return sendJson(response, 500, { error: { code: "dispatch_not_configured" } });
+        }
         try {
           const taskId = await dispatch({ title: taskTitle, workflow });
           return sendJson(response, 202, { task_id: taskId });
@@ -672,8 +684,8 @@ export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rat
   };
 }
 
-export async function startMaestroHttpServer({ orchestrator, port, host = "127.0.0.1" }) {
-  const server = http.createServer(createMaestroHttpHandler({ orchestrator, host }));
+export async function startMaestroHttpServer({ orchestrator, taskStore, port, host = "127.0.0.1" }) {
+  const server = http.createServer(createMaestroHttpHandler({ orchestrator, taskStore, host }));
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);

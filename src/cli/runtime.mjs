@@ -111,6 +111,7 @@ export async function startMaestro({
     ? null
     : await startMaestroHttpServer({
       orchestrator,
+      taskStore,
       port: effectivePort,
       host: "127.0.0.1",
     });
