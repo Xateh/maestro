@@ -124,8 +124,30 @@ export function computeEvaluation(results = []) {
   return { pass_rate, failures };
 }
 
-// Build the full SP1 `evaluation` payload. `coverage` is always {} in SP3.
+// Merge per-command coverage_pct values into { overall_pct, by_command }.
+// Commands without coverage_pct (no parser declared, or parse error) are excluded.
+// overall_pct = arithmetic mean of contributing commands (no total-lines weight
+// available without the parsed internals; arithmetic mean is documented behaviour).
+function mergeCoverage(results) {
+  const byCommand = {};
+  let sum = 0;
+  let count = 0;
+  for (const r of results) {
+    if (r?.allow_failure === true) continue;
+    if (typeof r?.coverage_pct !== "number" || !Number.isFinite(r.coverage_pct)) continue;
+    const format = r?.parser?.coverage?.format ?? "unknown";
+    byCommand[r.name] = { pct: r.coverage_pct, format };
+    sum += r.coverage_pct;
+    count += 1;
+  }
+  if (count === 0) return {};
+  const overall_pct = Math.round((sum / count) * 1e4) / 1e4;
+  return { overall_pct, by_command: byCommand };
+}
+
+// Build the full SP1 `evaluation` payload. SP8: coverage filled from parsers.
 export function buildEvaluationPayload(results = []) {
   const { pass_rate, failures } = computeEvaluation(results);
-  return { pass_rate, failures, coverage: {} };
+  const coverage = mergeCoverage(results);
+  return { pass_rate, failures, coverage };
 }
