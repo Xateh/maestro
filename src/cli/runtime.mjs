@@ -7,6 +7,7 @@
 import { defaultGitRunner } from "./git-exec.mjs";
 import { runTaskGraph } from "./tasks-run.mjs";
 import { startMaestroHttpServer } from "../http-server.mjs";
+import { GitHubTrackerClient } from "../github-tracker.mjs";
 import { LinearTrackerClient } from "../linear-tracker.mjs";
 import { StructuredLogger } from "../logger.mjs";
 import { MaestroOrchestrator } from "../orchestrator.mjs";
@@ -32,6 +33,14 @@ function deepMergeServer(base, overlay) {
 
 function buildTracker(serverConfig, deps = {}) {
   if (deps.tracker) return deps.tracker;
+  if (serverConfig.tracker.kind === "github") {
+    return new GitHubTrackerClient({
+      owner: serverConfig.tracker.owner,
+      repo: serverConfig.tracker.repo,
+      label: serverConfig.tracker.label ?? "maestro",
+      token: serverConfig.tracker.token,
+    });
+  }
   return new LinearTrackerClient({
     endpoint: serverConfig.tracker.endpoint,
     apiKey: serverConfig.tracker.apiKey,
@@ -111,8 +120,10 @@ export async function startMaestro({
     ? null
     : await startMaestroHttpServer({
       orchestrator,
+      taskStore,
       port: effectivePort,
       host: "127.0.0.1",
+      config: serverConfig,
     });
   if (httpServer) {
     logger.info("maestro_http_started", { host: httpServer.host, port: httpServer.port });

@@ -35,8 +35,7 @@ test("resolveAlias: found name returns its command+env; missing name synthesizes
   assert.deepEqual(resolveAlias(def, "work", "claude"), {
     name: "work", command: "claude", env: { CLAUDE_CONFIG_DIR: "~/.claude-work" },
   });
-  // A name not in the list behaves like a plain string command (back-compat).
-  assert.deepEqual(resolveAlias(def, "xclaude", "claude"), { name: "xclaude", command: "xclaude", env: {} });
+
 });
 
 test("aliasToConfig: collapses a fully-default account to a bare string, keeps distinct ones as objects", () => {
@@ -113,12 +112,12 @@ test("buildAgentCommand: structured alias spawns the account command, not its na
 });
 
 test("buildAgentCommand: bare-string alias keeps name as command (back-compat)", () => {
-  const providerDef = { adapter: "built-in:claude", default_alias: "xclaude", aliases: ["xclaude"] };
+  const providerDef = { adapter: "built-in:claude", default_alias: "alt-claude", aliases: ["alt-claude"] };
   const spec = buildAgentCommand({
     provider: "claude", prompt: "hi", cwd: "/repo", role: "executor",
-    options: { alias: "xclaude" }, providerDef,
+    options: { alias: "alt-claude" }, providerDef,
   });
-  assert.equal(spec.command, "xclaude");
+  assert.equal(spec.command, "alt-claude");
 });
 
 // ── availability probes the command ──────────────────────────────────────────

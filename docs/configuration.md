@@ -402,7 +402,8 @@ permissive on extra keys (`additionalProperties: true`).
     "min_coverage": 90,                  // number 0–100
     "no_high_severity_findings": true,   // boolean
     "all_regressions_pass": true,        // boolean
-    "min_overall_confidence": 0.8        // number 0–1
+    "min_overall_confidence": 0.8,       // number 0–1
+    "output_schema_conformance": true    // boolean
   }
 }
 ```
@@ -419,6 +420,12 @@ or a bad `output_schema_ref` path), `bad_gates` (unknown gate key or
 out-of-range/typed value), and a `missing_output_schema` warning for a role
 whose name matches a verifier stage (review/threat_model/edge_cases/tests/
 evaluation/regression) but declares no schema.
+
+A workflow may also set `require_distinct_reviewer: true` (top-level): the
+validator then errors with `non_distinct_reviewer` if any verifier role
+(`verifies: true`) shares a provider with an implementation entry role — so a
+model never reviews its own work. Opt-in; a non-boolean value is reported as
+`bad_require_distinct_reviewer`.
 
 ### Role `kind` and the verification pipeline (manifest v2)
 
@@ -647,7 +654,7 @@ the product, any zeroed axis (including a missing one) drives overall confidence
 to `0` (the most conservative, fail-honest aggregation). All scores are rounded
 to 4 decimals.
 
-**Gate enforcement.** The four SP1 gate keys are enforced only when present in
+**Gate enforcement.** The gate keys are enforced only when present in
 the top-level `gates:` block (a role-level `gates` override is also accepted):
 
 | gate | passes iff |
@@ -656,6 +663,7 @@ the top-level `gates:` block (a role-level `gates` override is also accepted):
 | `no_high_severity_findings` (bool) | when `true`: `review.severity ∉ {high,critical}` **and** no `static_analysis` finding is high/critical; no review evidence ⇒ **fail**. `false` ⇒ not enforced. |
 | `all_regressions_pass` (bool) | when `true`: the `regression` handoff is present **and** `new_failures.length === 0`; absent ⇒ **fail**. `false` ⇒ not enforced. |
 | `min_overall_confidence` (0–1) | the computed `overall_confidence >= min_overall_confidence`. |
+| `output_schema_conformance` (bool) | when `true`: promotes per-node soft `schema_validation` evidence into a **run** verdict — every handoff that declared a schema conformed to it. Handoffs with no declared schema are not counted; a run with zero schema-bearing handoffs passes vacuously. Any single non-conforming handoff blocks and names the offending role(s). `false` ⇒ not enforced. |
 
 `passed` iff every present gate passed; `blocked_reasons[]` carries one
 human-readable string per failed gate. `gates` absent/`{}` ⇒ `passed: true`,
@@ -884,7 +892,7 @@ overwritten on resume). It is **self-contained**:
 ```jsonc
 {
   "manifest_version": 1,
-  "maestro_version": "0.2.0",
+  "maestro_version": "0.3.0",
   "created_at": "…ISO…",
   "source_task_id": "<id>",
   "task": { /* the 19 replayable input knobs only */ },

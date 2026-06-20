@@ -1,0 +1,2 @@
+# Internal-only: never include in `git archive` / release tarballs.
+docs/superpowers/ export-ignore

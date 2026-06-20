@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+import { cancelRun } from "../langgraph/engine.mjs";
+
 import { executeApprovedAction } from "./action-execute.mjs";
 import {
   AVAILABILITY_CODES,
@@ -652,6 +654,10 @@ export async function handleSwitchProvider({
 }
 
 export async function handleCancelTask({ taskStore, taskId, note = "", stdout }) {
+  // Signal the engine to stop at the next step boundary (SP10b).
+  // No-op if no run is in flight for this task.
+  cancelRun(taskId);
+
   const before = await taskStore.readTask(taskId);
   await taskStore.appendInteraction(taskId, {
     type: "cancel",

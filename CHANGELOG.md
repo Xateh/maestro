@@ -7,6 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-20
+
+### Added
+
+- **Parallel groups — concurrent role execution as a single compiled node.** A
+  workflow may declare `parallel_groups` (an array of arrays of role names, each
+  group with `>= 2` members). The members run concurrently
+  (`Promise.allSettled`) as one compiled group node. They must not depend on each
+  other (no sibling edges), cannot be `kind: "scoring"`, and must share the same
+  `done` successor — all validated, with a `bad_parallel_group` error on
+  violation. If any member emits an interrupt/terminal event
+  (`error`/`question`/`waiting`/`needs_review`) or fails hard, that event
+  propagates and halts the run (highest-precedence wins) rather than being
+  swallowed. `run-manifest.json` records the `resolved_parallel_groups`.
+- **Coverage ingestion — structured coverage from command roles.** A command
+  role's `parser.coverage.format` accepts `c8-json`, `lcov`, `jest-json`,
+  `cobertura`, `clover`, or `regex` (the `regex` format requires a `pct` capture
+  pattern). After the command exits, the runner reads the declared coverage file
+  (path-confined, 4 MB cap) and fills `evaluation.coverage` as
+  `{ overall_pct, by_command }` — `overall_pct` is the arithmetic mean across
+  contributing commands. An unknown format is rejected at validation
+  (`bad_command_spec`).
+- **GitHub issue tracker backend.** Set a tracker `kind: "github"` with
+  `owner`/`repo`/`token` (plus an optional `label`, default `maestro`). It polls
+  the REST API for labeled open issues and performs write-backs (comment, close,
+  add-label), staying rate-limit aware.
+- **Inbound webhooks.** `POST /api/v1/webhook/:kind` accepts `github`
+  (HMAC-SHA256 signature via `webhook_secret`, verified timing-safe) and
+  `generic` (bearer token via `webhook_bearer_token`, verified timing-safe).
+  The body is capped at 1 MB. A `webhook_template` (with `{{payload.path}}`
+  interpolation) renders the dispatched task title; the task is created against
+  the configured `workflow`.
+- **Outbound lifecycle notifications.** A `notify` config
+  `{ on: [...events], url, format }` (`format: "slack" | "generic"`) fires
+  best-effort POSTs on `completed`, `halted`, and `approval_needed`. It never
+  throws and makes one attempt per event.
+- **Real mid-run cancellation.** Cancelling a task now aborts the in-flight run
+  at the next step boundary (via `AbortController`), sets status `cancelled`, and
+  stamps `cancelled_at` in `run-manifest.json`. Previously cancellation only
+  updated bookkeeping.
+
+### Changed
+
+- **Correctness scoring now blends coverage.** When a workflow produces
+  `evaluation.coverage.overall_pct`, `correctness_score` becomes the mean of
+  `pass_rate` and `overall_pct / 100` (was `pass_rate` alone). MIGRATION NOTE:
+  workflows that opt into coverage parsing may see `correctness_score` drop even
+  at a 100% pass rate — check any `min_correctness` gate. Workflows without
+  coverage parsing are unaffected.
+- **`require_distinct_reviewer` is now default-on.** When absent it behaves as
+  `true`, but for this release it emits a WARNING (`non_distinct_reviewer`)
+  rather than an error; it becomes a hard error in v0.5.0.
+
+### Deprecated
+
+- **`experimental_per_edge_context` graduated to the stable key
+  `per_edge_context`.** The old key still works but emits a deprecation warning —
+  rename it.
+- **`require_distinct_reviewer: false` is deprecated.** The check defaults on in
+  v0.4.0 and becomes required in v0.5.0.
+
+### Notes
+
+- **Role Convention doc no longer pitches Maestro *as* the `plan → execute →
+  review` pipeline.** `docs/role-convention.md` now frames that flow as just the
+  stock graph, consistent with the README's positioning. Documentation only — no
+  behavior or API change.
+
+## [0.3.0] - 2026-06-19
+
+### Added
+
+- **Per-edge context contract — experimental prototype (item A, headline).** A
+  workflow may opt in with `experimental_per_edge_context: true` plus an
+  `edge_context` map (`"<from>:<event>"` or per-source `"<from>"` →
+  `"full"` | `"scoped"` | `["role", …]`) to declare, **per inbound edge**, which
+  prior handoffs the destination node's prompt sees. Off by default — default
+  workflows are byte-identical. New pure module `langgraph/context-contract.mjs`;
+  wired into the LLM node path (only the prompt's view is narrowed, never the
+  durable handoff record). Falsification **verdict: KEEP** — per-edge context
+  provably expresses what per-role static config cannot, demonstrated on the
+  stock `full-audit-sweep`, where `implementation` re-entered via different
+  critics resolves different input views.
+- **`output_schema_conformance` workflow gate (item B).** Promotes per-node soft
+  `schema_validation` evidence into an auditable **run** verdict — "every handoff
+  that declared a schema conformed to it." Declarable in `gates:` (validated in
+  `workflow-validate.mjs`), enforced in `scoring.enforceGates` from per-handoff
+  metadata; any non-conforming handoff blocks and names the offending role(s).
+- **`require_distinct_reviewer` opt-in assertion (item C).** When `true`,
+  `workflow-validate` errors (`non_distinct_reviewer`) if any verifier role
+  (`verifies: true`) shares a provider with an implementation entry role — so a
+  model never reviews its own work. Opt-in; the default-on flip is deferred.
+
+### Notes
+
+- **Report-back determinism probe (item D)** — feasibility write-up returning a
+  **verdict**: report-back is not expressible on the single-active-node engine,
+  and even on a future concurrent engine output-reproducible determinism cannot
+  survive it. The
+  North-Star wording stays *auditable / replayable*; "deterministic" is confined
+  to DAG traversal/wiring, never outputs.
+
 ## [0.2.1] - 2026-06-18
 
 ### Fixed
@@ -553,6 +655,9 @@ Initial release.
 - The `agent:ocr` / `agent:eval` scripts fail fast with an install hint when the
   Ollama binary is absent, instead of surfacing a raw spawn error mid-run.
 
+[0.4.0]: https://github.com/Xateh/maestro/releases/tag/v0.4.0
+[0.3.0]: https://github.com/Xateh/maestro/releases/tag/v0.3.0
+[0.2.1]: https://github.com/Xateh/maestro/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Xateh/maestro/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Xateh/maestro/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Xateh/maestro/releases/tag/v0.1.0

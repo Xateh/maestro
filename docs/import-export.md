@@ -5,6 +5,9 @@ AGENTS.md/CLAUDE.md instructions, `.mcp.json`, Codex/Gemini CLI configs) into
 its workflow, and export workflows as portable bundles other Maestro
 instances can import.
 
+Internal candidate systems for import/replication testing live in
+[Target Import Candidates](internal/import-target-candidates.md).
+
 **Philosophy: wrap, don't replace.** Imported artifacts are referenced by
 path by default, so your existing setup keeps working exactly as before —
 Maestro just learns to orchestrate it. Every imported source is credited in
