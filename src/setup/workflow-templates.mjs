@@ -106,9 +106,6 @@ function buildFullAuditSweepWorkflow() {
   return {
     version: 2,
     initial: "implementation",
-    parallel_groups: [
-      ["static_analysis", "review", "threat_model", "edge_cases"]
-    ],
     loop_limits: { default_max_visits: 3, on_exceeded: "ask_user" },
     roles: {
       implementation: role({
@@ -237,9 +234,9 @@ function buildFullAuditSweepWorkflow() {
     },
     transitions: {
       implementation: { done: "static_analysis", question: "$ask_user", error: "$halt" },
-      static_analysis: { done: "tests", error: "$halt" },
-      review: { done: "tests", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
-      threat_model: { done: "tests", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
+      static_analysis: { done: "review", error: "$halt" },
+      review: { done: "threat_model", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
+      threat_model: { done: "edge_cases", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
       edge_cases: { done: "tests", changes_requested: "implementation", question: "$ask_user", error: "$halt" },
       tests: { done: "evaluation", question: "$ask_user", error: "$halt" },
       evaluation: { done: "regression", error: "$halt" },
