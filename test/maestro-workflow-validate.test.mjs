@@ -509,7 +509,7 @@ test("require_distinct_reviewer: distinct providers ⇒ clean", () => {
   assert.ok(!codes(result).includes("non_distinct_reviewer"));
 });
 
-test("require_distinct_reviewer absent ⇒ shared provider tolerated (opt-in only)", () => {
+test("require_distinct_reviewer absent ⇒ shared provider → non_distinct_reviewer WARNING (default-on v0.4.0)", () => {
   const wf = baseWorkflow(
     {
       executor: { provider: "codex" },
@@ -523,7 +523,9 @@ test("require_distinct_reviewer absent ⇒ shared provider tolerated (opt-in onl
     },
   );
   const result = validateWorkflow(wf);
-  assert.ok(!codes(result).includes("non_distinct_reviewer"));
+  assert.ok(result.ok, "warning only — result still ok");
+  assert.ok(result.warnings.some((w) => w.code === "non_distinct_reviewer"), "emits warning");
+  assert.ok(!result.errors.some((e) => e.code === "non_distinct_reviewer"), "not an error");
 });
 
 test("require_distinct_reviewer non-boolean ⇒ bad_require_distinct_reviewer", () => {
@@ -533,4 +535,61 @@ test("require_distinct_reviewer non-boolean ⇒ bad_require_distinct_reviewer", 
   );
   const result = validateWorkflow(wf);
   assert.ok(codes(result).includes("bad_require_distinct_reviewer"));
+});
+
+// Helper: two-role workflow where reviewer shares provider with entry role
+function sharedProviderWorkflow(requireDistinct) {
+  const wf = {
+    version: 2,
+    initial: "executor",
+    roles: {
+      executor:  { provider: "claude" },
+      reviewer:  { provider: "claude", verifies: true },
+    },
+    transitions: {
+      executor: { done: "reviewer" },
+      reviewer: { done: "$complete" },
+    },
+  };
+  if (requireDistinct !== undefined) wf.require_distinct_reviewer = requireDistinct;
+  return wf;
+}
+
+test("SP10a: absent require_distinct_reviewer + shared provider → non_distinct_reviewer WARNING (not error)", () => {
+  const result = validateWorkflow(sharedProviderWorkflow(undefined));
+  assert.ok(result.ok, "should still be ok (warning only)");
+  assert.ok(
+    result.warnings.some((w) => w.code === "non_distinct_reviewer"),
+    "expected non_distinct_reviewer warning",
+  );
+  assert.ok(
+    !result.errors.some((e) => e.code === "non_distinct_reviewer"),
+    "must not be an error",
+  );
+});
+
+test("SP10a: require_distinct_reviewer: false → deprecated_distinct_reviewer_opt_out warning, no check", () => {
+  const result = validateWorkflow(sharedProviderWorkflow(false));
+  assert.ok(result.ok);
+  assert.ok(
+    result.warnings.some((w) => w.code === "deprecated_distinct_reviewer_opt_out"),
+    "expected deprecation warning",
+  );
+  assert.ok(
+    !result.warnings.some((w) => w.code === "non_distinct_reviewer"),
+    "no distinctness check when explicitly false",
+  );
+});
+
+test("SP10a: require_distinct_reviewer: true + shared provider → non_distinct_reviewer ERROR", () => {
+  const result = validateWorkflow(sharedProviderWorkflow(true));
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.code === "non_distinct_reviewer"));
+});
+
+test("SP10a: absent require_distinct_reviewer + DISTINCT providers → no warning", () => {
+  const wf = sharedProviderWorkflow(undefined);
+  wf.roles.reviewer.provider = "gemini";
+  const result = validateWorkflow(wf);
+  assert.ok(!result.warnings.some((w) => w.code === "non_distinct_reviewer"));
 });

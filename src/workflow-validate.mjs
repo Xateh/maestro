@@ -337,24 +337,32 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
   }
 
-  // ── cross-provider enforcement (v0.3.0 item C, opt-in) ─────────────────────
-  // `require_distinct_reviewer: true` asserts no verifier role shares a provider
-  // with an implementation entry role — so a model never reviews its own work.
-  // Opt-in: absent/false ⇒ shared providers are tolerated (the default-on flip
-  // is deferred to a later horizon). Verifier = role with `verifies: true`.
+  // ── cross-provider enforcement (v0.3.0 item C → v0.4.0 default-on) ──────────
+  // SP10a: absent ⇒ default-on (warning for one release); true ⇒ error; false ⇒ opt-out
   if (workflow.require_distinct_reviewer !== undefined
     && !isBool(workflow.require_distinct_reviewer)) {
     errors.push(issue("bad_require_distinct_reviewer",
       `require_distinct_reviewer must be a boolean, got ${JSON.stringify(workflow.require_distinct_reviewer)}`));
-  } else if (workflow.require_distinct_reviewer === true) {
+  } else if (workflow.require_distinct_reviewer === false) {
+    warnings.push(issue("deprecated_distinct_reviewer_opt_out",
+      `require_distinct_reviewer: false is deprecated; the check defaults to true in v0.4.0 and will be required in v0.5.0`));
+  } else {
+    // true (explicit) or absent (default-on)
+    const isDefaultOn = workflow.require_distinct_reviewer === undefined;
     const entryProviders = new Set(
       [...entryRoles].map((name) => roles[name]?.provider).filter(Boolean),
     );
     for (const [roleName, role] of Object.entries(roles)) {
       if (role?.verifies === true && role?.provider && entryProviders.has(role.provider)) {
-        errors.push(issue("non_distinct_reviewer",
-          `verifier role "${roleName}" shares provider "${role.provider}" with an implementation entry role — `
-          + `require_distinct_reviewer demands a different reviewer model`));
+        const msg = `verifier role "${roleName}" shares provider "${role.provider}" with an implementation entry role`
+          + (isDefaultOn
+            ? ` — require_distinct_reviewer defaults to true in v0.4.0 (will be an error in v0.5.0)`
+            : ` — require_distinct_reviewer demands a different reviewer model`);
+        if (isDefaultOn) {
+          warnings.push(issue("non_distinct_reviewer", msg));
+        } else {
+          errors.push(issue("non_distinct_reviewer", msg));
+        }
       }
     }
   }
