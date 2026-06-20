@@ -182,7 +182,13 @@ export class MaestroOrchestrator {
           : (runStatus === "failed" || runStatus === "waiting_user") ? "halted"
           : null;
         if (notifyEvent) {
-          sendNotification(notifyEvent, issue, notifyConfig).catch(() => {});
+          const task = {
+            id: issue.id,
+            status: runStatus,
+            workflow: result?.workflow ?? null,
+            review: result?.review ?? {},
+          };
+          sendNotification(notifyEvent, task, notifyConfig).catch(() => {});
         }
       }
       // Re-dispatch at the polling interval (not 1 s) so we don't hammer
