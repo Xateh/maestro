@@ -1,4 +1,5 @@
 import { nullLogger } from "./logger.mjs";
+import { sendNotification } from "./notify.mjs";
 
 function stateKey(value) {
   return String(value ?? "").toLowerCase();
@@ -164,13 +165,37 @@ export class MaestroOrchestrator {
     try {
       const result = await this.runner.run({ issue, attempt, continuation, onActivity });
       this.addMetrics(result?.metrics, Date.now() - startedAtMs);
+      const runStatus = result?.status ?? "succeeded";
       this.runtime.completed.set(issue.id, {
         issue,
         issue_identifier: issue.identifier,
-        status: result?.status ?? "succeeded",
+        status: runStatus,
         completed_at: nowIso(),
       });
-      await this.applyTransition(issue, result?.status ?? "succeeded");
+      await this.applyTransition(issue, runStatus);
+      // Best-effort outbound notification — fire and forget, never throws.
+      const notifyConfig = this.config.notify;
+      if (notifyConfig) {
+        // Use the real task status from the runner (taskStatus) when available.
+        // TaskGraphRunner maps waiting_user/waiting_approval → succeeded before
+        // returning runStatus, so we must read the pre-mapped status it passes
+        // back as taskStatus to correctly fire approval_needed / halted events.
+        const realStatus = result?.taskStatus ?? runStatus;
+        const notifyEvent =
+          (realStatus === "succeeded" || realStatus === "done") ? "completed"
+          : realStatus === "waiting_approval" ? "approval_needed"
+          : (realStatus === "failed" || realStatus === "waiting_user") ? "halted"
+          : null;
+        if (notifyEvent) {
+          const task = {
+            id: issue.id,
+            status: realStatus,
+            workflow: result?.taskWorkflow ?? null,
+            review: result?.taskReview ?? {},
+          };
+          sendNotification(notifyEvent, task, notifyConfig).catch(() => {});
+        }
+      }
       // Re-dispatch at the polling interval (not 1 s) so we don't hammer
       // fetchIssueStatesByIds on every active run. The timer fires even on
       // "succeeded" so the tracker can detect external state changes (R4).

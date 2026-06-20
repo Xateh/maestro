@@ -31,6 +31,9 @@ const GATE_VALIDATORS = {
   output_schema_conformance: isBool,
 };
 
+// Known coverage format values for command role parser.coverage.format validation (SP8)
+const KNOWN_COVERAGE_FORMATS = new Set(["c8-json", "lcov", "jest-json", "cobertura", "clover", "regex"]);
+
 // Syntactic check for output_schema_ref / MRC source: a relative path that does
 // not escape the state dir. No file I/O — existence is checked at load, not here.
 // Exported (D3) so the loader/CLI lint reuse the same predicate.
@@ -209,6 +212,23 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
           if (typeof run !== "string" || run.length === 0) {
             errors.push(issue("bad_command_spec", `role "${roleName}" command "${name ?? i}" is missing a non-empty "run"`));
           }
+          // ── SP8: validate coverage.format in command parser ──
+          const cov = command?.parser?.coverage;
+          if (cov !== undefined) {
+            if (!cov || typeof cov !== "object") {
+              errors.push(issue("bad_command_spec",
+                `role "${roleName}" command "${name ?? i}" parser.coverage must be an object`));
+            } else {
+              const fmt = cov.format;
+              if (typeof fmt !== "string" || !KNOWN_COVERAGE_FORMATS.has(fmt)) {
+                errors.push(issue("bad_command_spec",
+                  `role "${roleName}" command "${name ?? i}" coverage.format must be one of: ${[...KNOWN_COVERAGE_FORMATS].join(", ")}, got ${JSON.stringify(fmt)}`));
+              } else if (fmt === "regex" && (typeof cov.pct !== "string" || cov.pct.length === 0)) {
+                errors.push(issue("bad_command_spec",
+                  `role "${roleName}" command "${name ?? i}" coverage.format "regex" requires a non-empty "pct" regex string`));
+              }
+            }
+          }
         }
       }
     }
@@ -337,24 +357,84 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
   }
 
-  // ── cross-provider enforcement (v0.3.0 item C, opt-in) ─────────────────────
-  // `require_distinct_reviewer: true` asserts no verifier role shares a provider
-  // with an implementation entry role — so a model never reviews its own work.
-  // Opt-in: absent/false ⇒ shared providers are tolerated (the default-on flip
-  // is deferred to a later horizon). Verifier = role with `verifies: true`.
+  // ── cross-provider enforcement (v0.3.0 item C → v0.4.0 default-on) ──────────
+  // SP10a: absent ⇒ default-on (warning for one release); true ⇒ error; false ⇒ opt-out
   if (workflow.require_distinct_reviewer !== undefined
     && !isBool(workflow.require_distinct_reviewer)) {
     errors.push(issue("bad_require_distinct_reviewer",
       `require_distinct_reviewer must be a boolean, got ${JSON.stringify(workflow.require_distinct_reviewer)}`));
-  } else if (workflow.require_distinct_reviewer === true) {
+  } else if (workflow.require_distinct_reviewer === false) {
+    warnings.push(issue("deprecated_distinct_reviewer_opt_out",
+      `require_distinct_reviewer: false is deprecated; the check defaults to true in v0.4.0 and will be required in v0.5.0`));
+  } else {
+    // true (explicit) or absent (default-on)
+    const isDefaultOn = workflow.require_distinct_reviewer === undefined;
     const entryProviders = new Set(
       [...entryRoles].map((name) => roles[name]?.provider).filter(Boolean),
     );
     for (const [roleName, role] of Object.entries(roles)) {
       if (role?.verifies === true && role?.provider && entryProviders.has(role.provider)) {
-        errors.push(issue("non_distinct_reviewer",
-          `verifier role "${roleName}" shares provider "${role.provider}" with an implementation entry role — `
-          + `require_distinct_reviewer demands a different reviewer model`));
+        const msg = `verifier role "${roleName}" shares provider "${role.provider}" with an implementation entry role`
+          + (isDefaultOn
+            ? ` — require_distinct_reviewer defaults to true in v0.4.0 (will be an error in v0.5.0)`
+            : ` — require_distinct_reviewer demands a different reviewer model`);
+        if (isDefaultOn) {
+          warnings.push(issue("non_distinct_reviewer", msg));
+        } else {
+          errors.push(issue("non_distinct_reviewer", msg));
+        }
+      }
+    }
+  }
+
+  // ── parallel groups (SP7) ──────────────────────────────────────────────────────
+  if (workflow.parallel_groups !== undefined) {
+    if (!Array.isArray(workflow.parallel_groups)) {
+      errors.push(issue("bad_parallel_group", `parallel_groups must be an array of role-name arrays`));
+    } else {
+      for (const [gi, group] of workflow.parallel_groups.entries()) {
+        if (!Array.isArray(group) || group.length < 2) {
+          errors.push(issue("bad_parallel_group",
+            `parallel_groups[${gi}] must contain at least 2 role names — fewer than 2 members is not a valid parallel group`));
+          continue;
+        }
+        const groupSet = new Set(group);
+        for (const [ri, roleName] of group.entries()) {
+          if (!roleNames.has(roleName)) {
+            errors.push(issue("bad_parallel_group",
+              `parallel_groups[${gi}][${ri}]: role "${roleName}" is not defined`));
+            continue;
+          }
+          const role = roles[roleName];
+          // No scoring roles in a parallel group
+          if (role?.kind === "scoring") {
+            errors.push(issue("bad_parallel_group",
+              `parallel_groups[${gi}]: role "${roleName}" is kind:"scoring" — scoring roles read all prior handoffs and cannot run concurrently`));
+          }
+          // No inbound edges from siblings
+          const outbound = Object.values(transitions[roleName] ?? {});
+          for (const dest of outbound) {
+            if (groupSet.has(dest)) {
+              errors.push(issue("bad_parallel_group",
+                `parallel_groups[${gi}]: role "${roleName}" has a sibling edge to "${dest}" — group members must not depend on each other`));
+            }
+          }
+        }
+        // All members must share the same "done" transition target. Routing
+        // uses group[0]'s done edge for the whole group, so divergent targets
+        // are a silent correctness bug. Normalize a missing "done" transition
+        // to a sentinel so "all missing" matches but "some missing" does not.
+        const MISSING_DONE = Symbol("missing-done");
+        const doneTargets = group.map((roleName) =>
+          (transitions[roleName] ?? {}).done ?? MISSING_DONE);
+        const distinct = new Set(doneTargets);
+        if (distinct.size > 1) {
+          const shown = doneTargets
+            .map((t) => (t === MISSING_DONE ? "(none)" : JSON.stringify(t)))
+            .join(", ");
+          errors.push(issue("bad_parallel_group",
+            `parallel_groups[${gi}]: members have differing "done" targets [${shown}] — all members must share the same "done" target since routing uses the first member's done edge`));
+        }
       }
     }
   }
@@ -376,14 +456,17 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     }
   }
 
-  // ── per-edge context contract (EXPERIMENTAL, v0.3.0 item A) ────────────────
-  // Opt-in via `experimental_per_edge_context: true` + an `edge_context` map of
-  // "<from>:<event>" (or per-source "<from>") → context spec. Structural checks
-  // only; an absent/false flag means the whole feature is inert.
-  if (workflow.experimental_per_edge_context !== undefined
-    && !isBool(workflow.experimental_per_edge_context)) {
+  // ── per-edge context contract (stable in v0.4.0, SP10c) ──────────────────────
+  // Canonical key: `per_edge_context`. Old key `experimental_per_edge_context`
+  // accepted with a deprecation warning for one release (v0.4.0).
+  if (workflow.experimental_per_edge_context !== undefined) {
+    warnings.push(issue("deprecated_experimental_flag",
+      `"experimental_per_edge_context" is deprecated; rename to "per_edge_context" (feature is stable in v0.4.0)`));
+  }
+  const edgeContextEnabled = workflow.per_edge_context ?? workflow.experimental_per_edge_context;
+  if (edgeContextEnabled !== undefined && !isBool(edgeContextEnabled)) {
     errors.push(issue("bad_edge_context",
-      `experimental_per_edge_context must be a boolean, got ${JSON.stringify(workflow.experimental_per_edge_context)}`));
+      `per_edge_context must be a boolean, got ${JSON.stringify(edgeContextEnabled)}`));
   }
   if (workflow.edge_context !== undefined) {
     const ec = workflow.edge_context;
@@ -408,6 +491,13 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
   }
 
   // Reachability from initial + every mode initial.
+  // Parallel group members are co-reachable: reaching any member reaches all.
+  const memberToGroup = new Map();
+  for (const group of (Array.isArray(workflow.parallel_groups) ? workflow.parallel_groups : [])) {
+    if (Array.isArray(group)) {
+      for (const name of group) memberToGroup.set(name, group);
+    }
+  }
   const reachable = new Set();
   const queue = [workflow.initial, ...Object.values(workflow.modes ?? {}).map((m) => m?.initial)]
     .filter((s) => roleNames.has(s));
@@ -415,6 +505,9 @@ export function validateWorkflow(workflow = {}, { config = null } = {}) {
     const state = queue.shift();
     if (reachable.has(state)) continue;
     reachable.add(state);
+    for (const sibling of (memberToGroup.get(state) ?? [])) {
+      if (roleNames.has(sibling) && !reachable.has(sibling)) queue.push(sibling);
+    }
     for (const to of Object.values(transitions[state] ?? {})) {
       if (roleNames.has(to) && !reachable.has(to)) queue.push(to);
     }

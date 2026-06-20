@@ -121,6 +121,15 @@ export async function runDoctor({
       if (localError.code !== "ENOENT") throw localError;
     }
     checks.push(check("config", "config.json", "pass", "parseable"));
+
+    // GitHub tracker: warn when GITHUB_TOKEN is absent
+    const trackerKind = config?.server?.tracker?.kind;
+    if (trackerKind === "github") {
+      const token = config?.server?.tracker?.token ?? env.GITHUB_TOKEN;
+      checks.push(token
+        ? check("github_token", "GITHUB_TOKEN", "pass", "present")
+        : check("github_token", "GITHUB_TOKEN", "fail", "GITHUB_TOKEN is not set and server.tracker.token is not configured"));
+    }
   } catch (error) {
     checks.push(error.code === "ENOENT"
       ? check("config", "config.json", "skip", "missing")

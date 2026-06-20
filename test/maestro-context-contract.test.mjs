@@ -117,3 +117,34 @@ test("entry node (no inbound edge) gets the full history", () => {
   // currentState/event are null on first arrival → no edge → full.
   assert.deepEqual(contextForEdge(wf, HANDOFFS, null, null), HANDOFFS);
 });
+
+// ── SP10c: graduate experimental_per_edge_context → per_edge_context ─────────
+
+test("SP10c: per_edge_context (new key) activates context contract", () => {
+  const wf = {
+    ...FULL_AUDIT_SWEEP_WORKFLOW,
+    per_edge_context: true,
+    edge_context: {
+      "review:changes_requested": ["review"],
+      "regression:regressions_found": ["regression"],
+    },
+  };
+
+  const viaReview = contextForEdge(wf, HANDOFFS, "review", "changes_requested");
+  const viaRegression = contextForEdge(wf, HANDOFFS, "regression", "regressions_found");
+
+  // Identical output to experimental_per_edge_context: true
+  assert.deepEqual(viaReview.map((h) => h.role), ["review"]);
+  assert.deepEqual(viaRegression.map((h) => h.role), ["regression"]);
+  assert.notDeepEqual(viaReview, viaRegression);
+});
+
+test("SP10c: old experimental_per_edge_context key still activates context contract (shim)", () => {
+  const wf = {
+    ...FULL_AUDIT_SWEEP_WORKFLOW,
+    experimental_per_edge_context: true,
+    edge_context: { "review:changes_requested": ["review"] },
+  };
+  const result = contextForEdge(wf, HANDOFFS, "review", "changes_requested");
+  assert.deepEqual(result.map((h) => h.role), ["review"]);
+});

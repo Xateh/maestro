@@ -278,9 +278,11 @@ test("full-audit-sweep template validates with no errors", () => {
 test("full-audit-sweep: rework cycles each terminate", () => {
   const template = resolveWorkflowTemplate("full-audit-sweep");
   const cycles = findCycles(template.transitions);
-  // review/threat_model/edge_cases each loop to implementation (3) plus the SP4
-  // regression → implementation back-edge (regressions_found) = 4.
-  assert.equal(cycles.length, 4, "three review back-edges + regression loop-back");
+  // With parallel_groups declared, review/threat_model/edge_cases are no longer
+  // reachable via raw transitions (they run via the group node), so their
+  // changes_requested back-edges no longer form cycles in the transition graph.
+  // Only the SP4 regression → implementation back-edge remains = 1 cycle.
+  assert.equal(cycles.length, 1, "regression loop-back (parallel group absorbs verifier cycles)");
   for (const cycle of cycles) {
     assert.ok(cycleHasTermination(cycle, template), `cycle ${cycle.join("→")} must terminate`);
   }
@@ -288,13 +290,20 @@ test("full-audit-sweep: rework cycles each terminate", () => {
 
 test("full-audit-sweep: implementation reaches human_approval which completes", () => {
   const template = resolveWorkflowTemplate("full-audit-sweep");
-  // every role reachable from implementation
+  // Parallel group members are co-reachable: reaching any member reaches all.
+  const memberToSiblings = new Map();
+  for (const group of (template.parallel_groups ?? [])) {
+    for (const name of group) memberToSiblings.set(name, group);
+  }
   const reachable = new Set();
   const queue = [template.initial];
   while (queue.length) {
     const s = queue.shift();
     if (reachable.has(s)) continue;
     reachable.add(s);
+    for (const sibling of (memberToSiblings.get(s) ?? [])) {
+      if (template.roles[sibling] && !reachable.has(sibling)) queue.push(sibling);
+    }
     for (const to of Object.values(template.transitions[s] ?? {})) {
       if (template.roles[to] && !reachable.has(to)) queue.push(to);
     }
@@ -371,6 +380,53 @@ test("full-audit-sweep validates clean — no bad_command_spec", () => {
   const result = validateWorkflow(resolveWorkflowTemplate("full-audit-sweep"));
   assert.equal(result.ok, true);
   assert.ok(!codes(result).includes("bad_command_spec"));
+});
+
+// ── SP8 kind:"command" coverage.format validation ───────────────────────────
+// Helper for SP8 tests: cmdWorkflow builds a minimal v2 workflow with command role
+function cmdWorkflow(commands) {
+  return {
+    version: 2,
+    initial: "eval",
+    roles: { eval: { kind: "command", commands } },
+    transitions: { eval: { done: "$complete" } },
+  };
+}
+
+test("SP8 validate: unknown coverage.format → bad_command_spec", () => {
+  const wf = cmdWorkflow([{
+    name: "tests", run: "npm test",
+    parser: { coverage: { format: "istanbul", path: "coverage.json" } },
+  }]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_command_spec" && e.message.includes("coverage.format")));
+});
+
+test("SP8 validate: coverage.format=regex without pct → bad_command_spec", () => {
+  const wf = cmdWorkflow([{
+    name: "tests", run: "npm test",
+    parser: { coverage: { format: "regex", path: "output.txt" } },
+  }]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_command_spec" && e.message.includes("pct")));
+});
+
+test("SP8 validate: valid coverage.format=c8-json with path → no error", () => {
+  const wf = cmdWorkflow([{
+    name: "tests", run: "npm test",
+    parser: { coverage: { format: "c8-json", path: "coverage/coverage-summary.json" } },
+  }]);
+  const result = validateWorkflow(wf);
+  assert.ok(!result.errors.some((e) => e.code === "bad_command_spec" && e.message.includes("coverage")));
+});
+
+test("SP8 validate: valid coverage.format=regex with pct → no error", () => {
+  const wf = cmdWorkflow([{
+    name: "tests", run: "npm test",
+    parser: { coverage: { format: "regex", path: "out.txt", pct: "Cov: ([\\d.]+)%" } },
+  }]);
+  const result = validateWorkflow(wf);
+  assert.ok(!result.errors.some((e) => e.code === "bad_command_spec" && e.message.includes("coverage")));
 });
 
 // ── SP4 kind:"regression" role spec validation (bad_regression_spec) ─────────
@@ -509,7 +565,7 @@ test("require_distinct_reviewer: distinct providers ⇒ clean", () => {
   assert.ok(!codes(result).includes("non_distinct_reviewer"));
 });
 
-test("require_distinct_reviewer absent ⇒ shared provider tolerated (opt-in only)", () => {
+test("require_distinct_reviewer absent ⇒ shared provider → non_distinct_reviewer WARNING (default-on v0.4.0)", () => {
   const wf = baseWorkflow(
     {
       executor: { provider: "codex" },
@@ -523,7 +579,9 @@ test("require_distinct_reviewer absent ⇒ shared provider tolerated (opt-in onl
     },
   );
   const result = validateWorkflow(wf);
-  assert.ok(!codes(result).includes("non_distinct_reviewer"));
+  assert.ok(result.ok, "warning only — result still ok");
+  assert.ok(result.warnings.some((w) => w.code === "non_distinct_reviewer"), "emits warning");
+  assert.ok(!result.errors.some((e) => e.code === "non_distinct_reviewer"), "not an error");
 });
 
 test("require_distinct_reviewer non-boolean ⇒ bad_require_distinct_reviewer", () => {
@@ -533,4 +591,207 @@ test("require_distinct_reviewer non-boolean ⇒ bad_require_distinct_reviewer", 
   );
   const result = validateWorkflow(wf);
   assert.ok(codes(result).includes("bad_require_distinct_reviewer"));
+});
+
+// Helper: two-role workflow where reviewer shares provider with entry role
+function sharedProviderWorkflow(requireDistinct) {
+  const wf = {
+    version: 2,
+    initial: "executor",
+    roles: {
+      executor:  { provider: "claude" },
+      reviewer:  { provider: "claude", verifies: true },
+    },
+    transitions: {
+      executor: { done: "reviewer" },
+      reviewer: { done: "$complete" },
+    },
+  };
+  if (requireDistinct !== undefined) wf.require_distinct_reviewer = requireDistinct;
+  return wf;
+}
+
+test("SP10a: absent require_distinct_reviewer + shared provider → non_distinct_reviewer WARNING (not error)", () => {
+  const result = validateWorkflow(sharedProviderWorkflow(undefined));
+  assert.ok(result.ok, "should still be ok (warning only)");
+  assert.ok(
+    result.warnings.some((w) => w.code === "non_distinct_reviewer"),
+    "expected non_distinct_reviewer warning",
+  );
+  assert.ok(
+    !result.errors.some((e) => e.code === "non_distinct_reviewer"),
+    "must not be an error",
+  );
+});
+
+test("SP10a: require_distinct_reviewer: false → deprecated_distinct_reviewer_opt_out warning, no check", () => {
+  const result = validateWorkflow(sharedProviderWorkflow(false));
+  assert.ok(result.ok);
+  assert.ok(
+    result.warnings.some((w) => w.code === "deprecated_distinct_reviewer_opt_out"),
+    "expected deprecation warning",
+  );
+  assert.ok(
+    !result.warnings.some((w) => w.code === "non_distinct_reviewer"),
+    "no distinctness check when explicitly false",
+  );
+});
+
+test("SP10a: require_distinct_reviewer: true + shared provider → non_distinct_reviewer ERROR", () => {
+  const result = validateWorkflow(sharedProviderWorkflow(true));
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.code === "non_distinct_reviewer"));
+});
+
+test("SP10a: absent require_distinct_reviewer + DISTINCT providers → no warning", () => {
+  const wf = sharedProviderWorkflow(undefined);
+  wf.roles.reviewer.provider = "gemini";
+  const result = validateWorkflow(wf);
+  assert.ok(!result.warnings.some((w) => w.code === "non_distinct_reviewer"));
+});
+
+// ── SP10c: graduate experimental_per_edge_context → per_edge_context ─────────
+
+test("SP10c: per_edge_context (new key) accepted without warning", () => {
+  const wf = baseWorkflow({ executor: {} }, {
+    per_edge_context: true,
+    edge_context: { "executor:done": "full" },
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(!result.errors.some((e) => e.code === "bad_edge_context"), result.errors.map(e => e.message).join(", "));
+  assert.ok(!result.warnings.some((w) => w.code === "deprecated_experimental_flag"));
+});
+
+test("SP10c: experimental_per_edge_context (old key) emits deprecated_experimental_flag warning", () => {
+  const wf = baseWorkflow({ executor: {} }, {
+    experimental_per_edge_context: true,
+    edge_context: { "executor:done": "full" },
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(result.warnings.some((w) => w.code === "deprecated_experimental_flag"), "expected deprecated_experimental_flag");
+});
+
+test("SP10c: non-boolean per_edge_context → bad_edge_context error", () => {
+  const wf = baseWorkflow({ executor: {} }, { per_edge_context: "yes" });
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_edge_context"));
+});
+
+test("SP10c: both keys present → new key takes precedence + deprecated_experimental_flag warning fires", () => {
+  const wf = baseWorkflow({ executor: {} }, {
+    per_edge_context: true,
+    experimental_per_edge_context: false,
+    edge_context: { "executor:done": "full" },
+  });
+  const result = validateWorkflow(wf);
+  // Old key present → deprecation warning fires
+  assert.ok(
+    result.warnings.some((w) => w.code === "deprecated_experimental_flag"),
+    "expected deprecated_experimental_flag warning",
+  );
+  // New key takes precedence → per_edge_context: true means no bad_edge_context
+  assert.ok(
+    !result.errors.some((e) => e.code === "bad_edge_context"),
+    result.errors.map(e => e.message).join(", "),
+  );
+});
+
+// ── SP7: parallel_groups validation ──────────────────────────────────────────
+
+function parallelWorkflow(groups, extraRoles = {}, extraTransitions = {}) {
+  const roles = {
+    planner:   { provider: "claude" },
+    reviewerA: { provider: "gemini" },
+    reviewerB: { provider: "gemini" },
+    scoring:   { kind: "scoring", provider: "claude" },
+    ...extraRoles,
+  };
+  const transitions = {
+    planner:   { done: "reviewerA" }, // entry → first group member (remapped at build time)
+    reviewerA: { done: "scoring" },
+    reviewerB: { done: "scoring" },
+    scoring:   { passed: "$complete", blocked: "$halt" },
+    ...extraTransitions,
+  };
+  return {
+    version: 2,
+    initial: "planner",
+    roles,
+    transitions,
+    parallel_groups: groups,
+  };
+}
+
+test("SP7 validate: sibling edge inside group → bad_parallel_group", () => {
+  // reviewerA → reviewerB (sibling dependency)
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]], {}, {
+    reviewerA: { done: "reviewerB" }, // sibling edge
+    reviewerB: { done: "scoring" },
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("sibling")));
+});
+
+test("SP7 validate: scoring role in group → bad_parallel_group", () => {
+  const wf = parallelWorkflow([["reviewerA", "scoring"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("scoring")));
+});
+
+test("SP7 validate: group with only 1 member → bad_parallel_group", () => {
+  const wf = parallelWorkflow([["reviewerA"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("fewer than 2")));
+});
+
+test("SP7 validate: valid parallel group with 2 members → no bad_parallel_group", () => {
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(!result.errors.some((e) => e.code === "bad_parallel_group"), result.errors.map(e => e.message).join(", "));
+});
+
+test("SP7 validate: role not defined → bad_parallel_group (unknown member)", () => {
+  const wf = parallelWorkflow([["reviewerA", "ghost"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(result.errors.some((e) => e.code === "bad_parallel_group" && e.message.includes("ghost")));
+});
+
+test("SP7 validate: members with differing 'done' targets → bad_parallel_group", () => {
+  // Routing uses group[0]'s done edge for the whole group, so divergent done
+  // targets are a silent correctness bug and must be rejected.
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]], {
+    other: { provider: "gemini" },
+  }, {
+    reviewerA: { done: "scoring" },
+    reviewerB: { done: "other" }, // diverges from reviewerA's done target
+    other:     { done: "$complete" },
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(
+    result.errors.some((e) => e.code === "bad_parallel_group" && /differing "done"/.test(e.message)),
+    result.errors.map((e) => e.message).join(", "),
+  );
+});
+
+test("SP7 validate: members with matching 'done' targets → no bad_parallel_group", () => {
+  // Both members share done → "scoring"; the shared-done check must not fire.
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]]);
+  const result = validateWorkflow(wf);
+  assert.ok(
+    !result.errors.some((e) => e.code === "bad_parallel_group" && /differing "done"/.test(e.message)),
+    result.errors.map((e) => e.message).join(", "),
+  );
+});
+
+test("SP7 validate: one member missing 'done' while another has one → bad_parallel_group", () => {
+  // A missing done counts as the same bucket only if ALL members are missing it.
+  const wf = parallelWorkflow([["reviewerA", "reviewerB"]], {}, {
+    reviewerA: { done: "scoring" },
+    reviewerB: { error: "$halt" }, // no done transition at all
+  });
+  const result = validateWorkflow(wf);
+  assert.ok(
+    result.errors.some((e) => e.code === "bad_parallel_group" && /differing "done"/.test(e.message)),
+    result.errors.map((e) => e.message).join(", "),
+  );
 });

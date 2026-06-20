@@ -378,3 +378,53 @@ test("enforceGates: garbage input never throws; unknown keys ignored", () => {
   assert.equal(r.passed, true);
   assert.deepEqual(r.evaluated, {});
 });
+
+// ── SP8: evaluation.coverage.overall_pct wired into gate + correctness ────────
+
+test("SP8: min_coverage gate uses evaluation.coverage.overall_pct", () => {
+  const evidence = { evaluation: { coverage: { overall_pct: 82.4 }, pass_rate: 1.0, failures: [] } };
+  const { scores } = deriveScores(evidence);
+  const gates = { min_coverage: 80 };
+  const r = enforceGates(gates, scores, evidence);
+  assert.ok(r.passed, "82.4 >= 80 should pass");
+  assert.equal(r.evaluated.min_coverage.actual, 82.4);
+});
+
+test("SP8: min_coverage gate fails when overall_pct < required", () => {
+  const evidence = { evaluation: { coverage: { overall_pct: 71.1 }, pass_rate: 1.0, failures: [] } };
+  const { scores } = deriveScores(evidence);
+  const r = enforceGates({ min_coverage: 80 }, scores, evidence);
+  assert.ok(!r.passed);
+});
+
+test("SP8: min_coverage still fails closed on coverage: {}", () => {
+  const evidence = { evaluation: { coverage: {}, pass_rate: 1.0, failures: [] } };
+  const { scores } = deriveScores(evidence);
+  const r = enforceGates({ min_coverage: 80 }, scores, evidence);
+  assert.ok(!r.passed);
+  assert.equal(r.evaluated.min_coverage.actual, null);
+});
+
+test("SP8: correctness_score blends pass_rate and overall_pct/100 when both present", () => {
+  const handoffs = fullHandoffs({
+    evaluation: { pass_rate: 1.0, failures: [], coverage: { overall_pct: 80 } },
+  });
+  const { scores } = deriveScores(handoffs);
+  // (1.0 + 0.80) / 2 = 0.90
+  assert.equal(scores.correctness_score, 0.9);
+});
+
+test("SP8: correctness_score unchanged when no coverage (pass_rate only)", () => {
+  const handoffs = fullHandoffs({
+    evaluation: { pass_rate: 1.0, failures: [], coverage: {} },
+  });
+  const { scores } = deriveScores(handoffs);
+  assert.equal(scores.correctness_score, 1.0);
+});
+
+test("SP8: correctness_score = overall_pct/100 when pass_rate absent, coverage present", () => {
+  const handoffs = { evaluation: { failures: [], coverage: { overall_pct: 64 } } };
+  const { scores } = deriveScores(handoffs);
+  // pass_rate absent → missing; but coverage present → overall_pct/100 = 0.64
+  assert.equal(scores.correctness_score, 0.64);
+});

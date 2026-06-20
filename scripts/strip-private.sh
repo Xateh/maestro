@@ -5,10 +5,21 @@
 #
 # Internal artifacts, never to reach public main:
 #   - *.private.md          internal agent instructions
+#   - AGENT.md, CLAUDE.md   internal agent instructions (target + symlink);
+#                           loaded by the harness locally/on origin, stripped
+#                           before public
 #   - graphify-out/         internal knowledge-graph data (also .gitignored, and
 #                           kept on the origin-only `graphify-data` branch)
-#   - docs/internal/        private design docs — roadmap, audits, specs
+#   - docs/internal/        private design docs
+#   - docs/specs/           design/spec scratch — roadmap, audits, specs
 #                           (tracked on origin only; stripped before public)
+#   - docs/superpowers/     internal skill/agent scratch (.gitignored, but listed
+#                           here as a backstop should it ever get tracked)
+#   - .claude/              local harness config (settings.json hooks, machine-
+#                           specific paths); loaded locally/on origin, stripped
+#                           before public
+#   - scripts/{strip-private,graphify-sync,install-hooks}.sh, scripts/hooks/
+#                           the dev->public release tooling itself
 #
 # The companion CI guard (the `no-private-files` job in
 # .github/workflows/ci.yml) is the backstop: it fails any PR to public `main`
@@ -16,7 +27,10 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-mapfile -t private < <(git ls-files '*.private.md' 'graphify-out/' 'docs/internal/')
+mapfile -t private < <(git ls-files '*.private.md' 'AGENT.md' 'CLAUDE.md' \
+  'graphify-out/' 'docs/internal/' 'docs/specs/' 'docs/superpowers/' '.claude/' \
+  'scripts/strip-private.sh' 'scripts/graphify-sync.sh' \
+  'scripts/install-hooks.sh' 'scripts/hooks/')
 
 if [ "${#private[@]}" -eq 0 ]; then
   echo "strip-private: no internal artifacts tracked — nothing to remove"

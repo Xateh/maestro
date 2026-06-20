@@ -45,7 +45,9 @@ export function edgeKey(fromState, event) {
  * Returns "full" whenever the experimental flag is off (no-op guarantee).
  */
 export function resolveEdgeContextSpec(workflow, fromState, event) {
-  if (!workflow?.experimental_per_edge_context) return FULL;
+  // SP10c: prefer stable key; accept old key as migration shim
+  const perEdgeContextEnabled = workflow?.per_edge_context ?? workflow?.experimental_per_edge_context;
+  if (!perEdgeContextEnabled) return FULL;
   const map = workflow.edge_context;
   if (!map || typeof map !== "object") return FULL;
   const key = edgeKey(fromState, event);

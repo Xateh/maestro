@@ -5,28 +5,25 @@
 // failure (the stage always proceeds, no gating).
 
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 import { createBoundedTail } from "./bounded-tail.mjs";
+import { assertInsideDir } from "./fs-safe.mjs";
+import { parseCoverage } from "./coverage-parsers.mjs";
 
 const DEFAULT_TAIL_BYTES = 65_536;
 // Grace after SIGTERM before escalating to SIGKILL for a child that ignores it.
 const KILL_GRACE_MS = 2_000;
 
+const MAX_COV_BYTES = 4 * 1024 * 1024;
+
 /**
- * Run a single shell command, capturing a bounded stdout/stderr tail.
- *
- * @param {object}   opts
- * @param {string}   opts.run           - shell command string
- * @param {string}   opts.cwd           - working directory
- * @param {number}   opts.timeoutMs     - kill the child after this many ms
- * @param {object}   [opts.env]         - extra env vars layered over process.env
- * @param {number}   [opts.maxTailBytes]- output tail cap (default 65_536)
- * @param {Function} [opts.spawnProcess]- injectable spawn (default node:child_process spawn)
- * @param {object}   [opts.timers]      - injectable {setTimeout, clearTimeout} for determinism
- * @returns {Promise<{exit_code, signal, stdout, stderr, timed_out, spawn_error?}>}
- *   Always resolves; never rejects.
+ * Private: run the child process and return a result object.
+ * Same logic as the original commandRunner body, extracted so the public
+ * async wrapper can await it before doing post-exit I/O.
  */
-export function commandRunner({
+function _runProcess({
   run,
   cwd,
   timeoutMs,
@@ -109,4 +106,58 @@ export function commandRunner({
       });
     });
   });
+}
+
+/**
+ * Run a single shell command, capturing a bounded stdout/stderr tail.
+ * Optionally reads a coverage file after the command exits.
+ *
+ * @param {object}   opts
+ * @param {string}   opts.run           - shell command string
+ * @param {string}   opts.cwd           - working directory
+ * @param {number}   opts.timeoutMs     - kill the child after this many ms
+ * @param {object}   [opts.env]         - extra env vars layered over process.env
+ * @param {number}   [opts.maxTailBytes]- output tail cap (default 65_536)
+ * @param {Function} [opts.spawnProcess]- injectable spawn (default node:child_process spawn)
+ * @param {object}   [opts.timers]      - injectable {setTimeout, clearTimeout} for determinism
+ * @param {object}   [opts.coverageSpec]- { format, path, pct? } — read coverage after exit
+ * @returns {Promise<{exit_code, signal, stdout, stderr, timed_out, spawn_error?, coverage_pct?, coverage_parse_error?}>}
+ *   Always resolves; never rejects.
+ */
+export async function commandRunner(opts) {
+  const {
+    run,
+    cwd,
+    timeoutMs,
+    env = {},
+    maxTailBytes = DEFAULT_TAIL_BYTES,
+    spawnProcess = spawn,
+    timers = { setTimeout, clearTimeout },
+    coverageSpec = null,
+  } = opts;
+
+  const result = await _runProcess({ run, cwd, timeoutMs, env, maxTailBytes, spawnProcess, timers });
+
+  // Post-exit: read coverage file (best-effort, bounded)
+  if (coverageSpec?.format && coverageSpec?.path) {
+    try {
+      const absPath = path.resolve(cwd, coverageSpec.path);
+      assertInsideDir(cwd, absPath);
+      const { size } = await fs.stat(absPath);
+      if (size > MAX_COV_BYTES) {
+        throw new Error("coverage file exceeds 4 MB limit");
+      }
+      const raw = await fs.readFile(absPath, { encoding: "utf8" });
+      const parsed = parseCoverage(coverageSpec.format, raw, { pct: coverageSpec.pct });
+      if (parsed !== null) {
+        result.coverage_pct = parsed.pct;
+      } else {
+        result.coverage_parse_error = `coverage parse failed for format "${coverageSpec.format}"`;
+      }
+    } catch (err) {
+      result.coverage_parse_error = err?.message ?? String(err);
+    }
+  }
+
+  return result;
 }

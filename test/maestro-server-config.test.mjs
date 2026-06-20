@@ -92,11 +92,11 @@ test("validateServerConfig rejects bad tracker config (no codex check)", () => {
   );
   assert.equal(validateServerConfig(base()), true);
 
-  const notLinear = resolveServerConfig(
-    { server: { tracker: { kind: "github", api_key: "$K", project_slug: "p" } } },
+  const unsupported = resolveServerConfig(
+    { server: { tracker: { kind: "jira", api_key: "$K", project_slug: "p" } } },
     { env: { K: "tok" }, baseDir },
   );
-  assert.throws(() => validateServerConfig(notLinear), /unsupported_tracker_kind/);
+  assert.throws(() => validateServerConfig(unsupported), /unsupported_tracker_kind/);
 
   const noKey = resolveServerConfig(
     { server: { tracker: { kind: "linear", project_slug: "p" } } },
