@@ -77,6 +77,51 @@ export class GitHubTrackerClient {
     return items.map(normalizeGitHubIssue);
   }
 
+  // Orchestrator adapter: delegates to fetchCandidates (activeStates unused for
+  // GitHub — issues are filtered by label, not state names).
+  async fetchCandidateIssues(_activeStates) {
+    return this.fetchCandidates();
+  }
+
+  // Orchestrator adapter: re-fetch individual issues by numeric id/number to get
+  // current state ("open" / "closed"). GitHub has no batch endpoint, so we fan
+  // out sequentially; the list is at most maxConcurrentAgents long.
+  async fetchIssueStatesByIds(issueIds) {
+    if (!Array.isArray(issueIds) || issueIds.length === 0) return [];
+    const results = [];
+    for (const id of issueIds) {
+      // id is stored as String(raw.number) by normalizeGitHubIssue
+      const url = `https://api.github.com/repos/${this.owner}/${this.repo}/issues/${id}`;
+      let response;
+      try {
+        response = await this.fetchImpl(url, { headers: this._headers() });
+      } catch (err) {
+        throw trackerError("github_api_request", err.message, err);
+      }
+      if (!response.ok) throw trackerError("github_api_status", String(response.status));
+      await this._checkRateLimit(response);
+      const raw = await response.json();
+      results.push(normalizeGitHubIssue(raw));
+    }
+    return results;
+  }
+
+  // Orchestrator adapter: close the issue when status is "succeeded"; for other
+  // statuses (waiting_user / waiting_approval) add a label. GitHub has no
+  // workflow-state concept, so stateName is interpreted as an action keyword:
+  //   "closed" / "done"  → close the issue
+  //   anything else      → add as a label
+  async transitionIssue(issueId, stateName) {
+    if (!issueId || !stateName) return false;
+    const lower = String(stateName).toLowerCase();
+    if (lower === "closed" || lower === "done") {
+      await this.closeIssue(issueId);
+    } else {
+      await this.addLabel(issueId, stateName);
+    }
+    return true;
+  }
+
   async commentOnIssue(number, body) {
     const url = `https://api.github.com/repos/${this.owner}/${this.repo}/issues/${number}/comments`;
     const response = await this.fetchImpl(url, {

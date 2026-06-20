@@ -1,4 +1,5 @@
 import { nullLogger } from "./logger.mjs";
+import { sendNotification } from "./notify.mjs";
 
 function stateKey(value) {
   return String(value ?? "").toLowerCase();
@@ -164,13 +165,26 @@ export class MaestroOrchestrator {
     try {
       const result = await this.runner.run({ issue, attempt, continuation, onActivity });
       this.addMetrics(result?.metrics, Date.now() - startedAtMs);
+      const runStatus = result?.status ?? "succeeded";
       this.runtime.completed.set(issue.id, {
         issue,
         issue_identifier: issue.identifier,
-        status: result?.status ?? "succeeded",
+        status: runStatus,
         completed_at: nowIso(),
       });
-      await this.applyTransition(issue, result?.status ?? "succeeded");
+      await this.applyTransition(issue, runStatus);
+      // Best-effort outbound notification — fire and forget, never throws.
+      const notifyConfig = this.config.notify;
+      if (notifyConfig) {
+        const notifyEvent =
+          runStatus === "succeeded" ? "completed"
+          : runStatus === "waiting_approval" ? "approval_needed"
+          : (runStatus === "failed" || runStatus === "waiting_user") ? "halted"
+          : null;
+        if (notifyEvent) {
+          sendNotification(notifyEvent, issue, notifyConfig).catch(() => {});
+        }
+      }
       // Re-dispatch at the polling interval (not 1 s) so we don't hammer
       // fetchIssueStatesByIds on every active run. The timer fires even on
       // "succeeded" so the tracker can detect external state changes (R4).

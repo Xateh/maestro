@@ -99,6 +99,8 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
 
   const trackerKind = tracker.kind ?? DEFAULT_SERVER_CONFIG.tracker.kind;
   const trackerApiKey = resolveDollarValue(tracker.api_key ?? env.LINEAR_API_KEY ?? null, env);
+  const trackerToken = resolveDollarValue(tracker.token ?? env.GITHUB_TOKEN ?? null, env);
+  const notify = asObject(raw.notify) ? raw.notify : null;
   const workspaceRoot = expandPathValue(
     workspace.root ?? DEFAULT_SERVER_CONFIG.workspace.root,
     { env, baseDir },
@@ -122,11 +124,21 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
       endpoint: tracker.endpoint ?? (trackerKind === "linear" ? "https://api.linear.app/graphql" : null),
       apiKey: trackerApiKey,
       projectSlug: tracker.project_slug ?? DEFAULT_SERVER_CONFIG.tracker.project_slug,
+      // GitHub-specific fields
+      owner: tracker.owner ?? null,
+      repo: tracker.repo ?? null,
+      label: tracker.label ?? "maestro",
+      token: trackerToken,
       activeStates: listOfStrings(tracker.active_states, DEFAULT_ACTIVE_STATES),
       terminalStates: listOfStrings(tracker.terminal_states, DEFAULT_TERMINAL_STATES),
       doneState: tracker.done_state || null,
       blockedState: tracker.blocked_state || null,
     },
+    notify: notify ? {
+      on: Array.isArray(notify.on) ? notify.on : [],
+      url: notify.url ?? null,
+      format: notify.format ?? "generic",
+    } : null,
     polling: {
       intervalMs: positiveInteger(polling.interval_ms, 30_000, "invalid_poll_interval"),
     },
@@ -154,27 +166,47 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
 // Validate a resolved server config. No codex check (sandboxing moved to the
 // graph engine's adapters).
 export function validateServerConfig(config) {
-  if (config.tracker.kind !== "linear") {
+  const { kind } = config.tracker;
+  if (kind !== "linear" && kind !== "github") {
     // The two failure shapes read very differently to a first-time user: a
     // totally unconfigured tracker (kind absent) vs. an explicit but bad kind.
     // Either way point at the wizard that fixes it.
-    const detail = config.tracker.kind
-      ? `${config.tracker.kind} (only "linear" is supported) — run \`maestro setup tracker\` to configure it`
+    const detail = kind
+      ? `${kind} (only "linear" and "github" are supported) — run \`maestro setup tracker\` to configure it`
       : "no tracker configured — run `maestro setup tracker` to set up Linear (or pass --config <path>)";
     throw typedError("unsupported_tracker_kind", detail);
   }
-  if (!config.tracker.apiKey) {
-    throw typedError(
-      "missing_tracker_api_key",
-      "set LINEAR_API_KEY (or run `maestro setup keys --var LINEAR_API_KEY`, or rerun `maestro setup tracker`)",
-    );
+
+  if (kind === "linear") {
+    if (!config.tracker.apiKey) {
+      throw typedError(
+        "missing_tracker_api_key",
+        "set LINEAR_API_KEY (or run `maestro setup keys --var LINEAR_API_KEY`, or rerun `maestro setup tracker`)",
+      );
+    }
+    if (!config.tracker.projectSlug) {
+      throw typedError(
+        "missing_tracker_project_slug",
+        "run `maestro setup tracker --project-slug <slug>`",
+      );
+    }
   }
-  if (!config.tracker.projectSlug) {
-    throw typedError(
-      "missing_tracker_project_slug",
-      "run `maestro setup tracker --project-slug <slug>`",
-    );
+
+  if (kind === "github") {
+    if (!config.tracker.owner || !config.tracker.repo) {
+      throw typedError(
+        "missing_github_owner_repo",
+        "set server.tracker.owner and server.tracker.repo in config.json",
+      );
+    }
+    if (!config.tracker.token) {
+      throw typedError(
+        "missing_github_token",
+        "set GITHUB_TOKEN (or server.tracker.token in config.json)",
+      );
+    }
   }
+
   if (config.tracker.doneState !== null && typeof config.tracker.doneState !== "string") {
     throw typedError("invalid_tracker_done_state", "expected string or null");
   }
