@@ -620,3 +620,22 @@ test("SP10c: non-boolean per_edge_context → bad_edge_context error", () => {
   const result = validateWorkflow(wf);
   assert.ok(result.errors.some((e) => e.code === "bad_edge_context"));
 });
+
+test("SP10c: both keys present → new key takes precedence + deprecated_experimental_flag warning fires", () => {
+  const wf = baseWorkflow({ executor: {} }, {
+    per_edge_context: true,
+    experimental_per_edge_context: false,
+    edge_context: { "executor:done": "full" },
+  });
+  const result = validateWorkflow(wf);
+  // Old key present → deprecation warning fires
+  assert.ok(
+    result.warnings.some((w) => w.code === "deprecated_experimental_flag"),
+    "expected deprecated_experimental_flag warning",
+  );
+  // New key takes precedence → per_edge_context: true means no bad_edge_context
+  assert.ok(
+    !result.errors.some((e) => e.code === "bad_edge_context"),
+    result.errors.map(e => e.message).join(", "),
+  );
+});
