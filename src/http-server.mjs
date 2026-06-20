@@ -684,8 +684,8 @@ export function createMaestroHttpHandler({ orchestrator, host = "127.0.0.1", rat
   };
 }
 
-export async function startMaestroHttpServer({ orchestrator, taskStore, port, host = "127.0.0.1" }) {
-  const server = http.createServer(createMaestroHttpHandler({ orchestrator, taskStore, host }));
+export async function startMaestroHttpServer({ orchestrator, taskStore, port, host = "127.0.0.1", config }) {
+  const server = http.createServer(createMaestroHttpHandler({ orchestrator, taskStore, host, config }));
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);

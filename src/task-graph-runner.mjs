@@ -94,11 +94,14 @@ export class TaskGraphRunner {
     }
 
     const metrics = result?.task?.metrics ?? undefined;
+    const taskWorkflow = result?.task?.workflow ?? null;
+    const taskReview = result?.task?.review ?? {};
+    const taskStatus = status;
     if (CONTINUATION_STATUSES.has(status)) {
-      return { status: "succeeded", continuation: true, metrics };
+      return { status: "succeeded", continuation: true, metrics, taskStatus, taskWorkflow, taskReview };
     }
     if (SUCCEEDED_STATUSES.has(status)) {
-      return { status: "succeeded", metrics };
+      return { status: "succeeded", metrics, taskStatus, taskWorkflow, taskReview };
     }
     // Unknown status: treat conservatively as a failure so the orchestrator retries.
     const error = new Error(`graph_task_unknown_status_${status}`);

@@ -143,10 +143,11 @@ export async function commandRunner(opts) {
     try {
       const absPath = path.resolve(cwd, coverageSpec.path);
       assertInsideDir(cwd, absPath);
-      const raw = await fs.readFile(absPath, { encoding: "utf8" });
-      if (Buffer.byteLength(raw, "utf8") > MAX_COV_BYTES) {
+      const { size } = await fs.stat(absPath);
+      if (size > MAX_COV_BYTES) {
         throw new Error("coverage file exceeds 4 MB limit");
       }
+      const raw = await fs.readFile(absPath, { encoding: "utf8" });
       const parsed = parseCoverage(coverageSpec.format, raw, { pct: coverageSpec.pct });
       if (parsed !== null) {
         result.coverage_pct = parsed.pct;

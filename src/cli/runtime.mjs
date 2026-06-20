@@ -123,6 +123,7 @@ export async function startMaestro({
       taskStore,
       port: effectivePort,
       host: "127.0.0.1",
+      config: serverConfig,
     });
   if (httpServer) {
     logger.info("maestro_http_started", { host: httpServer.host, port: httpServer.port });

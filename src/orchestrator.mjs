@@ -176,17 +176,22 @@ export class MaestroOrchestrator {
       // Best-effort outbound notification — fire and forget, never throws.
       const notifyConfig = this.config.notify;
       if (notifyConfig) {
+        // Use the real task status from the runner (taskStatus) when available.
+        // TaskGraphRunner maps waiting_user/waiting_approval → succeeded before
+        // returning runStatus, so we must read the pre-mapped status it passes
+        // back as taskStatus to correctly fire approval_needed / halted events.
+        const realStatus = result?.taskStatus ?? runStatus;
         const notifyEvent =
-          runStatus === "succeeded" ? "completed"
-          : runStatus === "waiting_approval" ? "approval_needed"
-          : (runStatus === "failed" || runStatus === "waiting_user") ? "halted"
+          (realStatus === "succeeded" || realStatus === "done") ? "completed"
+          : realStatus === "waiting_approval" ? "approval_needed"
+          : (realStatus === "failed" || realStatus === "waiting_user") ? "halted"
           : null;
         if (notifyEvent) {
           const task = {
             id: issue.id,
-            status: runStatus,
-            workflow: result?.workflow ?? null,
-            review: result?.review ?? {},
+            status: realStatus,
+            workflow: result?.taskWorkflow ?? null,
+            review: result?.taskReview ?? {},
           };
           sendNotification(notifyEvent, task, notifyConfig).catch(() => {});
         }
