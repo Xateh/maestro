@@ -96,6 +96,7 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
   const workspace = asObject(raw.workspace) ? raw.workspace : {};
   const hooks = asObject(raw.hooks) ? raw.hooks : {};
   const agent = asObject(raw.agent) ? raw.agent : {};
+  const ephemeral = asObject(raw.ephemeral) ? raw.ephemeral : {};
 
   const trackerKind = tracker.kind ?? DEFAULT_SERVER_CONFIG.tracker.kind;
   const trackerApiKey = resolveDollarValue(tracker.api_key ?? env.LINEAR_API_KEY ?? null, env);
@@ -159,6 +160,15 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
       stallTimeoutMs: nonNegativeInteger(agent.stall_timeout_ms, 300_000, "invalid_stall_timeout"),
       maxConcurrentAgentsByState,
     },
+    ephemeral: {
+      enabled: ephemeral.enabled === true,
+      commandAllowlist: listOfStrings(ephemeral.command_allowlist, []),
+      providerAllowlist: listOfStrings(ephemeral.provider_allowlist, []),
+      maxFanout: ephemeral.max_fanout === undefined ? 4 : Number(ephemeral.max_fanout),
+      sandbox: ephemeral.sandbox ?? "required",
+      gateRelaxation: ephemeral.gate_relaxation ?? "forbid",
+      budget: asObject(ephemeral.budget) ? ephemeral.budget : {},
+    },
     intakeTemplate: raw.intake_template ?? DEFAULT_SERVER_CONFIG.intake_template,
   };
 }
@@ -213,5 +223,19 @@ export function validateServerConfig(config) {
   if (config.tracker.blockedState !== null && typeof config.tracker.blockedState !== "string") {
     throw typedError("invalid_tracker_blocked_state", "expected string or null");
   }
+
+  const eph = config.ephemeral;
+  if (eph) {
+    if (eph.sandbox !== "required" && eph.sandbox !== "optional") {
+      throw typedError("invalid_ephemeral_sandbox", `expected "required" or "optional", got ${eph.sandbox}`);
+    }
+    if (eph.gateRelaxation !== "forbid" && eph.gateRelaxation !== "allow") {
+      throw typedError("invalid_ephemeral_gate_relaxation", `expected "forbid" or "allow", got ${eph.gateRelaxation}`);
+    }
+    if (!Number.isInteger(eph.maxFanout) || eph.maxFanout <= 0) {
+      throw typedError("invalid_ephemeral_max_fanout", `expected positive integer, got ${eph.maxFanout}`);
+    }
+  }
+
   return true;
 }
