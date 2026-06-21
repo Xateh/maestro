@@ -65,6 +65,30 @@ test("resolveServerConfig resolves agent.max_concurrent_roles (default 4)", () =
   assert.equal(set.agent.maxConcurrentRoles, 2);
 });
 
+test("resolveServerConfig resolves per-provider rate_limit to providers", () => {
+  const resolved = resolveServerConfig({
+    server: {
+      providers: {
+        github: { rate_limit: { capacity: 10, refill_per_sec: 1000 } },
+        claude: {},
+      },
+    },
+  }, { baseDir });
+
+  assert.deepEqual(resolved.providers, {
+    github: { capacity: 10, refillPerSec: 1000 },
+  });
+});
+
+test("resolveServerConfig rejects invalid provider rate_limit numbers", () => {
+  assert.throws(
+    () => resolveServerConfig({
+      server: { providers: { github: { rate_limit: { capacity: "x", refill_per_sec: 10 } } } },
+    }, { baseDir }),
+    /invalid_provider_rate_limit/,
+  );
+});
+
 test("resolveServerConfig rejects non-positive max_concurrent_roles", () => {
   assert.throws(
     () => resolveServerConfig({ server: { agent: { max_concurrent_roles: 0 } } }, { baseDir }),

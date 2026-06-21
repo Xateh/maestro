@@ -47,6 +47,14 @@ function nonNegativeInteger(value, fallback, code) {
   return parsed;
 }
 
+function positiveIntegerOrThrow(value, code) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw typedError(code, `expected positive integer, got ${value}`);
+  }
+  return parsed;
+}
+
 function listOfStrings(value, fallback) {
   if (!Array.isArray(value)) return fallback;
   return value.filter((item) => typeof item === "string");
@@ -96,6 +104,7 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
   const workspace = asObject(raw.workspace) ? raw.workspace : {};
   const hooks = asObject(raw.hooks) ? raw.hooks : {};
   const agent = asObject(raw.agent) ? raw.agent : {};
+  const providers = asObject(raw.providers) ? raw.providers : {};
 
   const trackerKind = tracker.kind ?? DEFAULT_SERVER_CONFIG.tracker.kind;
   const trackerApiKey = resolveDollarValue(tracker.api_key ?? env.LINEAR_API_KEY ?? null, env);
@@ -114,6 +123,20 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
         maxConcurrentAgentsByState[state.toLowerCase()] = parsed;
       }
     }
+  }
+
+  const resolvedProviders = {};
+  for (const [provider, providerConfig] of Object.entries(providers)) {
+    if (!asObject(providerConfig)) continue;
+    const rateLimit = providerConfig.rate_limit;
+    if (!rateLimit) continue;
+    if (!asObject(rateLimit)) {
+      throw typedError("invalid_provider_rate_limit", `expected server.providers.${provider}.rate_limit to be an object`);
+    }
+    resolvedProviders[provider] = {
+      capacity: positiveIntegerOrThrow(rateLimit.capacity, "invalid_provider_rate_limit"),
+      refillPerSec: positiveIntegerOrThrow(rateLimit.refill_per_sec, "invalid_provider_rate_limit"),
+    };
   }
 
   return {
@@ -160,6 +183,7 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
       stallTimeoutMs: nonNegativeInteger(agent.stall_timeout_ms, 300_000, "invalid_stall_timeout"),
       maxConcurrentAgentsByState,
     },
+    providers: resolvedProviders,
     intakeTemplate: raw.intake_template ?? DEFAULT_SERVER_CONFIG.intake_template,
   };
 }
