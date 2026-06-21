@@ -198,6 +198,15 @@ export const DEFAULT_SERVER_CONFIG = {
     stall_timeout_ms: 300_000,
     max_concurrent_agents_by_state: {},
   },
+  ephemeral: {
+    enabled: false,
+    command_allowlist: [],
+    provider_allowlist: [],
+    max_fanout: 4,
+    sandbox: "required",
+    gate_relaxation: "forbid",
+    budget: {},
+  },
   intake_template: DEFAULT_INTAKE_TEMPLATE,
 };
 

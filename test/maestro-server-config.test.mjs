@@ -81,6 +81,37 @@ test("resolveServerConfig falls back to defaults when the block is missing", () 
   assert.equal(resolved.intakeTemplate, DEFAULT_INTAKE_TEMPLATE);
 });
 
+test("resolveServerConfig defaults server.ephemeral to closed", () => {
+  const e = resolveServerConfig({ server: {} }, { baseDir }).ephemeral;
+  assert.equal(e.enabled, false);
+  assert.deepEqual(e.commandAllowlist, []);
+  assert.deepEqual(e.providerAllowlist, []);
+  assert.equal(e.maxFanout, 4);
+  assert.equal(e.sandbox, "required");
+  assert.equal(e.gateRelaxation, "forbid");
+});
+
+test("resolveServerConfig resolves a populated server.ephemeral block", () => {
+  const e = resolveServerConfig({
+    server: {
+      ephemeral: {
+        enabled: true,
+        command_allowlist: ["npm test", "npm run *"],
+        provider_allowlist: ["claude", "codex"],
+        max_fanout: 2,
+        sandbox: "optional",
+        gate_relaxation: "allow",
+      },
+    },
+  }, { baseDir }).ephemeral;
+  assert.equal(e.enabled, true);
+  assert.deepEqual(e.commandAllowlist, ["npm test", "npm run *"]);
+  assert.deepEqual(e.providerAllowlist, ["claude", "codex"]);
+  assert.equal(e.maxFanout, 2);
+  assert.equal(e.sandbox, "optional");
+  assert.equal(e.gateRelaxation, "allow");
+});
+
 test("validateServerConfig rejects bad tracker config (no codex check)", () => {
   const base = () => resolveServerConfig(
     {
@@ -109,6 +140,17 @@ test("validateServerConfig rejects bad tracker config (no codex check)", () => {
     { env: { K: "tok" }, baseDir },
   );
   assert.throws(() => validateServerConfig(noSlug), /missing_tracker_project_slug/);
+});
+
+test("validateServerConfig rejects bad ephemeral enums and max_fanout", () => {
+  const base = { tracker: { kind: "linear", api_key: "$K", project_slug: "p" } };
+  const mk = (ephemeral) => resolveServerConfig(
+    { server: { ...base, ephemeral: { enabled: true, ...ephemeral } } },
+    { env: { K: "tok" }, baseDir },
+  );
+  assert.throws(() => validateServerConfig(mk({ sandbox: "nope" })), /invalid_ephemeral_sandbox/);
+  assert.throws(() => validateServerConfig(mk({ gate_relaxation: "nope" })), /invalid_ephemeral_gate_relaxation/);
+  assert.throws(() => validateServerConfig(mk({ max_fanout: 0 })), /invalid_ephemeral_max_fanout/);
 });
 
 test("renderPrompt renders strict liquid and rejects unknown variables", async () => {
