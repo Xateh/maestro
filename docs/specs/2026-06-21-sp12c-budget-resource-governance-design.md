@@ -216,10 +216,21 @@ Concurrency-cap and rate-limiter config errors (non-positive `max_concurrent_rol
 | Capability | 0.4.2 (SP12c) | 0.4.3 (SP12e) |
 |------------|---------------|---------------|
 | Concurrency cap + queue (`max_concurrent_roles`) | **ships, live** | inherited |
-| Live cost accounting (`cost_update` stage event) | **ships, live** | consumed by kill-switch |
+| Cost aggregation primitive (`accumulateCost` + `priceFor`) | **ships, unit-tested** | feeds the kill-switch |
+| Live `cost_update` event emission | — *(deferred — see note)* | **ships** (its first consumer) |
 | Per-provider rate limiter | **ships, live** | inherited |
 | `budget` spec + `validateBudget` + error codes | **ships, unit-tested** | called on real run request |
 | Budget kill-switch (breach → cancel → `budget_exceeded` + partials) | — | **ships** |
+
+> **Implementation note (deferred emission).** Maestro's stage-event stream is a *pure
+> projection of `steps[]`* (`src/stage-events.mjs`) — there is no separate events table.
+> Emitting a discrete `cost_update` event therefore means appending a per-role pseudo-step,
+> which pollutes every run's step list (and `inspect`/`compare`) with no live reader in
+> 0.4.2 (the kill-switch and orchestrator that consume it are SP12e/SP12f). Per-step
+> `tokens` already ride the existing stage events, and `accumulateCost` derives the running
+> total on demand, so **no data is lost**. The live emission lands with its first consumer
+> in SP12e. The pure aggregation primitives (`accumulateCost`, `priceFor`) ship and are
+> unit-tested now.
 
 The roadmap is updated so the SP12c section records that the budget kill-switch is
 **elevated to full enforcement at 0.4.3 / SP12e**, while parts 1–3 are already live in
