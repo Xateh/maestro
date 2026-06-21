@@ -53,17 +53,21 @@ test("fetchCandidates: returns normalized issues with matching label", async () 
 });
 
 test("fetchCandidates: backs off when x-ratelimit-remaining <= 10", async () => {
-  let calledDelay = false;
+  let calledLimiter = false;
   const raw = [{ id: 1, number: 1, title: "T", body: "", state: "open",
     labels: [{ name: "maestro" }], html_url: "http://gh/1",
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }];
   const client = new GitHubTrackerClient({
     owner: "acme", repo: "backend", label: "maestro", token: "ghp_fake",
     fetchImpl: makeMockFetch(raw, { "x-ratelimit-remaining": "5" }),
-    backoffFn: async () => { calledDelay = true; }, // injectable for test
+    providerLimiter: {
+      acquire: async () => {
+        calledLimiter = true;
+      },
+    },
   });
   await client.fetchCandidates();
-  assert.ok(calledDelay, "backoff should be called when rate limit is low");
+  assert.ok(calledLimiter, "acquire should be called when rate limit is low");
 });
 
 test("fetchCandidates: non-ok response throws github_api_status error", async () => {

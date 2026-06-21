@@ -19,6 +19,7 @@ import { StateGraph, START, END, MemorySaver } from "@langchain/langgraph";
 import { MaestroState } from "./state.mjs";
 import { makeRoleNode, makeRoleNodeFn } from "./nodes.mjs";
 import { isSink } from "../state-machine.mjs";
+import { runPool } from "../async-pool.mjs";
 
 /**
  * Build a group node function that runs all group members concurrently via
@@ -53,8 +54,10 @@ function buildGroupNode(gi, group, workflow, config, opts) {
     const start = Date.now();
 
     // Run all members concurrently
-    const settled = await Promise.allSettled(
-      memberFns.map(({ fn }) => fn(state, lgConfig)),
+    const settled = await runPool(
+      memberFns,
+      opts.maxConcurrentRoles ?? 0,
+      ({ fn }) => fn(state, lgConfig),
     );
 
     // Merge results
@@ -144,7 +147,20 @@ function buildGroupNode(gi, group, workflow, config, opts) {
  * @param {object}          opts.ops     - injected project-mode helpers (bound per call)
  * @returns {CompiledStateGraph}
  */
-export function buildGraph(workflow, config, { db, runner, ops = {}, entry = null, resumeCompletedRoles = null, availabilityProbe = null, advisoryEmitted = new Set() }) {
+export function buildGraph(
+  workflow,
+  config,
+  {
+    db,
+    runner,
+    ops = {},
+    entry = null,
+    resumeCompletedRoles = null,
+    availabilityProbe = null,
+    advisoryEmitted = new Set(),
+    maxConcurrentRoles = 0,
+  } = {},
+) {
   const graph = new StateGraph(MaestroState);
 
   // ── resolve parallel groups ───────────────────────────────────────────────
@@ -172,6 +188,12 @@ export function buildGraph(workflow, config, { db, runner, ops = {}, entry = nul
           db, runner, ops, availabilityProbe,
           contextRetryLimit: config.context_retry_limit ?? 1,
           resumeCompletedRoles, advisoryEmitted,
+          maxConcurrentRoles:
+            maxConcurrentRoles
+            ?? config.server?.agent?.maxConcurrentRoles
+            ?? config.server?.agent?.max_concurrent_roles
+            ?? config.max_concurrent_roles
+            ?? 0,
         };
         graph.addNode(groupNodeName, buildGroupNode(gi, group, workflow, config, groupOpts));
       }
