@@ -7,6 +7,9 @@ function issue(code, message) {
 
 const norm = (s) => String(s ?? "").trim().replace(/\s+/g, " ");
 
+const BOOL_GATES = ["require_distinct_reviewer", "output_schema_conformance"];
+const NUMERIC_FLOORS = ["min_coverage"];
+
 export function matchCommand(candidate, allowlist = []) {
   const c = norm(candidate);
   return allowlist.some((entry) => {
@@ -25,4 +28,20 @@ export function matchCommand(candidate, allowlist = []) {
     }
     return c === norm(e);
   });
+}
+
+export function gatesAreWeaker(ephemeral = {}, baseline = {}) {
+  const reasons = [];
+  for (const g of BOOL_GATES) {
+    if (baseline[g] === true && ephemeral[g] === false) {
+      reasons.push(`gate "${g}" may not be disabled (baseline requires it)`);
+    }
+  }
+  for (const g of NUMERIC_FLOORS) {
+    if (baseline[g] !== undefined && ephemeral[g] !== undefined
+        && Number(ephemeral[g]) < Number(baseline[g])) {
+      reasons.push(`gate "${g}" (${ephemeral[g]}) is below baseline floor (${baseline[g]})`);
+    }
+  }
+  return reasons;
 }
