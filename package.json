@@ -1,6 +1,6 @@
 {
   "name": "maestro-orchestrator",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "A harness for precise, auditable agent workflows — compose a graph of roles, drive the CLI agents already on your machine, with typed, gated, replayable handoffs. Built on LangGraph.",
   "repository": {
     "type": "git",
