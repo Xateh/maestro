@@ -193,6 +193,7 @@ export const DEFAULT_SERVER_CONFIG = {
   },
   agent: {
     max_concurrent_agents: 10,
+    max_concurrent_roles: 4,
     max_turns: 20,
     max_retry_backoff_ms: 300_000,
     stall_timeout_ms: 300_000,

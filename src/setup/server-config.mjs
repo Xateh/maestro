@@ -154,6 +154,7 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
     },
     agent: {
       maxConcurrentAgents: positiveInteger(agent.max_concurrent_agents, 10, "invalid_max_concurrent_agents"),
+      maxConcurrentRoles: positiveInteger(agent.max_concurrent_roles, 4, "invalid_max_concurrent_roles"),
       maxTurns: positiveInteger(agent.max_turns, 20, "invalid_max_turns"),
       maxRetryBackoffMs: positiveInteger(agent.max_retry_backoff_ms, 300_000, "invalid_max_retry_backoff_ms"),
       stallTimeoutMs: nonNegativeInteger(agent.stall_timeout_ms, 300_000, "invalid_stall_timeout"),

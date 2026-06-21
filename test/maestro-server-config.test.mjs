@@ -54,6 +54,24 @@ test("resolveServerConfig resolves the full server block to effective values", (
   assert.equal(resolved.intakeTemplate, "Issue {{ issue.identifier }} attempt {{ attempt }}.");
 });
 
+test("resolveServerConfig resolves agent.max_concurrent_roles (default 4)", () => {
+  const def = resolveServerConfig({ server: {} }, { baseDir });
+  assert.equal(def.agent.maxConcurrentRoles, 4);
+
+  const set = resolveServerConfig(
+    { server: { agent: { max_concurrent_roles: 2 } } },
+    { baseDir },
+  );
+  assert.equal(set.agent.maxConcurrentRoles, 2);
+});
+
+test("resolveServerConfig rejects non-positive max_concurrent_roles", () => {
+  assert.throws(
+    () => resolveServerConfig({ server: { agent: { max_concurrent_roles: 0 } } }, { baseDir }),
+    /invalid_max_concurrent_roles/,
+  );
+});
+
 test("resolveServerConfig expands ~ and $VAR in workspace.root", () => {
   const home = os.homedir();
   const a = resolveServerConfig(
