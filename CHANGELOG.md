@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-21
+
+The first 0.4.x train stop for SP12 (ephemeral, agent-authored workflows). It lands
+the two prerequisites that have no SP7 dependency — the **authoring surface** (SP12a)
+and the **provider registry** (SP12d). Both are authoring/preflight primitives: they
+let an agent write and check a workflow before any ephemeral run core exists. Nothing
+in this release *executes* a workflow; that is SP12e (0.4.3).
+
+### Added
+
+- **Published workflow JSON Schema — `schema/workflow.schema.json`.** The full
+  workflow document is now described by a canonical JSON Schema, exposed to MCP
+  clients as a resource at `maestro://schema/workflow.json`. An authoring agent can
+  fetch the schema, generate a workflow against it, and validate locally before
+  submission.
+- **`maestro_validate_workflow` MCP tool.** Validates a workflow either inline (a
+  JSON document passed directly) or from disk (a path), returning structured
+  validation codes so an agent can run a repair loop. Bounded by a
+  `max_validate_attempts` guard with an explicit recovery path.
+- **`maestro_list_providers` MCP tool + provider registry
+  (`src/provider-registry.mjs`).** Enumerates configured providers with capability
+  flags (`src/adapters/capabilities.mjs`) and best-effort auth preflight, so an
+  authoring agent can target only providers that are actually available. The
+  registry/preflight primitives land here; the run-time enforcement of provider
+  validation codes arrives with the ephemeral run core (SP12e).
+- **Exemplar workflow library — `examples/`.** Canonical, schema-valid workflows an
+  agent (or a human) can copy from: `default`, `parallel-group`, `github-tracker`,
+  and `full-audit-sweep`.
+
+### Fixed
+
+- **herdr provider-alias resolution.** Aliases (e.g. `xcodex`) are now resolved via
+  `bash -ic` so the alias expands from the interactive shell; previously the runner
+  exited 127 because the alias was not on `PATH` in a non-interactive shell.
+
 ## [0.4.0] - 2026-06-20
 
 ### Added
@@ -74,6 +109,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   review` pipeline.** `docs/role-convention.md` now frames that flow as just the
   stock graph, consistent with the README's positioning. Documentation only — no
   behavior or API change.
+- **0.4.0 roadmap gains SP12 — ephemeral (agent-authored) workflows.** Planning
+  only (internal roadmap spec); no code or API change. Captures on-the-fly,
+  agent-generated one-time workflows — a calling agent acts as planner → dispatch
+  → orchestrator over the existing MCP surface — decomposed into a 0.4.x
+  point-release train (SP12a–g): authoring surface, provider registry, safety
+  policy, budget/resource governance, run core, orchestration surface, and a
+  client skill/plugin reference.
+- **Internal planning/spec docs under `docs/superpowers/` are no longer tracked.**
+  They predated the `.gitignore` rule and were still committed; untracked now and
+  a `.gitattributes export-ignore` keeps the tree out of `git archive` release
+  tarballs. Files remain locally; history is unchanged (they document shipped
+  v0.3.0 features).
 
 ## [0.3.0] - 2026-06-19
 

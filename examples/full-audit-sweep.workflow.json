@@ -1,0 +1,159 @@
+{
+  "version": 2,
+  "initial": "implementation",
+  "parallel_groups": [["static_analysis", "review", "threat_model", "edge_cases"]],
+  "loop_limits": {
+    "default_max_visits": 3,
+    "on_exceeded": "ask_user"
+  },
+  "roles": {
+    "implementation": {
+      "label": "Implementation",
+      "provider": "codex",
+      "alias": "codex",
+      "permission": "write",
+      "prompt_template": "implementation",
+      "skip": "never",
+      "output_schema": "implementation",
+      "instructions": "Implement the task and report assumptions and risks explicitly."
+    },
+    "static_analysis": {
+      "label": "Static Analysis",
+      "kind": "command",
+      "provider": null,
+      "permission": "read",
+      "prompt_template": "static_analysis",
+      "output_schema": "static_analysis",
+      "commands": []
+    },
+    "review": {
+      "label": "Review",
+      "provider": "claude",
+      "alias": "claude",
+      "permission": "read",
+      "prompt_template": "review",
+      "output_schema": "review",
+      "verifies": true
+    },
+    "threat_model": {
+      "label": "Threat Model",
+      "provider": "gemini",
+      "alias": "gemini",
+      "permission": "read",
+      "prompt_template": "threat_model",
+      "output_schema": "threat_model",
+      "verifies": true
+    },
+    "edge_cases": {
+      "label": "Edge Cases",
+      "provider": "claude",
+      "alias": "claude",
+      "permission": "read",
+      "prompt_template": "edge_cases",
+      "output_schema": "edge_cases",
+      "verifies": true
+    },
+    "tests": {
+      "label": "Tests",
+      "provider": "gemini",
+      "alias": "gemini",
+      "permission": "write",
+      "prompt_template": "tests",
+      "output_schema": "tests",
+      "verifies": true
+    },
+    "evaluation": {
+      "label": "Evaluation",
+      "kind": "command",
+      "provider": null,
+      "permission": "read",
+      "prompt_template": "evaluation",
+      "output_schema": "evaluation",
+      "commands": []
+    },
+    "regression": {
+      "label": "Regression",
+      "kind": "regression",
+      "provider": null,
+      "permission": "read",
+      "prompt_template": "regression",
+      "output_schema": "regression",
+      "attempts": 1,
+      "fail_threshold": 1,
+      "fail_event": "regressions_found"
+    },
+    "scoring": {
+      "label": "Scoring",
+      "kind": "scoring",
+      "provider": null,
+      "permission": "read",
+      "prompt_template": "scoring",
+      "output_schema": "scoring"
+    },
+    "human_approval": {
+      "label": "Human Approval",
+      "provider": "claude",
+      "alias": "claude",
+      "permission": "read",
+      "prompt_template": "human_approval"
+    }
+  },
+  "transitions": {
+    "implementation": {
+      "done": "static_analysis",
+      "question": "$ask_user",
+      "error": "$halt"
+    },
+    "static_analysis": {
+      "done": "tests",
+      "error": "$halt"
+    },
+    "review": {
+      "done": "tests",
+      "changes_requested": "implementation",
+      "question": "$ask_user",
+      "error": "$halt"
+    },
+    "threat_model": {
+      "done": "tests",
+      "changes_requested": "implementation",
+      "question": "$ask_user",
+      "error": "$halt"
+    },
+    "edge_cases": {
+      "done": "tests",
+      "changes_requested": "implementation",
+      "question": "$ask_user",
+      "error": "$halt"
+    },
+    "tests": {
+      "done": "evaluation",
+      "question": "$ask_user",
+      "error": "$halt"
+    },
+    "evaluation": {
+      "done": "regression",
+      "error": "$halt"
+    },
+    "regression": {
+      "done": "scoring",
+      "regressions_found": "implementation",
+      "error": "$halt"
+    },
+    "scoring": {
+      "passed": "human_approval",
+      "blocked": "$halt",
+      "error": "$halt"
+    },
+    "human_approval": {
+      "done": "$complete",
+      "question": "$ask_user",
+      "error": "$halt"
+    }
+  },
+  "modes": {
+    "task": {
+      "initial": "implementation"
+    }
+  }
+}

@@ -10,6 +10,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { HerdrAgentRunner } from "../src/herdr-agent-runner.mjs";
 
@@ -112,4 +115,49 @@ test("HerdrAgentRunner: closeTab survives a failing herdr CLI (best effort)", as
 
   await assert.doesNotReject(() => runner.closeTab("t1"));
   assert.equal(tabStore.get("t1"), null, "state cleared even when close fails");
+});
+
+test("HerdrAgentRunner: an aliased provider command is wrapped in `bash -ic` so alias expansion applies", async () => {
+  const logDir = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-alias-"));
+  let startScript = null;
+  // Stub cli: capture the `agent start` script and simulate the pane by writing
+  // the exit file (waitForFile polls it). Use a command name that is NOT on PATH
+  // so resolveCommandSpec takes the interactive-shell alias branch.
+  const cli = async (args) => {
+    const cmd = args.slice(0, 2).join(" ");
+    if (cmd === "workspace list") return { workspaces: [{ workspace_id: "ws-1", label: "maestro" }] };
+    if (cmd === "tab create") return { tab: { tab_id: "tab-1" } };
+    if (cmd === "agent start") {
+      startScript = args[args.length - 1];
+      await fs.writeFile(path.join(logDir, "executor.exit.txt"), "0");
+      return { agent: { pane_id: "pane-1" } };
+    }
+    return {};
+  };
+  const runner = new HerdrAgentRunner({ cli, tabStore: makeMemTabStore(), pollIntervalMs: 1 });
+  const providerDef = {
+    adapter: "built-in:codex",
+    default_alias: "xcodex-not-on-path",
+    aliases: ["xcodex-not-on-path"],
+    models: ["gpt-5.5"],
+  };
+  await runner.runStep({
+    provider: "codex",
+    role: "executor",
+    prompt: "do the thing",
+    cwd: logDir,
+    logDir,
+    options: {},
+    env: { MAESTRO_TASK_ID: "t-alias" },
+    providerDef,
+  });
+
+  assert.match(startScript, /bash '-ic'/, "aliased command is routed through interactive bash");
+  assert.match(startScript, /xcodex-not-on-path/, "the configured alias is preserved inside the wrapper");
+
+  const command = JSON.parse(await fs.readFile(path.join(logDir, "executor.command.json"), "utf8"));
+  assert.equal(command.invocation, "bash-interactive");
+  assert.equal(command.configured_command, "xcodex-not-on-path");
+
+  await fs.rm(logDir, { recursive: true, force: true });
 });

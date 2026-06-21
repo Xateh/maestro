@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "initial": "planner",
+  "parallel_groups": [["review_a", "review_b"]],
+  "roles": {
+    "planner": {
+      "label": "Planner",
+      "provider": "codex",
+      "permission": "plan",
+      "prompt_template": "planner"
+    },
+    "review_a": {
+      "label": "Review A",
+      "provider": "claude",
+      "permission": "read",
+      "prompt_template": "review_a",
+      "output_schema": "review",
+      "verifies": true
+    },
+    "review_b": {
+      "label": "Review B",
+      "provider": "gemini",
+      "permission": "read",
+      "prompt_template": "review_b",
+      "output_schema": "review",
+      "verifies": true
+    },
+    "summary": {
+      "label": "Summary",
+      "provider": "codex",
+      "permission": "read",
+      "prompt_template": "summary"
+    }
+  },
+  "transitions": {
+    "planner": {
+      "done": "review_a",
+      "question": "$ask_user",
+      "error": "$halt"
+    },
+    "review_a": {
+      "done": "summary",
+      "error": "$halt"
+    },
+    "review_b": {
+      "done": "summary",
+      "error": "$halt"
+    },
+    "summary": {
+      "done": "$complete",
+      "question": "$ask_user",
+      "error": "$halt"
+    }
+  },
+  "modes": {
+    "task": {
+      "initial": "planner"
+    }
+  }
+}

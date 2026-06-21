@@ -1,8 +1,9 @@
 # Maestro MCP Server
 
-Maestro exposes eight tools via the [Model Context Protocol](https://modelcontextprotocol.io)
-stdio transport. Any MCP-compatible agent (Claude, Cursor, etc.) can use these to read Maestro
-state and create tasks without shell access.
+Maestro exposes nine tools and one read-only resource via the
+[Model Context Protocol](https://modelcontextprotocol.io) stdio transport. Any MCP-compatible
+agent (Claude, Cursor, etc.) can use these to read Maestro state, validate workflow candidates,
+and create tasks without shell access.
 
 ## Registration
 
@@ -116,19 +117,106 @@ Returns the current `workflow.json` graph definition.
 
 ---
 
-### `maestro_validate_workflow`
+### `maestro_list_providers`
 
-Validate `.maestro/workflow.json`: structural errors (bad initial state,
-dangling transitions, invalid modes, bad `max_visits`/`loop_limits`) and
-warnings (unreachable roles, unknown providers, cycles without termination
-clauses — each warning includes the recommended fix). Read-only; never mutates
-anything.
+List configured providers from `.maestro/config.json` with read-only, offline-safe
+preflight data. The tool checks local CLI reachability and whether declared provider
+or alias env values resolve through Maestro's existing secret/env path. It does not
+perform network calls or deep token validation.
 
 **Input** — none
+
+**Output**
+
+```json
+{
+  "providers": [
+    {
+      "provider": "codex",
+      "adapter": "built-in:codex",
+      "default_alias": "codex",
+      "models": ["gpt-5.5"],
+      "capabilities": { "plan": true, "execute": true, "review": true },
+      "permission": "read",
+      "status": "ready"
+    }
+  ]
+}
+```
+
+**Status values**
+
+| Status | Meaning |
+|---|---|
+| `ready` | Default alias command resolves and any declared env refs resolve. |
+| `missing_cli` | Default alias command is not found on PATH or as an interactive shell alias/function. |
+| `missing_creds` | CLI is present, but at least one declared provider/alias env value is unresolved. |
+| `disabled` | Provider has `enabled: false` in config. |
+| `unknown` | Best-effort preflight could not determine status. |
+
+Capability flags are an open map. Built-in adapters currently report
+`plan`, `execute`, and `review`; provider config can override or extend that map
+for future capabilities such as `image_gen`.
+
+---
+
+### `maestro_validate_workflow`
+
+Validate a workflow. With no input, reads `.maestro/workflow.json` for backward
+compatibility. With an inline `workflow` object, validates that candidate without
+changing state, so clients can run an authoring repair loop before writing files.
+
+Both paths first run the structural JSON Schema pre-check from
+`schema/workflow.schema.json`. Structural failures return `bad_workflow_schema`
+and do not run semantic validation. Structural success then runs
+`validateWorkflow()` and returns its normal semantic `{ok, errors, warnings}`
+verdict.
+
+**Input**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `workflow` | object | — | Optional inline workflow candidate. Omit to validate `.maestro/workflow.json`. |
 
 **Output** `{ ok: boolean, errors: Array<{code, message}>, warnings: Array<{code, message}> }`
 - Returns `{ ok: false, errors: [{code: "missing_workflow", ...}] }` when no
   readable `workflow.json` exists.
+- Returns `{ ok: false, errors: [{code: "bad_workflow_schema", path, message}], warnings: [] }`
+  when the schema pre-check fails.
+- Inline validation is throttled per MCP session by `server.mcp.max_validate_attempts`
+  (default `5`) and `server.mcp.validate_cooldown_ms` (default `60000`). At the
+  limit, the tool returns `{ ok: false, errors: [{ code: "validate_attempts_exhausted",
+  retry_after_ms }], warnings: [] }`. Disk-mode validation is exempt from this counter.
+
+---
+
+## Resources
+
+### `maestro://schema/workflow.json`
+
+Read-only JSON Schema resource for workflow authoring clients.
+
+**ListResources** returns:
+
+```json
+{
+  "uri": "maestro://schema/workflow.json",
+  "name": "workflow.schema.json",
+  "mimeType": "application/schema+json"
+}
+```
+
+**ReadResource** returns the exact bytes of `schema/workflow.schema.json` as text
+with MIME type `application/schema+json`.
+
+---
+
+## Validation Codes
+
+| Code | Meaning |
+|---|---|
+| `bad_workflow_schema` | Structural schema-level rejection from `schema/workflow.schema.json`; returned before semantic validation on both disk and inline paths. |
+| `validate_attempts_exhausted` | Inline repair-loop guard tripped; includes `retry_after_ms` telling the client when to retry. |
 
 ---
 

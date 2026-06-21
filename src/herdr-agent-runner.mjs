@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { buildAgentCommand } from "./agent-runner.mjs";
+import { buildAgentCommand, resolveCommandSpec } from "./agent-runner.mjs";
 import { herdrCli } from "./herdr-client.mjs";
 import { nullLogger } from "./logger.mjs";
 
@@ -107,7 +107,12 @@ export class HerdrAgentRunner {
     const paneKey = `${taskId}:${role}`;
     this._taskPanes.set(paneKey, attempt);
 
-    const commandSpec = buildAgentCommand({ provider, role, prompt, cwd, options, providerDef });
+    // Resolve aliases the same way TerminalAgentRunner does: a command name that
+    // is not a real PATH binary (e.g. a shell alias like `xcodex`) is rewritten
+    // to `bash -ic "<cmd>"` so interactive-shell alias expansion applies. The
+    // herdr pane runs the script under `bash -lc`, which does NOT expand aliases,
+    // so without this an aliased provider command exits 127.
+    const commandSpec = await resolveCommandSpec(buildAgentCommand({ provider, role, prompt, cwd, options, providerDef }));
     await fs.mkdir(logDir, { recursive: true });
 
     const stdoutPath = path.join(logDir, `${role}.stdout.log`);
@@ -121,6 +126,8 @@ export class HerdrAgentRunner {
       args: commandSpec.args,
       cwd: commandSpec.cwd ?? cwd,
       backend: "herdr",
+      invocation: commandSpec.invocation,
+      configured_command: commandSpec.configuredCommand,
       task_id: taskId,
     }, null, 2)}\n`);
 

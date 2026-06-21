@@ -1,0 +1,65 @@
+{
+  "version": 2,
+  "initial": "planner",
+  "roles": {
+    "planner": {
+      "label": "Planner",
+      "provider": "claude",
+      "alias": "claude",
+      "model": "",
+      "effort": "",
+      "permission": "plan",
+      "prompt_template": "planner",
+      "skip": "auto"
+    },
+    "executor": {
+      "label": "Executor",
+      "provider": "codex",
+      "alias": "codex",
+      "model": "",
+      "effort": "",
+      "permission": "write",
+      "prompt_template": "executor",
+      "skip": "never"
+    },
+    "reviewer": {
+      "label": "Reviewer",
+      "provider": "codex",
+      "alias": "codex",
+      "model": "",
+      "effort": "",
+      "permission": "read",
+      "prompt_template": "reviewer",
+      "skip": "auto"
+    }
+  },
+  "transitions": {
+    "planner": {
+      "done": "executor",
+      "question": "$ask_user",
+      "error": "$halt"
+    },
+    "executor": {
+      "done": "reviewer",
+      "question": "$ask_user",
+      "pause": "$pause",
+      "waiting": "$wait",
+      "error": "$halt"
+    },
+    "reviewer": {
+      "done": "$complete",
+      "question": "$ask_user",
+      "error": "$halt"
+    }
+  },
+  "modes": {
+    "task": {
+      "initial": "planner",
+      "skip_when_planner_off": "executor"
+    },
+    "plan-only": {
+      "initial": "planner",
+      "terminal_after": ["planner"]
+    }
+  }
+}
