@@ -47,10 +47,14 @@ function nonNegativeInteger(value, fallback, code) {
   return parsed;
 }
 
-function positiveIntegerOrThrow(value, code) {
+// Required (no-fallback) positive validator. `integer: false` allows fractional
+// values — refill rates are tokens/sec and are routinely sub-1 (e.g. an API cap
+// of 5000/hour ≈ 1.39/sec), so they must not be constrained to integers.
+function requiredPositive(value, code, { integer = false } = {}) {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw typedError(code, `expected positive integer, got ${value}`);
+  const ok = Number.isFinite(parsed) && parsed > 0 && (!integer || Number.isInteger(parsed));
+  if (!ok) {
+    throw typedError(code, `expected positive ${integer ? "integer" : "number"}, got ${value}`);
   }
   return parsed;
 }
@@ -135,8 +139,8 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
       throw typedError("invalid_provider_rate_limit", `expected server.providers.${provider}.rate_limit to be an object`);
     }
     resolvedProviders[provider] = {
-      capacity: positiveIntegerOrThrow(rateLimit.capacity, "invalid_provider_rate_limit"),
-      refillPerSec: positiveIntegerOrThrow(rateLimit.refill_per_sec, "invalid_provider_rate_limit"),
+      capacity: requiredPositive(rateLimit.capacity, "invalid_provider_rate_limit", { integer: true }),
+      refillPerSec: requiredPositive(rateLimit.refill_per_sec, "invalid_provider_rate_limit"),
     };
   }
 

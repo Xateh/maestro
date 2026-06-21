@@ -7,6 +7,14 @@ import { createRateLimiter } from "./http-rate-limit.mjs";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createProviderLimiter(limitsByProvider = {}, { now = Date.now } = {}) {
+  // Validate at construction: a non-positive refillPerSec means a drained bucket
+  // never refills, so acquire() would busy-spin forever (retryAfterMs=Infinity).
+  for (const [provider, limit] of Object.entries(limitsByProvider)) {
+    if (!limit) continue;
+    if (!(Number(limit.capacity) > 0) || !(Number(limit.refillPerSec) > 0)) {
+      throw new Error(`invalid_provider_rate_limit: ${provider} capacity and refillPerSec must be > 0`);
+    }
+  }
   const bucket = createRateLimiter({ now });
   async function acquire(provider) {
     const limit = limitsByProvider[provider];

@@ -89,6 +89,22 @@ test("resolveServerConfig rejects invalid provider rate_limit numbers", () => {
   );
 });
 
+test("resolveServerConfig accepts fractional refill_per_sec (rates are sub-1/sec)", () => {
+  const resolved = resolveServerConfig({
+    server: { providers: { github: { rate_limit: { capacity: 1, refill_per_sec: 0.0167 } } } },
+  }, { baseDir });
+  assert.equal(resolved.providers.github.refillPerSec, 0.0167);
+});
+
+test("resolveServerConfig still rejects a non-integer capacity", () => {
+  assert.throws(
+    () => resolveServerConfig({
+      server: { providers: { github: { rate_limit: { capacity: 1.5, refill_per_sec: 1 } } } },
+    }, { baseDir }),
+    /invalid_provider_rate_limit/,
+  );
+});
+
 test("resolveServerConfig rejects non-positive max_concurrent_roles", () => {
   assert.throws(
     () => resolveServerConfig({ server: { agent: { max_concurrent_roles: 0 } } }, { baseDir }),

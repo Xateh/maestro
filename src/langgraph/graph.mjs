@@ -188,12 +188,8 @@ export function buildGraph(
           db, runner, ops, availabilityProbe,
           contextRetryLimit: config.context_retry_limit ?? 1,
           resumeCompletedRoles, advisoryEmitted,
-          maxConcurrentRoles:
-            maxConcurrentRoles
-            ?? config.server?.agent?.maxConcurrentRoles
-            ?? config.server?.agent?.max_concurrent_roles
-            ?? config.max_concurrent_roles
-            ?? 0,
+          // Resolved once by the caller (engine.mjs); 0 ⇒ unbounded (back-compat).
+          maxConcurrentRoles,
         };
         graph.addNode(groupNodeName, buildGroupNode(gi, group, workflow, config, groupOpts));
       }

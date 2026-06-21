@@ -76,7 +76,10 @@ export function validateEphemeralPolicy(workflow = {}, policy = {}) {
     }
   }
 
-  const maxFanout = Number(policy.maxFanout);
+  // Fail closed: a non-finite/absent cap must not silently disable the check
+  // (`x > NaN` is always false). An unusable cap means no fan-out is permitted.
+  const rawFanout = Number(policy.maxFanout);
+  const maxFanout = Number.isFinite(rawFanout) && rawFanout > 0 ? rawFanout : 0;
   for (const group of workflow?.parallel_groups ?? []) {
     if (Array.isArray(group) && group.length > maxFanout) {
       errors.push(issue("fanout_exceeds_cap", `parallel group of size ${group.length} exceeds maxFanout ${maxFanout}`));

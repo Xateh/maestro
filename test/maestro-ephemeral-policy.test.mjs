@@ -159,6 +159,16 @@ test("validateEphemeralPolicy reports fanout_exceeds_cap", () => {
   assert.deepEqual(result.errors.map((e) => e.code), ["fanout_exceeds_cap"]);
 });
 
+test("validateEphemeralPolicy fails closed when maxFanout is absent/non-finite", () => {
+  const result = validateEphemeralPolicy(
+    { parallel_groups: [["a", "b"]], roles: {} },
+    { enabled: true, commandAllowlist: [], providerAllowlist: [], baselineGates: {} },
+  );
+  // No usable cap ⇒ no fan-out permitted (must not silently pass via `> NaN`).
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.errors.map((e) => e.code), ["fanout_exceeds_cap"]);
+});
+
 test("validateEphemeralPolicy reports gate_relaxation_forbidden", () => {
   const result = validateEphemeralPolicy(
     {
