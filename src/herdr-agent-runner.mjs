@@ -41,6 +41,7 @@ export class HerdrAgentRunner {
     this.tabStore = tabStore;
     this._taskTabs = new Map();
     this._taskPanes = new Map();
+    this._taskRootPanes = new Map(); // tabId -> empty root pane id awaiting close
     this._maestroWsId = null;
   }
 
@@ -59,18 +60,17 @@ export class HerdrAgentRunner {
   }
 
   async _ensureTab(taskId, cwd) {
-    if (this._taskTabs.has(taskId)) return this._taskTabs.get(taskId);
-
-    // Reuse a persisted tab (task resumed by a fresh runner instance) so the
-    // conversation trail stays in one place. Any failure means the tab is
-    // gone — fall through and create a new one.
-    const persisted = await this.tabStore?.get(taskId);
-    if (persisted) {
+    // Reuse a still-live tab — either cached on this runner, or persisted via
+    // the tabStore (a fresh runner resuming the task). Validate with `tab get`:
+    // a per-task tab auto-closes once its last agent pane exits, so any cached
+    // id may already be dead. On failure, drop it and create a fresh tab.
+    const cached = this._taskTabs.get(taskId) ?? await this.tabStore?.get(taskId);
+    if (cached) {
       try {
-        await this.cli(["tab", "get", persisted]);
-        this._taskTabs.set(taskId, persisted);
-        return persisted;
-      } catch { /* tab gone — recreate */ }
+        await this.cli(["tab", "get", cached]);
+        this._taskTabs.set(taskId, cached);
+        return cached;
+      } catch { this._taskTabs.delete(taskId); /* tab gone — recreate */ }
     }
 
     const wsId = await this._ensureMaestroWorkspace(cwd);
@@ -84,6 +84,12 @@ export class HerdrAgentRunner {
     const tabId = result?.tab?.tab_id;
     this._taskTabs.set(taskId, tabId);
     await this.tabStore?.set(taskId, tabId);
+    // herdr spawns an empty root shell pane with every new tab. The agent runs
+    // in its own split pane, so stash the root pane id and close it right after
+    // the agent pane exists (see runStep). Otherwise that bare shell lingers as
+    // a leftover terminal once the agent pane auto-closes on exit.
+    const rootPaneId = result?.root_pane?.pane_id;
+    if (rootPaneId) this._taskRootPanes.set(tabId, rootPaneId);
     return tabId;
   }
 
@@ -95,6 +101,7 @@ export class HerdrAgentRunner {
       this.logger.info("herdr_tab_closed", { task_id: taskId, tab_id: tabId });
     } catch { /* best effort */ }
     this._taskTabs.delete(taskId);
+    this._taskRootPanes.delete(tabId);
     for (const key of this._taskPanes.keys()) {
       if (key.startsWith(`${taskId}:`)) this._taskPanes.delete(key);
     }
@@ -152,6 +159,15 @@ export class HerdrAgentRunner {
     ]);
     const paneId = paneResult?.agent?.pane_id;
     this.logger.info("herdr_agent_started", { task_id: taskId, role, provider, pane_id: paneId, tab_id: tabId });
+
+    // Now that the agent pane exists, close the tab's empty root shell. The tab
+    // then holds only the live agent pane and auto-closes cleanly when the agent
+    // exits — no dead terminal left behind regardless of the task's outcome.
+    const rootPaneId = this._taskRootPanes.get(tabId);
+    if (rootPaneId) {
+      this._taskRootPanes.delete(tabId);
+      try { await this.cli(["pane", "close", rootPaneId]); } catch { /* best effort */ }
+    }
 
     const exitCodeStr = await waitForFile(exitPath, this.pollIntervalMs, this.timeoutMs);
 
