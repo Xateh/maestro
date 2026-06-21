@@ -147,7 +147,8 @@ duplicating it.
 | `server.polling.interval_ms` | Poll cadence (default 30000). |
 | `server.workspace.root` | Base dir for per-issue workspaces (`~`, `$VAR`, and relative paths expand). |
 | `server.hooks` | `after_create` / `before_run` / `after_run` / `before_remove` shell hooks + `timeout_ms`. |
-| `server.agent` | `max_concurrent_agents`, `max_turns`, `max_retry_backoff_ms`, `stall_timeout_ms`, `max_concurrent_agents_by_state`. |
+| `server.agent` | `max_concurrent_agents`, `max_concurrent_roles` (cap on parallel-group members in flight at once; default 4), `max_turns`, `max_retry_backoff_ms`, `stall_timeout_ms`, `max_concurrent_agents_by_state`. |
+| `server.providers` | Optional per-provider `{ rate_limit: { capacity, refill_per_sec } }` token-bucket limits applied to provider calls (multi-provider fan-out, GitHub API). Absent ⇒ unlimited. |
 | `server.intake_template` | Liquid template rendered into each dispatched task's prompt. Context: `{ issue, attempt }`. |
 
 > **Migration:** earlier releases configured the server through a dispatch
@@ -157,6 +158,34 @@ duplicating it.
 > `codex.stall_timeout_ms` → `server.agent.stall_timeout_ms`. The old `codex.*`
 > sandbox keys are dropped (the graph engine's adapters own sandboxing). See the
 > BREAKING entry in `CHANGELOG.md`.
+
+### Budget & resource governance (SP12c)
+
+```json
+{
+  "server": {
+    "agent": { "max_concurrent_roles": 4 },
+    "providers": {
+      "github": { "rate_limit": { "capacity": 1, "refill_per_sec": 0.0167 } },
+      "codex":  { "rate_limit": { "capacity": 8, "refill_per_sec": 4 } }
+    }
+  }
+}
+```
+
+- **`server.agent.max_concurrent_roles`** (default `4`) bounds how many members of a
+  `parallel_groups` fan-out run at once. Members beyond the cap queue and start as slots
+  free — no oversubscription. Set lower to throttle, higher to widen. Group join semantics
+  (`parallel_failed`, event precedence) are unchanged.
+- **`server.providers.<name>.rate_limit`** is a token bucket (`capacity`, `refill_per_sec`)
+  applied per provider before each call, so multi-provider fan-out and the GitHub tracker
+  back off independently. Absent ⇒ unlimited (GitHub keeps a built-in default backoff).
+- **Run budget caps** — a run may carry `budget: { tokens?, usd?, wall_clock_ms? }` (each a
+  positive number); an operator ceiling/floor lives under `server.ephemeral.budget`. In
+  0.4.2 the **validators** (`bad_budget_spec`, `budget_below_floor`) and ceiling clamp ship;
+  the breach **kill-switch** (cancel → `budget_exceeded` + partial handoffs) lands with the
+  ephemeral run core (SP12e). `usd` figures are best-effort estimates, not billing truth.
+  See `docs/specs/2026-06-21-sp12c-budget-resource-governance-design.md`.
 
 ### Herdr Tab Lifecycle
 
