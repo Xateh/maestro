@@ -45,3 +45,52 @@ export function gatesAreWeaker(ephemeral = {}, baseline = {}) {
   }
   return reasons;
 }
+
+export function validateEphemeralPolicy(workflow = {}, policy = {}) {
+  const allowlist = Array.isArray(policy.commandAllowlist) ? policy.commandAllowlist : [];
+  const providerAllowlist = Array.isArray(policy.providerAllowlist) ? policy.providerAllowlist : [];
+
+  if (policy.enabled !== true) {
+    return {
+      ok: false,
+      errors: [issue("ephemeral_disabled", "ephemeral execution is disabled")],
+    };
+  }
+
+  const errors = [];
+  const roles = workflow?.roles ?? {};
+  for (const [roleName, role] of Object.entries(roles)) {
+    if (role?.provider !== undefined && role.provider !== null && role.provider.length > 0) {
+      if (!providerAllowlist.includes(role.provider)) {
+        errors.push(issue("provider_not_allowlisted", `${roleName}: provider ${role.provider} is not allowlisted`));
+      }
+    }
+    // Gate every declared shell command, regardless of role kind — an agent
+    // role may also declare commands[], and those must not bypass the allowlist.
+    if (Array.isArray(role?.commands)) {
+      for (const command of role.commands) {
+        if (!matchCommand(command?.run, allowlist)) {
+          errors.push(issue("command_not_allowlisted", `${roleName}.${command?.name ?? "command"} is not allowlisted`));
+        }
+      }
+    }
+  }
+
+  const maxFanout = Number(policy.maxFanout);
+  for (const group of workflow?.parallel_groups ?? []) {
+    if (Array.isArray(group) && group.length > maxFanout) {
+      errors.push(issue("fanout_exceeds_cap", `parallel group of size ${group.length} exceeds maxFanout ${maxFanout}`));
+    }
+  }
+
+  if (policy.gateRelaxation === "forbid" && (workflow?.gates ?? null) && policy?.baselineGates) {
+    for (const reason of gatesAreWeaker(workflow.gates, policy.baselineGates)) {
+      errors.push(issue("gate_relaxation_forbidden", reason));
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
