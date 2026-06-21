@@ -480,6 +480,10 @@ export async function runLangGraphTask(taskId, {
   // resumeCompletedRoles: roles with a handoff from a previous run of this task
   // skip on first arrival but re-run on cycle revisits (loop support).
   const graphOps = { ...ops, markActiveStep: _makeMarkActiveStep(taskStore) };
+  const maxConcurrentRoles = config.server?.agent?.maxConcurrentRoles
+    ?? config.server?.agent?.max_concurrent_roles
+    ?? config.max_concurrent_roles
+    ?? 0;
   const graph = buildGraph(workflow, config, {
     db,
     runner: agentRunner,
@@ -488,6 +492,7 @@ export async function runLangGraphTask(taskId, {
     resumeCompletedRoles: new Set(priorHandoffs.map((h) => h.role)),
     availabilityProbe,
     advisoryEmitted: new Set(),
+    maxConcurrentRoles,
   });
 
   // ── run the graph ─────────────────────────────────────────────────────────
