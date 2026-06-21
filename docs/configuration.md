@@ -149,6 +149,7 @@ duplicating it.
 | `server.hooks` | `after_create` / `before_run` / `after_run` / `before_remove` shell hooks + `timeout_ms`. |
 | `server.agent` | `max_concurrent_agents`, `max_turns`, `max_retry_backoff_ms`, `stall_timeout_ms`, `max_concurrent_agents_by_state`. |
 | `server.intake_template` | Liquid template rendered into each dispatched task's prompt. Context: `{ issue, attempt }`. |
+| `server.ephemeral` | Safety policy for agent-authored (ephemeral) workflows. **Default-closed.** See [Ephemeral safety policy](#ephemeral-safety-policy-sp12b) below. |
 
 > **Migration:** earlier releases configured the server through a dispatch
 > front-matter file. That file and its loader have been removed — move
@@ -157,6 +158,41 @@ duplicating it.
 > `codex.stall_timeout_ms` → `server.agent.stall_timeout_ms`. The old `codex.*`
 > sandbox keys are dropped (the graph engine's adapters own sandboxing). See the
 > BREAKING entry in `CHANGELOG.md`.
+
+### Ephemeral safety policy (SP12b)
+
+`server.ephemeral` bounds what an *agent-authored* (ephemeral) workflow may do. It is
+**default-closed**: with the block absent or `enabled: false`, every ephemeral submission
+is rejected outright.
+
+```json
+{
+  "server": {
+    "ephemeral": {
+      "enabled": false,
+      "command_allowlist": ["npm test", "npm run *", "re:^pytest( .*)?$"],
+      "provider_allowlist": ["claude", "codex"],
+      "max_fanout": 4,
+      "sandbox": "required",
+      "gate_relaxation": "forbid"
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `false` | Master switch. `false` ⇒ all ephemeral submission rejected (`ephemeral_disabled`). |
+| `command_allowlist` | `[]` | Permitted `commands[].run` patterns. Match modes: **exact** (`"npm test"`), **prefix** (trailing ` *`, e.g. `"npm run *"`), **regex** (`re:` prefix). Whitespace is normalized before matching. A command matching no entry is a hard reject (`command_not_allowlisted`). |
+| `provider_allowlist` | `[]` | Permitted role providers (`provider_not_allowlisted` otherwise). |
+| `max_fanout` | `4` | Max members in any one `parallel_groups` entry (`fanout_exceeds_cap` otherwise). |
+| `sandbox` | `"required"` | `required` ⇒ ephemeral roles run in an isolated worktree, never the live tree. |
+| `gate_relaxation` | `"forbid"` | `forbid` ⇒ an ephemeral workflow may not declare weaker gates than the server baseline (`gate_relaxation_forbidden`). |
+
+> **Status:** 0.4.2 ships the **policy validation** (config block, validators, error codes).
+> Runtime enforcement — calling the validators on a live submission and enforcing
+> `sandbox: "required"` worktree isolation — lands with the ephemeral run core (SP12e). See
+> `docs/specs/2026-06-21-sp12b-ephemeral-safety-policy-design.md`.
 
 ### Herdr Tab Lifecycle
 
