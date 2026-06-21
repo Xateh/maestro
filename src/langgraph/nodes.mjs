@@ -29,7 +29,6 @@ import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../sta
 import { resolveAliasEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
-import { accumulateCost } from "../cost-accounting.mjs";
 import { resolveRoleSchema, validateRolePayload, emptyPayloadForSchema } from "../schemas/index.mjs";
 import { buildEvaluationPayload } from "../evaluation.mjs";
 import { deriveScores, enforceGates } from "../scoring.mjs";
@@ -1112,12 +1111,17 @@ export function makeRoleNodeFn(roleDef, {
       }
 
       // ── persist step + handoff to DB ─────────────────────────────────────
-      const stepTokens = parseUsage(runProvider, result.stdout);
+      // Per-step tokens are recorded here and ride the existing stage-event
+      // projection (stage events == steps). The running per-run total is derived
+      // on demand via accumulateCost (src/cost-accounting.mjs); the *live*
+      // cost_update emission + kill-switch subscription land with the ephemeral
+      // run core (SP12e), which is the first consumer — emitting a per-role
+      // pseudo-step now would only add noise with no reader (SP12c §3).
       await db.appendStep(task.id, {
         role: roleKey,
         provider: runProvider,
         model: runModel,
-        tokens: stepTokens,
+        tokens: parseUsage(runProvider, result.stdout),
         status: "succeeded",
         started_at: stepStartedAt,
         stdout_path: result.stdoutPath,
@@ -1126,34 +1130,6 @@ export function makeRoleNodeFn(roleDef, {
         command: result.command,
         args: result.args,
       });
-      // ── live cost accounting (SP12c): emit a cost_update stage event ──────
-      try {
-        await db.updateTask(task.id, (current) => {
-          const prior = (current.steps ?? [])
-            .filter((s) => s.role === "__cost_update__")
-            .at(-1)?.event?.cumulative ?? { tokens: 0 };
-          const cumulative = accumulateCost(prior, {
-            provider: runProvider,
-            model: runModel,
-            tokens: stepTokens,
-          });
-          const timestamp = new Date().toISOString();
-          return {
-            steps: [...(current.steps ?? []), {
-              role: "__cost_update__",
-              event: {
-                kind: "cost_update",
-                cumulative,
-                last_step: { role: roleKey, provider: runProvider, tokens: stepTokens },
-                timestamp,
-              },
-              started_at: timestamp,
-              completed_at: timestamp,
-              status: "succeeded",
-            }],
-          };
-        }).catch(() => {});
-      } catch { /* observability never breaks a run */ }
       await db.addHandoff(task.id, {
         role: roleKey,
         provider: runProvider,
