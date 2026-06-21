@@ -147,7 +147,7 @@ function shellAliasCommandSpec(commandSpec) {
   };
 }
 
-async function resolveCommandSpec(commandSpec) {
+export async function resolveCommandSpec(commandSpec) {
   if (await directCommandExists(commandSpec.command, { cwd: commandSpec.cwd })) {
     return {
       ...commandSpec,

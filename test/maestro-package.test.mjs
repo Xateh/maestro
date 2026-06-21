@@ -31,6 +31,13 @@ test("package.json declares Maestro runtime dependencies", async () => {
   assert.equal(pkg.dependencies.liquidjs, "^10.25.7");
 });
 
+test("package.json includes workflow authoring artifacts", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+  assert.ok(pkg.files.includes("schema/"));
+  assert.ok(pkg.files.includes("examples/"));
+});
+
 test("package.json carries publish metadata", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 

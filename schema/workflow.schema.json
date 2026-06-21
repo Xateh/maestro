@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "maestro://schema/workflow.json",
+  "title": "Maestro workflow.json",
+  "description": "Structural schema for Maestro workflow manifests. Semantic graph checks remain in validateWorkflow.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["initial", "roles", "transitions"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "initial": {
+      "type": "string",
+      "minLength": 1
+    },
+    "roles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/role"
+      }
+    },
+    "transitions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "modes": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/mode"
+      }
+    },
+    "parallel_groups": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "gates": {
+      "$ref": "#/$defs/gates"
+    },
+    "per_edge_context": {
+      "type": "boolean"
+    },
+    "experimental_per_edge_context": {
+      "type": "boolean"
+    },
+    "edge_context": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "enum": ["full", "scoped"]
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ]
+      }
+    },
+    "loop_limits": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "default_max_visits": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "on_exceeded": {
+          "enum": ["ask_user", "halt"]
+        }
+      }
+    },
+    "require_distinct_reviewer": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "toolToken": {
+      "type": "string",
+      "pattern": "^(mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+|[A-Za-z][A-Za-z0-9_]*|Bash\\([^)]+\\))$"
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "provider": {
+          "type": ["string", "null"]
+        },
+        "alias": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "effort": {
+          "type": "string"
+        },
+        "permission": {
+          "type": "string"
+        },
+        "prompt_template": {
+          "type": "string"
+        },
+        "skip": {
+          "type": "string"
+        },
+        "source": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object"
+            }
+          ]
+        },
+        "fallback": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolToken"
+          }
+        },
+        "deny_tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolToken"
+          }
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/command"
+          }
+        },
+        "max_visits": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "verifies": {
+          "type": "boolean"
+        },
+        "output_schema": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object"
+            }
+          ]
+        },
+        "output_schema_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enforce_output_schema": {
+          "type": "boolean"
+        },
+        "fail_event": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fail_threshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pass_event": {
+          "type": "string",
+          "minLength": 1
+        },
+        "block_event": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gates": {
+          "$ref": "#/$defs/gates"
+        },
+        "instructions": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "command"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/commandForCommandRole"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "run": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "parser": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "coverage": {
+              "$ref": "#/$defs/coverageParser"
+            }
+          }
+        }
+      }
+    },
+    "commandForCommandRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/command"
+        },
+        {
+          "required": ["name", "run"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "run": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "coverageParser": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["format"],
+      "properties": {
+        "format": {
+          "enum": ["c8-json", "lcov", "jest-json", "cobertura", "clover", "regex"]
+        },
+        "path": {
+          "type": "string"
+        },
+        "pct": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "format": {
+                "const": "regex"
+              }
+            },
+            "required": ["format"]
+          },
+          "then": {
+            "required": ["pct"]
+          }
+        }
+      ]
+    },
+    "mode": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "initial": {
+          "type": "string",
+          "minLength": 1
+        },
+        "terminal_after": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "skip_when_planner_off": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "no_high_severity_findings": {
+          "type": "boolean"
+        },
+        "all_regressions_pass": {
+          "type": "boolean"
+        },
+        "min_overall_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "output_schema_conformance": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
