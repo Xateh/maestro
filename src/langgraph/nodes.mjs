@@ -29,6 +29,7 @@ import { RESERVED_EVENTS, effectiveSkipForState, resolveMaxVisits } from "../sta
 import { resolveAliasEnv } from "../setup/keys.mjs";
 import { evaluatePlannerDecision } from "../router.mjs";
 import { resolveRoleProvider, describeAvailabilityFailure } from "../provider-availability.mjs";
+import { accumulateCost } from "../cost-accounting.mjs";
 import { resolveRoleSchema, validateRolePayload, emptyPayloadForSchema } from "../schemas/index.mjs";
 import { buildEvaluationPayload } from "../evaluation.mjs";
 import { deriveScores, enforceGates } from "../scoring.mjs";
@@ -1111,11 +1112,12 @@ export function makeRoleNodeFn(roleDef, {
       }
 
       // ── persist step + handoff to DB ─────────────────────────────────────
+      const stepTokens = parseUsage(runProvider, result.stdout);
       await db.appendStep(task.id, {
         role: roleKey,
         provider: runProvider,
         model: runModel,
-        tokens: parseUsage(runProvider, result.stdout),
+        tokens: stepTokens,
         status: "succeeded",
         started_at: stepStartedAt,
         stdout_path: result.stdoutPath,
@@ -1124,6 +1126,34 @@ export function makeRoleNodeFn(roleDef, {
         command: result.command,
         args: result.args,
       });
+      // ── live cost accounting (SP12c): emit a cost_update stage event ──────
+      try {
+        await db.updateTask(task.id, (current) => {
+          const prior = (current.steps ?? [])
+            .filter((s) => s.role === "__cost_update__")
+            .at(-1)?.event?.cumulative ?? { tokens: 0 };
+          const cumulative = accumulateCost(prior, {
+            provider: runProvider,
+            model: runModel,
+            tokens: stepTokens,
+          });
+          const timestamp = new Date().toISOString();
+          return {
+            steps: [...(current.steps ?? []), {
+              role: "__cost_update__",
+              event: {
+                kind: "cost_update",
+                cumulative,
+                last_step: { role: roleKey, provider: runProvider, tokens: stepTokens },
+                timestamp,
+              },
+              started_at: timestamp,
+              completed_at: timestamp,
+              status: "succeeded",
+            }],
+          };
+        }).catch(() => {});
+      } catch { /* observability never breaks a run */ }
       await db.addHandoff(task.id, {
         role: roleKey,
         provider: runProvider,
