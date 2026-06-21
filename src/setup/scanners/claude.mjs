@@ -19,9 +19,9 @@ export function slugifyRoleName(value) {
   const slug = String(value ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
+    .replace(/^_+|(?<!_)_+$/g, "")
     .slice(0, 48)
-    .replace(/_+$/g, ""); // slice can re-expose a trailing underscore
+    .replace(/(?<!_)_+$/g, ""); // slice can re-expose a trailing underscore
   return slug || "imported_role";
 }
 

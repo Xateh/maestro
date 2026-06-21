@@ -269,9 +269,9 @@ export function slugifyTaskTitle(value) {
   const slug = String(value ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+    .replace(/^-+|(?<!-)-+$/g, "")
     .slice(0, 72)
-    .replace(/-+$/g, "");
+    .replace(/(?<!-)-+$/g, "");
   return slug || "task";
 }
 
