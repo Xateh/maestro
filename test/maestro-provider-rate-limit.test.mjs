@@ -10,13 +10,15 @@ test("acquire is immediate when provider has no configured limit", async () => {
 });
 
 test("acquire backs off when a provider's bucket is empty", async () => {
-  // capacity 1, refill 1000/sec ⇒ ~1ms per token. Two back-to-back acquires:
-  // first immediate, second waits ~1ms.
-  const lim = createProviderLimiter({ claude: { capacity: 1, refillPerSec: 1000 } });
+  // capacity 1, refill 50/sec ⇒ ~20ms per token. Two back-to-back acquires:
+  // first immediate, second waits ~20ms. A coarse interval keeps the lower-bound
+  // assertion robust on fast CI runners (setTimeout never fires early), where a
+  // ~1ms backoff would round to 0 against Date.now()'s millisecond granularity.
+  const lim = createProviderLimiter({ claude: { capacity: 1, refillPerSec: 50 } });
   await lim.acquire("claude");
   const t0 = Date.now();
   await lim.acquire("claude");
-  assert.ok(Date.now() - t0 >= 1);
+  assert.ok(Date.now() - t0 >= 10);
 });
 
 test("providers limit independently", async () => {
