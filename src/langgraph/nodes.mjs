@@ -1111,6 +1111,12 @@ export function makeRoleNodeFn(roleDef, {
       }
 
       // ── persist step + handoff to DB ─────────────────────────────────────
+      // Per-step tokens are recorded here and ride the existing stage-event
+      // projection (stage events == steps). The running per-run total is derived
+      // on demand via accumulateCost (src/cost-accounting.mjs); the *live*
+      // cost_update emission + kill-switch subscription land with the ephemeral
+      // run core (SP12e), which is the first consumer — emitting a per-role
+      // pseudo-step now would only add noise with no reader (SP12c §3).
       await db.appendStep(task.id, {
         role: roleKey,
         provider: runProvider,

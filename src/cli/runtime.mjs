@@ -12,6 +12,7 @@ import { LinearTrackerClient } from "../linear-tracker.mjs";
 import { StructuredLogger } from "../logger.mjs";
 import { MaestroOrchestrator } from "../orchestrator.mjs";
 import { resolveServerConfig, validateServerConfig } from "../setup/server-config.mjs";
+import { createProviderLimiter } from "../provider-rate-limit.mjs";
 import { TaskGraphRunner } from "../task-graph-runner.mjs";
 import { DEFAULT_LOCAL_STATE_DIR, LocalTaskStore } from "../task-store.mjs";
 import { WorkspaceManager } from "../workspace.mjs";
@@ -34,11 +35,19 @@ function deepMergeServer(base, overlay) {
 function buildTracker(serverConfig, deps = {}) {
   if (deps.tracker) return deps.tracker;
   if (serverConfig.tracker.kind === "github") {
+    // Default github to a ~60s/token backoff so a low x-ratelimit-remaining
+    // still throttles even when no operator limit is configured (preserves the
+    // SP9 reactive-backoff protection); operator server.providers.github wins.
+    const providerLimiter = createProviderLimiter({
+      github: { capacity: 1, refillPerSec: 1 / 60 },
+      ...(serverConfig.providers ?? {}),
+    });
     return new GitHubTrackerClient({
       owner: serverConfig.tracker.owner,
       repo: serverConfig.tracker.repo,
       label: serverConfig.tracker.label ?? "maestro",
       token: serverConfig.tracker.token,
+      providerLimiter,
     });
   }
   return new LinearTrackerClient({

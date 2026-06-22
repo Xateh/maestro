@@ -117,6 +117,31 @@ test("HerdrAgentRunner: closeTab survives a failing herdr CLI (best effort)", as
   assert.equal(tabStore.get("t1"), null, "state cleared even when close fails");
 });
 
+test("HerdrAgentRunner: runStep closes the tab's empty root pane after the agent pane starts", async () => {
+  const logDir = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-root-"));
+  const closed = [];
+  const cli = async (args) => {
+    const cmd = args.slice(0, 2).join(" ");
+    if (cmd === "workspace list") return { workspaces: [{ workspace_id: "ws-1", label: "maestro" }] };
+    // Real herdr returns a root_pane with every new tab; the runner must close it.
+    if (cmd === "tab create") return { tab: { tab_id: "tab-1" }, root_pane: { pane_id: "root-1" } };
+    if (cmd === "agent start") {
+      await fs.writeFile(path.join(logDir, "executor.exit.txt"), "0");
+      return { agent: { pane_id: "agent-1" } };
+    }
+    if (cmd === "pane close") { closed.push(args[2]); return {}; }
+    return {};
+  };
+  const runner = new HerdrAgentRunner({ cli, tabStore: makeMemTabStore(), pollIntervalMs: 1 });
+  await runner.runStep({
+    provider: "codex", role: "executor", prompt: "go",
+    cwd: logDir, logDir, options: {}, env: { MAESTRO_TASK_ID: "t-root" },
+  });
+
+  assert.deepEqual(closed, ["root-1"], "only the empty root pane is closed, never the agent pane");
+  await fs.rm(logDir, { recursive: true, force: true });
+});
+
 test("HerdrAgentRunner: an aliased provider command is wrapped in `bash -ic` so alias expansion applies", async () => {
   const logDir = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-alias-"));
   let startScript = null;
