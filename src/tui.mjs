@@ -730,7 +730,7 @@ export function resolveTaskSelection(value, tasks = []) {
 
 function parseTaskInspectSelection(value) {
   const normalized = String(value ?? "").trim();
-  const match = normalized.match(/^(?:json|j)\s+(.+)$/i);
+  const match = normalized.match(/^(?:json|j)\s+(\S.*)$/i);
   if (!match) return { mode: "summary", selection: normalized };
   return { mode: "json", selection: match[1].trim() };
 }

@@ -193,10 +193,20 @@ export const DEFAULT_SERVER_CONFIG = {
   },
   agent: {
     max_concurrent_agents: 10,
+    max_concurrent_roles: 4,
     max_turns: 20,
     max_retry_backoff_ms: 300_000,
     stall_timeout_ms: 300_000,
     max_concurrent_agents_by_state: {},
+  },
+  ephemeral: {
+    enabled: false,
+    command_allowlist: [],
+    provider_allowlist: [],
+    max_fanout: 4,
+    sandbox: "required",
+    gate_relaxation: "forbid",
+    budget: {},
   },
   intake_template: DEFAULT_INTAKE_TEMPLATE,
 };
@@ -269,9 +279,9 @@ export function slugifyTaskTitle(value) {
   const slug = String(value ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+    .replace(/^-+|(?<!-)-+$/g, "")
     .slice(0, 72)
-    .replace(/-+$/g, "");
+    .replace(/(?<!-)-+$/g, "");
   return slug || "task";
 }
 

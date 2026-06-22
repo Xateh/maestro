@@ -49,6 +49,100 @@ function makeStubRunner() {
   };
 }
 
+function makeFourMemberParallelWorkflowWithCollector() {
+  return {
+    version: 2,
+    initial: "reviewerA",
+    roles: {
+      reviewerA: { provider: "claude", prompt_template: "reviewerA", permission: "read" },
+      reviewerB: { provider: "claude", prompt_template: "reviewerB", permission: "read" },
+      reviewerC: { provider: "claude", prompt_template: "reviewerC", permission: "read" },
+      reviewerD: { provider: "claude", prompt_template: "reviewerD", permission: "read" },
+      collector: { provider: "claude", prompt_template: "collector", permission: "read" },
+    },
+    transitions: {
+      reviewerA: { done: "collector", error: "$halt" },
+      reviewerB: { done: "collector", error: "$halt" },
+      reviewerC: { done: "collector", error: "$halt" },
+      reviewerD: { done: "collector", error: "$halt" },
+      collector: { done: "$complete", error: "$halt" },
+    },
+    parallel_groups: [["reviewerA", "reviewerB", "reviewerC", "reviewerD"]],
+  };
+}
+
+function priorHandoffRolesFromPrompt(prompt = "") {
+  return [...prompt.matchAll(/## Structured handoff from ([^\n]+)/g)].map((match) => match[1].trim());
+}
+
+async function runFourMemberParallelGraph({ maxConcurrentRoles = null } = {}) {
+  const dir = await mkdtemp(path.join(tmpdir(), "maestro-par-4cap-"));
+  try {
+    const store = new LocalTaskStore({ root: path.join(dir, ".maestro") });
+    await store.writeWorkflow("par-4cap", makeFourMemberParallelWorkflowWithCollector());
+    if (maxConcurrentRoles !== null) {
+      await store.writeConfig({
+        server: {
+          agent: {
+            max_concurrent_roles: maxConcurrentRoles,
+          },
+        },
+      });
+    }
+    const task = await store.createTask({
+      prompt: "run with sink",
+      cwd: dir,
+      workflow: "par-4cap",
+      reviewEnabled: false,
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let collectorPrompt = "";
+
+    const stubRunner = {
+      runStep: async ({ role, prompt }) => {
+        if (role === "collector") {
+          collectorPrompt = prompt;
+          return {
+            stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: "collect", role, total: 4 })}`,
+            stderr: "",
+            stdoutPath: null,
+            stderrPath: null,
+          };
+        }
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 8));
+        inFlight -= 1;
+        return {
+          stdout: `MAESTRO_HANDOFF: ${JSON.stringify({ summary: `member:${role}` })}`,
+          stderr: "",
+          stdoutPath: null,
+          stderrPath: null,
+        };
+      },
+    };
+
+    const { task: finalTask } = await runLangGraphTask(task.id, {
+      taskStore: store,
+      maestroRoot: store.root,
+      runner: stubRunner,
+      stdout: silent,
+      stderr: silent,
+      availabilityProbe: () => true,
+    });
+
+    return {
+      finalTask,
+      maxInFlight,
+      collectorRoles: priorHandoffRolesFromPrompt(collectorPrompt),
+    };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 test("SP7: buildGraph with parallel_groups does NOT add individual group member nodes", () => {
   const wf = parallelWorkflow();
   const config = { providers: { claude: { model: "claude-sonnet-4-6" }, gemini: { model: "gemini-pro" } } };
@@ -243,4 +337,16 @@ test("SP7 integration: a member that rejects → group emits 'error', run halts 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("buildGroupNode caps member concurrency at maxConcurrentRoles and preserves merged handoffs", async () => {
+  const unbounded = await runFourMemberParallelGraph();
+  const capped = await runFourMemberParallelGraph({ maxConcurrentRoles: 2 });
+
+  assert.equal(unbounded.finalTask.status, "succeeded", "unbounded baseline run must succeed");
+  assert.equal(capped.finalTask.status, "succeeded", "capped run must succeed");
+
+  assert.ok(capped.maxInFlight <= 2, "capped run must not exceed maxConcurrentRoles");
+  assert.equal(capped.collectorRoles.length, 4, "collector must receive four merged handoffs");
+  assert.deepEqual(capped.collectorRoles, unbounded.collectorRoles);
 });

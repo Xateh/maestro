@@ -54,6 +54,64 @@ test("resolveServerConfig resolves the full server block to effective values", (
   assert.equal(resolved.intakeTemplate, "Issue {{ issue.identifier }} attempt {{ attempt }}.");
 });
 
+test("resolveServerConfig resolves agent.max_concurrent_roles (default 4)", () => {
+  const def = resolveServerConfig({ server: {} }, { baseDir });
+  assert.equal(def.agent.maxConcurrentRoles, 4);
+
+  const set = resolveServerConfig(
+    { server: { agent: { max_concurrent_roles: 2 } } },
+    { baseDir },
+  );
+  assert.equal(set.agent.maxConcurrentRoles, 2);
+});
+
+test("resolveServerConfig resolves per-provider rate_limit to providers", () => {
+  const resolved = resolveServerConfig({
+    server: {
+      providers: {
+        github: { rate_limit: { capacity: 10, refill_per_sec: 1000 } },
+        claude: {},
+      },
+    },
+  }, { baseDir });
+
+  assert.deepEqual(resolved.providers, {
+    github: { capacity: 10, refillPerSec: 1000 },
+  });
+});
+
+test("resolveServerConfig rejects invalid provider rate_limit numbers", () => {
+  assert.throws(
+    () => resolveServerConfig({
+      server: { providers: { github: { rate_limit: { capacity: "x", refill_per_sec: 10 } } } },
+    }, { baseDir }),
+    /invalid_provider_rate_limit/,
+  );
+});
+
+test("resolveServerConfig accepts fractional refill_per_sec (rates are sub-1/sec)", () => {
+  const resolved = resolveServerConfig({
+    server: { providers: { github: { rate_limit: { capacity: 1, refill_per_sec: 0.0167 } } } },
+  }, { baseDir });
+  assert.equal(resolved.providers.github.refillPerSec, 0.0167);
+});
+
+test("resolveServerConfig still rejects a non-integer capacity", () => {
+  assert.throws(
+    () => resolveServerConfig({
+      server: { providers: { github: { rate_limit: { capacity: 1.5, refill_per_sec: 1 } } } },
+    }, { baseDir }),
+    /invalid_provider_rate_limit/,
+  );
+});
+
+test("resolveServerConfig rejects non-positive max_concurrent_roles", () => {
+  assert.throws(
+    () => resolveServerConfig({ server: { agent: { max_concurrent_roles: 0 } } }, { baseDir }),
+    /invalid_max_concurrent_roles/,
+  );
+});
+
 test("resolveServerConfig expands ~ and $VAR in workspace.root", () => {
   const home = os.homedir();
   const a = resolveServerConfig(
@@ -79,6 +137,37 @@ test("resolveServerConfig falls back to defaults when the block is missing", () 
   assert.equal(resolved.agent.stallTimeoutMs, 300_000);
   assert.deepEqual(resolved.tracker.activeStates, DEFAULT_SERVER_CONFIG.tracker.active_states);
   assert.equal(resolved.intakeTemplate, DEFAULT_INTAKE_TEMPLATE);
+});
+
+test("resolveServerConfig defaults server.ephemeral to closed", () => {
+  const e = resolveServerConfig({ server: {} }, { baseDir }).ephemeral;
+  assert.equal(e.enabled, false);
+  assert.deepEqual(e.commandAllowlist, []);
+  assert.deepEqual(e.providerAllowlist, []);
+  assert.equal(e.maxFanout, 4);
+  assert.equal(e.sandbox, "required");
+  assert.equal(e.gateRelaxation, "forbid");
+});
+
+test("resolveServerConfig resolves a populated server.ephemeral block", () => {
+  const e = resolveServerConfig({
+    server: {
+      ephemeral: {
+        enabled: true,
+        command_allowlist: ["npm test", "npm run *"],
+        provider_allowlist: ["claude", "codex"],
+        max_fanout: 2,
+        sandbox: "optional",
+        gate_relaxation: "allow",
+      },
+    },
+  }, { baseDir }).ephemeral;
+  assert.equal(e.enabled, true);
+  assert.deepEqual(e.commandAllowlist, ["npm test", "npm run *"]);
+  assert.deepEqual(e.providerAllowlist, ["claude", "codex"]);
+  assert.equal(e.maxFanout, 2);
+  assert.equal(e.sandbox, "optional");
+  assert.equal(e.gateRelaxation, "allow");
 });
 
 test("validateServerConfig rejects bad tracker config (no codex check)", () => {
@@ -109,6 +198,17 @@ test("validateServerConfig rejects bad tracker config (no codex check)", () => {
     { env: { K: "tok" }, baseDir },
   );
   assert.throws(() => validateServerConfig(noSlug), /missing_tracker_project_slug/);
+});
+
+test("validateServerConfig rejects bad ephemeral enums and max_fanout", () => {
+  const base = { tracker: { kind: "linear", api_key: "$K", project_slug: "p" } };
+  const mk = (ephemeral) => resolveServerConfig(
+    { server: { ...base, ephemeral: { enabled: true, ...ephemeral } } },
+    { env: { K: "tok" }, baseDir },
+  );
+  assert.throws(() => validateServerConfig(mk({ sandbox: "nope" })), /invalid_ephemeral_sandbox/);
+  assert.throws(() => validateServerConfig(mk({ gate_relaxation: "nope" })), /invalid_ephemeral_gate_relaxation/);
+  assert.throws(() => validateServerConfig(mk({ max_fanout: 0 })), /invalid_ephemeral_max_fanout/);
 });
 
 test("renderPrompt renders strict liquid and rejects unknown variables", async () => {

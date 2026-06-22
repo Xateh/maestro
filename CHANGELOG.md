@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-22
+
+The second 0.4.x train stop for SP12 (ephemeral, agent-authored workflows). It lands
+the two governance prerequisites that gate an ephemeral run before SP12e ships the
+run core: the **safety policy** (SP12b) and **budget & resource governance** (SP12c).
+Everything here is preflight/primitive — validators, limiters, and accounting that an
+operator configures and the future run core (SP12e, 0.4.3) enforces. Nothing in this
+release *executes* an ephemeral workflow.
+
+### Added
+
+- **Ephemeral safety policy — default-closed `server.ephemeral` config + validators
+  (`src/ephemeral-policy.mjs`, `src/setup/server-config.mjs`).** A new
+  `server.ephemeral` block, **disabled unless `enabled: true`**, declares the safety
+  envelope for agent-authored runs: `command_allowlist`, `provider_allowlist`,
+  `max_fanout` (default 4), `sandbox` (`required`/`optional`), and `gate_relaxation`
+  (`forbid`/`allow`). `validateEphemeralPolicy` checks a workflow against the policy
+  and returns structured codes (`ephemeral_disabled`, `command_not_allowlisted`,
+  `provider_not_allowlisted`, `fanout_exceeds_cap`, `gate_relaxation_forbidden`).
+  - **Command allowlist matcher.** Exact, prefix (`cmd *`), and regex (`re:…`) entries;
+    whitespace-normalized; fails closed (an invalid regex never matches). Every
+    declared `commands[].run` is gated regardless of role kind, so an agent role
+    cannot smuggle a shell command past the allowlist.
+  - **Gate-relaxation comparator (`gatesAreWeaker`).** When `gate_relaxation: forbid`,
+    an ephemeral workflow may not disable a baseline boolean gate
+    (`require_distinct_reviewer`, `output_schema_conformance`) or drop a numeric floor
+    (`min_coverage`) below baseline.
+  - **Fan-out cap fails closed:** a non-finite/absent `max_fanout` permits no fan-out
+    rather than silently disabling the check.
+- **Budget & resource governance (SP12c).** Operator-side caps and accounting
+  primitives, with the breach kill-switch explicitly deferred to SP12e:
+  - **Per-run budget validators + ceiling clamp (`src/budget.mjs`).** `validateBudget`
+    checks `tokens`/`usd`/`wall_clock_ms` are positive and not below an operator floor
+    (`bad_budget_spec`, `budget_below_floor`); `clampBudget` clamps a requested budget
+    down to the operator ceiling.
+  - **Bounded async pool (`src/async-pool.mjs`, `runPool`)** caps concurrent work, and
+    parallel-group execution now runs through it so a group cannot exceed the limit.
+  - **`agent.max_concurrent_roles` config** (default 4) bounds concurrent role
+    execution.
+  - **Per-provider rate limiter (`src/provider-rate-limit.mjs`)** over a shared token
+    bucket, configured via `server.providers.<name>.rate_limit` (`capacity`,
+    `refill_per_sec`; refill may be fractional).
+  - **Live cost accounting (`src/cost-accounting.mjs`, `accumulateCost`)** plus a
+    best-effort USD price table (`src/provider-pricing.mjs`) for cost estimates. A
+    `cost_update` stage-event primitive exists; per-role emission is deferred to the
+    run core.
+
+### Fixed
+
+- **Security — polynomial-ReDoS code-scanning alerts.** Resolved `js/polynomial-redos`
+  alerts flagged by code scanning.
+- **herdr — leftover terminal pane.** A completed task no longer leaves an empty root
+  terminal pane behind.
+
 ## [0.4.1] - 2026-06-21
 
 The first 0.4.x train stop for SP12 (ephemeral, agent-authored workflows). It lands

@@ -147,8 +147,10 @@ duplicating it.
 | `server.polling.interval_ms` | Poll cadence (default 30000). |
 | `server.workspace.root` | Base dir for per-issue workspaces (`~`, `$VAR`, and relative paths expand). |
 | `server.hooks` | `after_create` / `before_run` / `after_run` / `before_remove` shell hooks + `timeout_ms`. |
-| `server.agent` | `max_concurrent_agents`, `max_turns`, `max_retry_backoff_ms`, `stall_timeout_ms`, `max_concurrent_agents_by_state`. |
+| `server.agent` | `max_concurrent_agents`, `max_concurrent_roles` (cap on parallel-group members in flight at once; default 4), `max_turns`, `max_retry_backoff_ms`, `stall_timeout_ms`, `max_concurrent_agents_by_state`. |
+| `server.providers` | Optional per-provider `{ rate_limit: { capacity, refill_per_sec } }` token-bucket limits applied to provider calls (multi-provider fan-out, GitHub API). Absent ⇒ unlimited. |
 | `server.intake_template` | Liquid template rendered into each dispatched task's prompt. Context: `{ issue, attempt }`. |
+| `server.ephemeral` | Safety policy for agent-authored (ephemeral) workflows. **Default-closed.** See [Ephemeral safety policy](#ephemeral-safety-policy-sp12b) below. |
 
 > **Migration:** earlier releases configured the server through a dispatch
 > front-matter file. That file and its loader have been removed — move
@@ -157,6 +159,69 @@ duplicating it.
 > `codex.stall_timeout_ms` → `server.agent.stall_timeout_ms`. The old `codex.*`
 > sandbox keys are dropped (the graph engine's adapters own sandboxing). See the
 > BREAKING entry in `CHANGELOG.md`.
+
+### Ephemeral safety policy (SP12b)
+
+`server.ephemeral` bounds what an *agent-authored* (ephemeral) workflow may do. It is
+**default-closed**: with the block absent or `enabled: false`, every ephemeral submission
+is rejected outright.
+
+```json
+{
+  "server": {
+    "ephemeral": {
+      "enabled": false,
+      "command_allowlist": ["npm test", "npm run *", "re:^pytest( .*)?$"],
+      "provider_allowlist": ["claude", "codex"],
+      "max_fanout": 4,
+      "sandbox": "required",
+      "gate_relaxation": "forbid"
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `enabled` | `false` | Master switch. `false` ⇒ all ephemeral submission rejected (`ephemeral_disabled`). |
+| `command_allowlist` | `[]` | Permitted `commands[].run` patterns. Match modes: **exact** (`"npm test"`), **prefix** (trailing ` *`, e.g. `"npm run *"`), **regex** (`re:` prefix). Whitespace is normalized before matching. A command matching no entry is a hard reject (`command_not_allowlisted`). |
+| `provider_allowlist` | `[]` | Permitted role providers (`provider_not_allowlisted` otherwise). |
+| `max_fanout` | `4` | Max members in any one `parallel_groups` entry (`fanout_exceeds_cap` otherwise). |
+| `sandbox` | `"required"` | `required` ⇒ ephemeral roles run in an isolated worktree, never the live tree. |
+| `gate_relaxation` | `"forbid"` | `forbid` ⇒ an ephemeral workflow may not declare weaker gates than the server baseline (`gate_relaxation_forbidden`). |
+
+> **Status:** 0.4.2 ships the **policy validation** (config block, validators, error codes).
+> Runtime enforcement — calling the validators on a live submission and enforcing
+> `sandbox: "required"` worktree isolation — lands with the ephemeral run core (SP12e). See
+> `docs/specs/2026-06-21-sp12b-ephemeral-safety-policy-design.md`.
+
+### Budget & resource governance (SP12c)
+
+```json
+{
+  "server": {
+    "agent": { "max_concurrent_roles": 4 },
+    "providers": {
+      "github": { "rate_limit": { "capacity": 1, "refill_per_sec": 0.0167 } },
+      "codex":  { "rate_limit": { "capacity": 8, "refill_per_sec": 4 } }
+    }
+  }
+}
+```
+
+- **`server.agent.max_concurrent_roles`** (default `4`) bounds how many members of a
+  `parallel_groups` fan-out run at once. Members beyond the cap queue and start as slots
+  free — no oversubscription. Set lower to throttle, higher to widen. Group join semantics
+  (`parallel_failed`, event precedence) are unchanged.
+- **`server.providers.<name>.rate_limit`** is a token bucket (`capacity`, `refill_per_sec`)
+  applied per provider before each call, so multi-provider fan-out and the GitHub tracker
+  back off independently. Absent ⇒ unlimited (GitHub keeps a built-in default backoff).
+- **Run budget caps** — a run may carry `budget: { tokens?, usd?, wall_clock_ms? }` (each a
+  positive number); an operator ceiling/floor lives under `server.ephemeral.budget`. In
+  0.4.2 the **validators** (`bad_budget_spec`, `budget_below_floor`) and ceiling clamp ship;
+  the breach **kill-switch** (cancel → `budget_exceeded` + partial handoffs) lands with the
+  ephemeral run core (SP12e). `usd` figures are best-effort estimates, not billing truth.
+  See `docs/specs/2026-06-21-sp12c-budget-resource-governance-design.md`.
 
 ### Herdr Tab Lifecycle
 

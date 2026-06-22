@@ -1,3 +1,5 @@
+import { createProviderLimiter } from "./provider-rate-limit.mjs";
+
 function trackerError(code, message = code, cause = null) {
   const error = new Error(`${code}: ${message}`);
   error.code = code;
@@ -34,7 +36,8 @@ export class GitHubTrackerClient {
     fetchImpl = fetch,
     pageSize = 100,
     rateLimitThreshold = 10,
-    backoffFn = () => new Promise((r) => setTimeout(r, 60_000)),
+    providerLimiter = null,
+    now = Date.now,
   }) {
     this.owner = owner;
     this.repo = repo;
@@ -43,7 +46,7 @@ export class GitHubTrackerClient {
     this.fetchImpl = fetchImpl;
     this.pageSize = pageSize;
     this.rateLimitThreshold = rateLimitThreshold;
-    this.backoffFn = backoffFn;
+    this.providerLimiter = providerLimiter ?? createProviderLimiter({}, { now });
   }
 
   _headers() {
@@ -58,7 +61,7 @@ export class GitHubTrackerClient {
   async _checkRateLimit(response) {
     const remaining = Number.parseInt(response.headers.get("x-ratelimit-remaining") ?? "", 10);
     if (Number.isFinite(remaining) && remaining <= this.rateLimitThreshold) {
-      await this.backoffFn();
+      await this.providerLimiter.acquire("github");
     }
   }
 

@@ -47,6 +47,18 @@ function nonNegativeInteger(value, fallback, code) {
   return parsed;
 }
 
+// Required (no-fallback) positive validator. `integer: false` allows fractional
+// values — refill rates are tokens/sec and are routinely sub-1 (e.g. an API cap
+// of 5000/hour ≈ 1.39/sec), so they must not be constrained to integers.
+function requiredPositive(value, code, { integer = false } = {}) {
+  const parsed = Number(value);
+  const ok = Number.isFinite(parsed) && parsed > 0 && (!integer || Number.isInteger(parsed));
+  if (!ok) {
+    throw typedError(code, `expected positive ${integer ? "integer" : "number"}, got ${value}`);
+  }
+  return parsed;
+}
+
 function listOfStrings(value, fallback) {
   if (!Array.isArray(value)) return fallback;
   return value.filter((item) => typeof item === "string");
@@ -96,6 +108,8 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
   const workspace = asObject(raw.workspace) ? raw.workspace : {};
   const hooks = asObject(raw.hooks) ? raw.hooks : {};
   const agent = asObject(raw.agent) ? raw.agent : {};
+  const ephemeral = asObject(raw.ephemeral) ? raw.ephemeral : {};
+  const providers = asObject(raw.providers) ? raw.providers : {};
 
   const trackerKind = tracker.kind ?? DEFAULT_SERVER_CONFIG.tracker.kind;
   const trackerApiKey = resolveDollarValue(tracker.api_key ?? env.LINEAR_API_KEY ?? null, env);
@@ -114,6 +128,20 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
         maxConcurrentAgentsByState[state.toLowerCase()] = parsed;
       }
     }
+  }
+
+  const resolvedProviders = {};
+  for (const [provider, providerConfig] of Object.entries(providers)) {
+    if (!asObject(providerConfig)) continue;
+    const rateLimit = providerConfig.rate_limit;
+    if (!rateLimit) continue;
+    if (!asObject(rateLimit)) {
+      throw typedError("invalid_provider_rate_limit", `expected server.providers.${provider}.rate_limit to be an object`);
+    }
+    resolvedProviders[provider] = {
+      capacity: requiredPositive(rateLimit.capacity, "invalid_provider_rate_limit", { integer: true }),
+      refillPerSec: requiredPositive(rateLimit.refill_per_sec, "invalid_provider_rate_limit"),
+    };
   }
 
   return {
@@ -154,11 +182,22 @@ export function resolveServerConfig(config, { env = process.env, baseDir = proce
     },
     agent: {
       maxConcurrentAgents: positiveInteger(agent.max_concurrent_agents, 10, "invalid_max_concurrent_agents"),
+      maxConcurrentRoles: positiveInteger(agent.max_concurrent_roles, 4, "invalid_max_concurrent_roles"),
       maxTurns: positiveInteger(agent.max_turns, 20, "invalid_max_turns"),
       maxRetryBackoffMs: positiveInteger(agent.max_retry_backoff_ms, 300_000, "invalid_max_retry_backoff_ms"),
       stallTimeoutMs: nonNegativeInteger(agent.stall_timeout_ms, 300_000, "invalid_stall_timeout"),
       maxConcurrentAgentsByState,
     },
+    ephemeral: {
+      enabled: ephemeral.enabled === true,
+      commandAllowlist: listOfStrings(ephemeral.command_allowlist, []),
+      providerAllowlist: listOfStrings(ephemeral.provider_allowlist, []),
+      maxFanout: ephemeral.max_fanout === undefined ? 4 : Number(ephemeral.max_fanout),
+      sandbox: ephemeral.sandbox ?? "required",
+      gateRelaxation: ephemeral.gate_relaxation ?? "forbid",
+      budget: asObject(ephemeral.budget) ? ephemeral.budget : {},
+    },
+    providers: resolvedProviders,
     intakeTemplate: raw.intake_template ?? DEFAULT_SERVER_CONFIG.intake_template,
   };
 }
@@ -213,5 +252,19 @@ export function validateServerConfig(config) {
   if (config.tracker.blockedState !== null && typeof config.tracker.blockedState !== "string") {
     throw typedError("invalid_tracker_blocked_state", "expected string or null");
   }
+
+  const eph = config.ephemeral;
+  if (eph) {
+    if (eph.sandbox !== "required" && eph.sandbox !== "optional") {
+      throw typedError("invalid_ephemeral_sandbox", `expected "required" or "optional", got ${eph.sandbox}`);
+    }
+    if (eph.gateRelaxation !== "forbid" && eph.gateRelaxation !== "allow") {
+      throw typedError("invalid_ephemeral_gate_relaxation", `expected "forbid" or "allow", got ${eph.gateRelaxation}`);
+    }
+    if (!Number.isInteger(eph.maxFanout) || eph.maxFanout <= 0) {
+      throw typedError("invalid_ephemeral_max_fanout", `expected positive integer, got ${eph.maxFanout}`);
+    }
+  }
+
   return true;
 }
