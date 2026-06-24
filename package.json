@@ -57,7 +57,7 @@
   "dependencies": {
     "@langchain/langgraph": "^1.3.6",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "^0.140.0",
+    "@openai/codex": "^0.142.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/auto-instrumentations-node": "^0.77.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.219.0",
@@ -69,7 +69,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.0",
+    "@biomejs/biome": "2.5.1",
     "c8": "11.0.0"
   }
 }
